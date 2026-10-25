@@ -1,3 +1,4 @@
+import os
 import time
 import traceback
 import logging
@@ -14,6 +15,7 @@ from aiogram.exceptions import (
 )
 
 from bot.services.audit_service import audit_logger
+from bot.utils.sanitize import sanitize_exception_message
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -22,13 +24,23 @@ logger = logging.getLogger(__name__)
 _recent_errors: Dict[str, float] = {}
 ALERT_THROTTLE_SECONDS = 60.0  # Alert at most once per minute for identical errors
 
+
 def is_routine_error(exception: Exception) -> bool:
     """
-    Returns True if the exception is a routine, transient network/API issue that should be ignored:
-    - Network connectivity drops, timeouts, socket disconnects.
-    - Telegram flood rate limits (RetryAfter).
-    - User-side benign errors: 'message is not modified', 'query is too old', 'bot was blocked by user'.
+    Returns True if the exception is a routine, transient network/API issue that should be ignored.
+    Database errors from sqlalchemy, asyncpg, psycopg, or psycopg2 are NEVER routine.
     """
+    # 0. Check if exception or any cause/context originates from database libraries
+    curr: Any = exception
+    visited = set()
+    while curr and id(curr) not in visited:
+        visited.add(id(curr))
+        mod = getattr(type(curr), "__module__", "") or ""
+        root_mod = mod.split(".")[0].lower()
+        if root_mod in ("sqlalchemy", "asyncpg", "psycopg", "psycopg2"):
+            return False
+        curr = getattr(curr, "__cause__", None) or getattr(curr, "__context__", None)
+
     # 1. Direct type checks for network & transient Telegram errors
     if isinstance(exception, (TelegramNetworkError, TelegramRetryAfter, RestartingTelegram, TimeoutError)):
         return True
@@ -79,8 +91,8 @@ async def handle_critical_error(event: ErrorEvent, bot: Bot):
     Global error handler registered on dp.errors:
     - Filters out routine transient network/telegram errors.
     - Captures critical database, logic, and operational exceptions.
-    - Logs detailed traceback to the rotating system log.
-    - Sends an immediate, structured Telegram alert to all Admins with deduplication.
+    - Logs detailed traceback to the rotating system log with sanitized error message.
+    - Sends an immediate, plain-text Telegram alert to all Admins with deduplication.
     """
     exception = event.exception
     update: Update = event.update
@@ -90,7 +102,7 @@ async def handle_critical_error(event: ErrorEvent, bot: Bot):
         logger.debug(f"Ignored routine error: {type(exception).__name__}: {exception}")
         return
 
-    # Step 2: Extract User & Context Details
+    # Step 2: Extract User & Context Details (never leak raw user message contents)
     user_id = None
     username = None
     chat_id = None
@@ -103,8 +115,13 @@ async def handle_critical_error(event: ErrorEvent, bot: Bot):
             user_id = m.from_user.id if m.from_user else None
             username = m.from_user.username if m.from_user else None
             chat_id = m.chat.id
-            action_type = "رسالة نصية"
-            action_payload = m.text or m.caption or "[وسائط]"
+            action_type = "رسالة"
+            if m.text:
+                action_payload = f"رسالة نصية ({len(m.text)} حرفاً)"
+            elif m.caption:
+                action_payload = f"وسائط ({len(m.caption)} حرفاً)"
+            else:
+                action_payload = "وسائط"
         elif update.callback_query:
             cq = update.callback_query
             user_id = cq.from_user.id if cq.from_user else None
@@ -121,18 +138,22 @@ async def handle_critical_error(event: ErrorEvent, bot: Bot):
     line_number = "—"
     func_name = "—"
     if relevant_frame:
-        file_location = relevant_frame.filename.split("/")[-1]
+        file_location = os.path.basename(relevant_frame.filename)
         line_number = relevant_frame.lineno
         func_name = relevant_frame.name
 
     exc_type = type(exception).__name__
-    exc_message = str(exception)
-    if len(exc_message) > 250:
-        exc_message = exc_message[:247] + "..."
+    exc_message = sanitize_exception_message(exception, max_len=200)
 
-    # Step 4: De-duplication / Throttle check
-    error_signature = f"{exc_type}:{file_location}:{line_number}:{exc_message[:60]}"
+    # Step 4: Maintenance of recent errors and De-duplication / Throttle check
     now = time.time()
+    if len(_recent_errors) > 200:
+        cutoff = now - 3600.0
+        stale_keys = [k for k, ts in _recent_errors.items() if ts < cutoff]
+        for k in stale_keys:
+            _recent_errors.pop(k, None)
+
+    error_signature = f"{exc_type}:{file_location}:{line_number}:{exc_message[:60]}"
     last_time = _recent_errors.get(error_signature, 0.0)
     if now - last_time < ALERT_THROTTLE_SECONDS:
         logger.warning(f"Throttled duplicate error alert: {error_signature}")
@@ -145,19 +166,19 @@ async def handle_critical_error(event: ErrorEvent, bot: Bot):
         exc_info=exception
     )
 
-    # Step 6: Format high-priority Telegram alert for Admins
-    user_str = f"@{username} (`{user_id}`)" if username else (f"`{user_id}`" if user_id else "غير متاح")
+    # Step 6: Format high-priority Plain-Text Telegram alert for Admins (parse_mode=None, no markdown)
+    user_str = f"@{username} ({user_id})" if username else (f"{user_id}" if user_id else "غير متاح")
     
     alert_text = (
-        "🚨 **إنذار خطأ تقني حساس في النظام**\n\n\n"
-        f"• **المستخدم المتأثر:**  {user_str}\n"
-        f"• **نوع الإجراء:**  {action_type}\n"
-        f"• **البيانات/الأمر:**  `{action_payload[:100]}`\n\n\n"
-        f"⚠️ **تفاصيل الاستثناء:**\n"
-        f"• نوع الخطأ:  `{exc_type}`\n"
-        f"• الموقع:  `{file_location}:{line_number}` في `{func_name}()`\n"
-        f"• الرسالة:  `{exc_message}`\n\n\n"
-        "📁 تم تسجيل التفاصيل الكاملة و trace في ملف السجلات `escrow_system.log`."
+        "🚨 إنذار خطأ تقني حساس في النظام\n\n"
+        f"• المستخدم المتأثر: {user_str}\n"
+        f"• نوع الإجراء: {action_type}\n"
+        f"• البيانات/الأمر: {action_payload[:100]}\n\n"
+        "⚠️ تفاصيل الاستثناء:\n"
+        f"• نوع الخطأ: {exc_type}\n"
+        f"• الموقع: {file_location}:{line_number} في {func_name}()\n"
+        f"• الرسالة: {exc_message}\n\n"
+        "📁 تم تسجيل التفاصيل الكاملة و trace في ملف السجلات escrow_system.log."
     )
 
     # Step 7: Dispatch alert to all Admins
@@ -168,7 +189,7 @@ async def handle_critical_error(event: ErrorEvent, bot: Bot):
             await bot.send_message(
                 chat_id=admin_id,
                 text=alert_text,
-                parse_mode="Markdown"
+                parse_mode=None
             )
         except Exception as e:
             logger.error(f"Failed to deliver critical error alert to admin {admin_id}: {e}")

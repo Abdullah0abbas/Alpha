@@ -4,4 +4,10 @@ env/
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.example
+backups/
+logs/
+*.log
+.pytest_cache/
 alembic.ini

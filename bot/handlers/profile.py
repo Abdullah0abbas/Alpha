@@ -18,6 +18,25 @@ profile_router = Router()
 
 def get_profile_keyboard(user: User) -> InlineKeyboardMarkup:
     """Builds clean, feature-rich interactive keyboard for user profile."""
+    if not settings.REWARDS_ENABLED:
+        buttons = [
+            [
+                InlineKeyboardButton(text="⭐ سمعتي وتقييمي", callback_data="prof_reputation"),
+                InlineKeyboardButton(text="🕒 سجل الصفقات", callback_data="main_my_deals")
+            ],
+            [
+                InlineKeyboardButton(text="📍 عنوان USDT المحفوظ", callback_data="prof_wallet"),
+                InlineKeyboardButton(text="💳 حساب الدفع المعتمد", callback_data="prof_payment")
+            ],
+            [
+                InlineKeyboardButton(text="✏️ تعديل اللقب", callback_data="prof_set_nickname")
+            ],
+            [
+                InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")
+            ]
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
     buttons = [
         [
             InlineKeyboardButton(text="⭐ سمعتي وتقييمي", callback_data="prof_reputation"),
@@ -67,16 +86,19 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
     else:
         tier_badge = "🌱 متداول مبتدئ (Beginner)"
 
-    kyc_badges = {
-        "verified": "🟢 موثّق بالكامل ✅",
-        "pending": "🟡 قيد المراجعة الإدارية ⏳",
-        "unverified": "⚪ غير موثّق"
-    }
-    kyc_display = kyc_badges.get(user.kyc_status, "⚪ غير موثّق")
-
-    points = user.reward_points or 0
     saved_wallet = escape_markdown(user.saved_usdt_address) if user.saved_usdt_address else "لم يتم ضبطه بعد"
     saved_acc = escape_markdown(user.saved_payment_info) if user.saved_payment_info else "لم يتم ضبطه بعد"
+
+    rewards_section = ""
+    if settings.REWARDS_ENABLED:
+        kyc_badges = {
+            "verified": "🟢 موثّق بالكامل ✅",
+            "pending": "🟡 قيد المراجعة الإدارية ⏳",
+            "unverified": "⚪ غير موثّق"
+        }
+        kyc_display = kyc_badges.get(user.kyc_status, "⚪ غير موثّق")
+        points = user.reward_points or 0
+        rewards_section = f"• حالة التوثيق:  {kyc_display}\n• رصيد النقاط الذهبية:  🌟 `{points}` نقطة\n"
 
     text = (
         f"👤 **الملف الشخصي للمتداول**\n\n"
@@ -89,8 +111,7 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
         f"• نسبة السمعة:  ⭐ **{rep_score}**\n"
         f"• الصفقات المكتملة:  🏁 `{deals_count}` صفقة ناجحة\n"
         f"• إجمالي حجم التداول:  💰 `{format_usdt(total_volume)} USDT`\n"
-        f"• حالة التوثيق:  {kyc_display}\n"
-        f"• رصيد النقاط الذهبية:  🌟 `{points}` نقطة\n\n"
+        f"{rewards_section}\n"
         f"⚙️ **البيانات المحفوظة تلقائياً:**\n"
         f"• محفظة USDT (BEP20):  `{saved_wallet}`\n"
         f"• حساب الدفع (شام كاش/بنكي):  `{saved_acc}`\n"
@@ -279,6 +300,10 @@ async def process_saved_payment_info(message: Message, state: FSMContext, db_ses
 # ================= 4. KYC & VERIFICATION =================
 @profile_router.callback_query(F.data == "prof_kyc")
 async def cq_prof_kyc(callback: CallbackQuery, db_session: AsyncSession):
+    if not settings.REWARDS_ENABLED:
+        await callback.answer("هذه الميزة غير متاحة حالياً.", show_alert=True)
+        return
+
     user_id = callback.from_user.id
     res = await db_session.execute(select(User).where(User.telegram_id == user_id))
     user = res.scalar_one_or_none()
@@ -312,6 +337,10 @@ async def cq_prof_kyc(callback: CallbackQuery, db_session: AsyncSession):
 # ================= 5. REFERRAL SYSTEM =================
 @profile_router.callback_query(F.data == "prof_referral")
 async def cq_prof_referral(callback: CallbackQuery):
+    if not settings.REWARDS_ENABLED:
+        await callback.answer("هذه الميزة غير متاحة حالياً.", show_alert=True)
+        return
+
     bot_info = await callback.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{callback.from_user.id}"
 
@@ -334,6 +363,10 @@ async def cq_prof_referral(callback: CallbackQuery):
 # ================= 6. GOLDEN POINTS PROGRAM =================
 @profile_router.callback_query(F.data == "prof_rewards")
 async def cq_prof_rewards(callback: CallbackQuery, db_session: AsyncSession):
+    if not settings.REWARDS_ENABLED:
+        await callback.answer("هذه الميزة غير متاحة حالياً.", show_alert=True)
+        return
+
     user_id = callback.from_user.id
     res = await db_session.execute(select(User).where(User.telegram_id == user_id))
     user = res.scalar_one_or_none()
@@ -375,6 +408,10 @@ async def cq_prof_rewards(callback: CallbackQuery, db_session: AsyncSession):
 
 @profile_router.callback_query(F.data.startswith("claim_points_"))
 async def cq_claim_points(callback: CallbackQuery, db_session: AsyncSession):
+    if not settings.REWARDS_ENABLED:
+        await callback.answer("هذه الميزة غير متاحة حالياً.", show_alert=True)
+        return
+
     user_id = callback.from_user.id
     res = await db_session.execute(select(User).where(User.telegram_id == user_id))
     user = res.scalar_one_or_none()

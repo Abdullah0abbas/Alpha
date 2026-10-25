@@ -18,4 +18,9 @@ class Settings:
             return []
         return [int(x.strip()) for x in admins_str.split(",") if x.strip().isdigit()]
 
+    @property
+    def REWARDS_ENABLED(self) -> bool:
+        val = os.getenv("REWARDS_ENABLED", "false").strip().lower()
+        return val in ("1", "true", "yes")
+
 settings = Settings()

@@ -12,7 +12,7 @@ from sqlalchemy import or_, func, text
 
 from db.models import Deal, Offer, User
 from bot.states.flow_states import DealCreateFSM, DealPaymentFSM
-from bot.services.audit_service import record_audit
+from bot.services.audit_service import record_audit, add_audit
 from config.settings import settings
 from aiogram import Bot
 from bot.services.channel import update_channel_offer_message
@@ -447,12 +447,36 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
         await callback.answer("لا يمكن إلغاء الصفقة في هذه المرحلة دون مراجعة الإدارة.", show_alert=True)
         return
 
+    previous_status = deal.status
+    if callback.from_user.id in settings.ADMIN_IDS:
+        actor_role = "admin"
+    elif callback.from_user.id == deal.seller_id:
+        actor_role = "seller"
+    else:
+        actor_role = "buyer"
+
+    actor_id = callback.from_user.id
+
     deal.status = "CANCELLED"
     
     offer_result = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
     offer = offer_result.scalar_one_or_none()
     if offer and offer.status == "reserved":
         offer.status = "active"
+
+    add_audit(
+        session=db_session,
+        action="CANCEL_DEAL",
+        target_type="deal",
+        target_id=deal.id,
+        actor_id=actor_id,
+        actor_type="ADMIN" if actor_role == "admin" else "USER",
+        details={
+            "previous_status": previous_status,
+            "actor_role": actor_role,
+            "actor_id": actor_id
+        }
+    )
         
     await db_session.commit()
     
@@ -1503,45 +1527,47 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
     offer = offer_result.scalar_one_or_none()
     if offer and offer.status == "reserved":
         offer.status = "completed"
+
+    add_audit(
+        session=db_session,
+        action="RELEASE_ESCROW",
+        target_type="deal",
+        target_id=deal.id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={
+            "amount_usdt": str(deal.amount_usdt),
+            "amount_syp": str(deal.amount_syp),
+            "fee_usdt": str(deal.fee_usdt),
+            "seller_id": deal.seller_id,
+            "buyer_id": deal.buyer_id,
+            "buyer_payout_address": deal.buyer_payout_address
+        }
+    )
         
     await db_session.commit()
 
-    # Record Audit Trail for Admin Release of Escrow
-    try:
-        await record_audit(
-            session=db_session,
-            action="RELEASE_ESCROW",
-            target_type="deal",
-            target_id=deal.id,
-            actor_id=callback.from_user.id,
-            actor_type="ADMIN",
-            details={
-                "amount_usdt": str(deal.amount_usdt),
-                "amount_syp": str(deal.amount_syp),
-                "fee_usdt": str(deal.fee_usdt),
-                "seller_id": deal.seller_id,
-                "buyer_id": deal.buyer_id,
-                "buyer_payout_address": deal.buyer_payout_address
-            }
-        )
-    except Exception as e:
-        logger.warning(f"Failed to write audit log for release of deal {deal.id}: {e}")
-        
     if offer:
-        await update_channel_offer_message(callback.bot, offer)
+        try:
+            await update_channel_offer_message(callback.bot, offer)
+        except Exception as e:
+            logger.warning(f"Failed to update channel message after release for deal #{deal.id}: {e}")
         
     usdt_str = format_usdt(deal.amount_usdt)
     syp_str = format_syp(deal.amount_syp)
-    await callback.message.edit_text(
-        f"🎉 **صفقة #{deal.id} — تم الاعتماد والإطلاق بنجاح** ✅\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• القيمة المطلقة: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
-        f"• محفظة المستلم: 📥 `{deal.buyer_payout_address}`\n"
-        f"• معتمد التنفيذ: 👮 `{callback.from_user.id}`\n"
-        f"• الحالة النهائية: 🏁 مكتملة بنجاح\n"
-        f"━━━━━━━━━━━━━━━",
-        parse_mode="Markdown"
-    )
+    try:
+        await callback.message.edit_text(
+            f"🎉 **صفقة #{deal.id} — تم الاعتماد والإطلاق بنجاح** ✅\n\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"• القيمة المطلقة: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
+            f"• محفظة المستلم: 📥 `{deal.buyer_payout_address}`\n"
+            f"• معتمد التنفيذ: 👮 `{callback.from_user.id}`\n"
+            f"• الحالة النهائية: 🏁 مكتملة بنجاح\n"
+            f"━━━━━━━━━━━━━━━",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to edit admin message after release for deal #{deal.id}: {e}")
 
     # Notify Buyer and Seller of completion
     try:

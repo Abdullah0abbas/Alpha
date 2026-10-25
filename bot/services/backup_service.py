@@ -17,6 +17,7 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+BACKUP_FORMAT_VERSION = "3.2"
 BACKUP_DIR = os.path.join(os.getcwd(), "backups")
 
 def serialize_val(val):
@@ -217,7 +218,7 @@ async def create_database_backup() -> tuple[str, str, dict]:
     backup_payload = {
         "metadata": {
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "version": "2.8",
+            "version": BACKUP_FORMAT_VERSION,
             "table_stats": stats
         },
         "users": users_data,

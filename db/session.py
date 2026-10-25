@@ -16,7 +16,8 @@ engine = create_async_engine(
     pool_pre_ping=True,  # Ensures connections are alive before using them
     pool_recycle=1800,   # Recycle connections older than 30 minutes to prevent stale socket errors
     pool_timeout=30,     # Maximum 30 seconds wait for an available connection
-    echo=False
+    echo=False,
+    hide_parameters=True
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -110,21 +111,23 @@ async def ensure_schema_updated():
             try:
                 await conn.run_sync(Base.metadata.create_all)
             except Exception as meta_err:
-                logger.debug(f"Metadata create_all note: {meta_err}")
+                logger.warning(f"Metadata create_all notice: {meta_err}")
 
             # 2. Execute explicit DDLs to guarantee presence of tables & indexes
             for ddl in table_and_index_ddls:
                 try:
                     await conn.execute(text(ddl))
                 except Exception as ddl_err:
-                    logger.debug(f"DDL note: {ddl_err}")
+                    ddl_name = ddl.strip().splitlines()[0]
+                    logger.warning(f"Schema DDL warning [{ddl_name}]: {ddl_err}")
             
             # 3. Patch any missing columns on pre-existing tables
             for patch in column_patches:
                 try:
                     await conn.execute(text(patch))
                 except Exception as patch_err:
-                    logger.debug(f"Patch notice: {patch_err}")
+                    patch_name = patch.strip()
+                    logger.warning(f"Schema patch warning [{patch_name}]: {patch_err}")
                     
         logger.info("Database schema verified and all tables/columns synchronized successfully.")
     except Exception as e:

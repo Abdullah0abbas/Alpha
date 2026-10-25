@@ -16,10 +16,13 @@ from bot.middlewares.maintenance import get_cached_maintenance, set_cached_maint
 from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown
 from bot.utils.deal_views import format_admin_deal_review_text
 from bot.services.backup_service import perform_and_send_backup
-from bot.services.audit_service import record_audit, LOG_FILE
+import logging
+from bot.services.audit_service import record_audit, add_audit, LOG_FILE
 from db.models import AuditLog
 from config.settings import settings
 from bot.utils.branding import BOT_NAME
+
+logger = logging.getLogger(__name__)
 
 admin_router = Router()
 
@@ -218,21 +221,18 @@ async def cmd_admin_m_on(message: Message, db_session: AsyncSession):
         db_session.add(setting)
     else:
         setting.value = {"enabled": True}
+
+    add_audit(
+        session=db_session,
+        action="MAINTENANCE_MODE_ON",
+        target_type="system_setting",
+        target_id="maintenance_mode",
+        actor_id=message.from_user.id,
+        actor_type="ADMIN",
+        details={"enabled": True, "method": "command"}
+    )
     await db_session.commit()
     set_cached_maintenance(True)
-
-    try:
-        await record_audit(
-            session=db_session,
-            action="MAINTENANCE_MODE_ON",
-            target_type="system_setting",
-            target_id="maintenance_mode",
-            actor_id=message.from_user.id,
-            actor_type="ADMIN",
-            details={"enabled": True, "method": "command"}
-        )
-    except Exception:
-        pass
 
     await message.answer("🟢 **تم تفعيل وضع الصيانة بنجاح!**\nالوصول محصور بالأدمن فقط.", parse_mode="Markdown")
 
@@ -249,21 +249,18 @@ async def cmd_admin_m_off(message: Message, db_session: AsyncSession):
         db_session.add(setting)
     else:
         setting.value = {"enabled": False}
+
+    add_audit(
+        session=db_session,
+        action="MAINTENANCE_MODE_OFF",
+        target_type="system_setting",
+        target_id="maintenance_mode",
+        actor_id=message.from_user.id,
+        actor_type="ADMIN",
+        details={"enabled": False, "method": "command"}
+    )
     await db_session.commit()
     set_cached_maintenance(False)
-
-    try:
-        await record_audit(
-            session=db_session,
-            action="MAINTENANCE_MODE_OFF",
-            target_type="system_setting",
-            target_id="maintenance_mode",
-            actor_id=message.from_user.id,
-            actor_type="ADMIN",
-            details={"enabled": False, "method": "command"}
-        )
-    except Exception:
-        pass
 
     await message.answer("🔴 **تم تعطيل وضع الصيانة بنجاح!**\nالوصول متاح لجميع المستخدمين الآن.", parse_mode="Markdown")
 
@@ -425,21 +422,17 @@ async def cq_admin_toggle_ban(callback: CallbackQuery, db_session: AsyncSession)
         user.is_banned = False
         msg = f"تم إلغاء حظر المستخدم {target_id} بنجاح."
 
-    await db_session.commit()
+    add_audit(
+        session=db_session,
+        action="BAN_USER" if action == "ban" else "UNBAN_USER",
+        target_type="user",
+        target_id=target_id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"username": user.username, "action": action}
+    )
 
-    # Record Audit Trail for Ban/Unban
-    try:
-        await record_audit(
-            session=db_session,
-            action="BAN_USER" if action == "ban" else "UNBAN_USER",
-            target_type="user",
-            target_id=target_id,
-            actor_id=callback.from_user.id,
-            actor_type="ADMIN",
-            details={"username": user.username, "action": action}
-        )
-    except Exception as e:
-        pass
+    await db_session.commit()
 
     await callback.answer(msg, show_alert=True)
     await send_user_card(callback, user, is_edit=True)
@@ -522,6 +515,23 @@ async def process_broadcast_message(message: Message, state: FSMContext, db_sess
     )
     await status_msg.edit_text(summary_text, reply_markup=get_admin_back_kb(), parse_mode="Markdown")
 
+    try:
+        await record_audit(
+            session=db_session,
+            action="BROADCAST",
+            target_type="system",
+            target_id="broadcast",
+            actor_id=message.from_user.id,
+            actor_type="ADMIN",
+            details={
+                "total_recipients": total_recipients,
+                "success_count": success_count,
+                "fail_count": fail_count
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Failed to record audit for broadcast: {e}")
+
 # ================= 5. MAINTENANCE MODE TOGGLE =================
 
 @admin_router.callback_query(F.data == "admin_toggle_maintenance")
@@ -552,6 +562,16 @@ async def cq_admin_toggle_maintenance(callback: CallbackQuery, db_session: Async
         db_session.add(setting)
     else:
         setting.value = {"enabled": new_val}
+
+    add_audit(
+        session=db_session,
+        action="MAINTENANCE_MODE_ON" if new_val else "MAINTENANCE_MODE_OFF",
+        target_type="system_setting",
+        target_id="maintenance_mode",
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"enabled": new_val, "method": "button"}
+    )
 
     await db_session.commit()
     set_cached_maintenance(new_val)
