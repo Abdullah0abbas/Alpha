@@ -1,0 +1,6 @@
+{
+  "name": "P2P Telegram Bot",
+  "description": "Telegram bot for P2P trading and escrow mediation",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

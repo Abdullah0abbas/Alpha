@@ -1,0 +1,11 @@
+{
+  "name": "p2p-telegram-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram bot for P2P trading and escrow mediation",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "echo 'Build complete'"
+  }
+}

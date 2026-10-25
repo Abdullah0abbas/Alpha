@@ -1,0 +1,160 @@
+"""
+Formatting and Presentation utilities for Clean, Professional, and Accessible UI.
+Focuses on visual whitespace, elegant typography, humanized durations, and readable numbers.
+"""
+import re
+from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
+
+ARABIC_EASTERN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+def clean_numeric_input(raw_text: str | None) -> Decimal | None:
+    """
+    Intelligently cleans and parses user-entered amounts from Telegram chats:
+    - Converts Eastern Arabic (٠-٩) and Persian (۰-۹) numerals to standard ASCII.
+    - Strips currency keywords (USDT, SYP, $, ل.س, ليرة, دولار, etc.).
+    - Removes zero-width and directional formatting chars (RTL/LTR marks).
+    - Normalizes thousand separators and decimal points (e.g., 100,5 -> 100.5, 1,000,000 -> 1000000).
+    - Returns Decimal or None if invalid or non-positive.
+    """
+    if not raw_text:
+        return None
+
+    # 1. Translate Arabic/Persian digits
+    text = str(raw_text).translate(ARABIC_EASTERN_DIGITS)
+
+    # 2. Remove invisible unicode formatting marks
+    text = re.sub(r'[\u200e\u200f\u202a-\u202e\u200b-\u200d\ufeff]', '', text)
+
+    # 3. Strip common currency words and symbols
+    text = re.sub(r'(?i)(usdt|syp|usd|\$|ل\.س|ليرة|دولار|لير|سوري)', '', text)
+
+    # 4. Strip whitespace
+    text = text.strip()
+
+    # Replace Arabic comma '،' with ','
+    text = text.replace('،', ',')
+
+    if ',' in text and '.' in text:
+        if text.rfind(',') > text.rfind('.'):
+            # European format e.g. 1.000,50
+            text = text.replace('.', '').replace(',', '.')
+        else:
+            # Standard US format e.g. 1,000.50
+            text = text.replace(',', '')
+    elif ',' in text:
+        parts = text.split(',')
+        if len(parts) == 2 and len(parts[1]) in (1, 2) and parts[1].isdigit():
+            # Decimal point e.g. "100,5" or "100,25"
+            text = f"{parts[0]}.{parts[1]}"
+        elif all(len(p) == 3 for p in parts[1:]) and all(p.isdigit() for p in parts[1:]):
+            # Thousand separator e.g. "100,000" or "1,000,000"
+            text = "".join(parts)
+        else:
+            text = text.replace(',', '.')
+
+    # 5. Extract only valid numeric and dot characters
+    cleaned = re.sub(r'[^\d.]', '', text)
+    if not cleaned or cleaned.count('.') > 1:
+        return None
+
+    try:
+        val = Decimal(cleaned)
+        if val <= Decimal("0"):
+            return None
+        return val
+    except (InvalidOperation, Exception):
+        return None
+
+def format_syp(amount) -> str:
+    """Format SYP amount with required thousand separators and no decimals."""
+    try:
+        val = int(round(Decimal(str(amount))))
+        return f"{val:,}"
+    except Exception:
+        return str(amount)
+
+def format_usdt(amount) -> str:
+    """Format USDT amount cleanly with up to 2 decimals, trimming trailing zeros."""
+    try:
+        val = Decimal(str(amount))
+        formatted = f"{val:.2f}".rstrip('0').rstrip('.')
+        return formatted if formatted else "0"
+    except Exception:
+        return str(amount)
+
+AVAILABLE_PAYMENT_METHODS = ["شام كاش", "سيريتل كاش", "بيمو", "كاش", "تحويل بنكي"]
+
+PAYMENT_METHOD_ICONS = {
+    "شام كاش": "💳 شام كاش",
+    "سيريتل كاش": "📱 سيريتل كاش",
+    "بيمو": "🏦 بنك بيمو",
+    "كاش": "💵 كاش يداً بيد",
+    "تحويل بنكي": "🏛️ تحويل بنكي",
+}
+
+def format_payment_methods(methods: list[str] | None) -> str:
+    if not methods:
+        return "غير محدد"
+    return "، ".join(PAYMENT_METHOD_ICONS.get(m, m) for m in methods)
+
+def humanize_time_remaining(expires_at: datetime | None, default_str: str = "غير محدد") -> str:
+    """
+    Returns a clean, human-friendly duration like '3 ساعات و 45 دقيقة' or '14 دقيقة'
+    instead of raw UTC timestamps.
+    """
+    if not expires_at:
+        return default_str
+        
+    now = datetime.now(timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+        
+    diff = expires_at - now
+    total_seconds = int(diff.total_seconds())
+    
+    if total_seconds <= 0:
+        return "منتهية"
+        
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    
+    if hours > 0:
+        if minutes > 0:
+            return f"{hours} ساعة و {minutes} دقيقة"
+        return f"{hours} ساعة"
+    elif minutes > 0:
+        return f"{minutes} دقيقة"
+    else:
+        return "أقل من دقيقة"
+
+def escape_markdown(text: str | None, version: int = 1) -> str:
+    """
+    Safely escapes characters with special meaning in Telegram Markdown formatting.
+    Prevents 'Can't parse entities' errors when user-submitted text contains characters
+    like '_', '*', '`', '[', ']', '(', ')', etc.
+    """
+    if not text:
+        return ""
+    text_str = str(text)
+    if version == 1:
+        # Standard Telegram legacy Markdown escapes
+        escape_chars = r'_*`['
+        return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text_str)
+    else:
+        # MarkdownV2 escapes
+        escape_chars = r'_*[]()~`>#+-=|{}.!'
+        return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text_str)
+
+def safe_username(username: str | None, user_id: int | None = None) -> str:
+    """
+    Returns a markdown-safe username or ID representation:
+    e.g., '@abdullah\\_abbas' or '123456789'
+    """
+    if username:
+        escaped_user = escape_markdown(username.lstrip('@'))
+        return f"@{escaped_user}"
+    elif user_id:
+        return f"`{user_id}`"
+    return "مستخدم غير متاح"
+
