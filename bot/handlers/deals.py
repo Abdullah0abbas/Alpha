@@ -18,7 +18,7 @@ from aiogram import Bot
 from bot.services.channel import update_channel_offer_message
 from bot.utils.deal_views import format_admin_deal_review_text
 from bot.utils.deal_guard import acquire_deal_lock
-from bot.utils.validators import validate_bep20_address
+from bot.utils.validators import validate_bep20_address, validate_payment_method_info
 from bot.utils.branding import BOT_NAME
 from bot.utils.formatters import (
     escape_markdown,
@@ -775,23 +775,131 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
         await callback.answer()
         return
 
-    # Fallback to direct input via FSM if no saved info
-    await state.set_state(DealPaymentFSM.waiting_for_seller_account)
-    await state.update_data(deal_id=deal.id)
-
+    # Show payment method selection keyboard for seller
     await callback.message.edit_text(
         f"🔒 **صفقة #{deal.id} — تم تأكيد وحجز الضمان بنجاح**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"• دورك: 🔴 بائع USDT\n"
         f"• رصيد الضمان المحجوز: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
         f"━━━━━━━━━━━━━━━\n\n"
-        f"⌨️ أدخل الآن تفاصيل حسابك لاستلام الليرة السورية\n"
-        f"(مثال: سيريتل كاش، شام كاش، أو الحساب البنكي) ليتم تزويد المشتري بها فوراً:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-        ]),
+        f"اختر وسيلة الدفع التي ترغب باستلام الليرة السورية عبرها:",
+        reply_markup=get_deal_payment_methods_kb(deal.id),
         parse_mode="Markdown"
     )
+    await callback.answer()
+
+
+def get_deal_payment_methods_kb(deal_id: int) -> InlineKeyboardMarkup:
+    """Builds clean, deduplicated payment method buttons for a deal."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💳 شام كاش ليرة", callback_data=f"deal_pm_sham_lira_{deal_id}"),
+            InlineKeyboardButton(text="💵 شام كاش دولار", callback_data=f"deal_pm_sham_usd_{deal_id}")
+        ],
+        [
+            InlineKeyboardButton(text="📱 سيريتيل كاش", callback_data=f"deal_pm_syriatel_{deal_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🏛️ حوالة بنكية (الهرم)", callback_data=f"deal_pm_haram_{deal_id}"),
+            InlineKeyboardButton(text="🏢 حوالة بنكية (الفؤاد)", callback_data=f"deal_pm_fouad_{deal_id}")
+        ],
+        [
+            InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")
+        ]
+    ])
+
+
+DEAL_PM_PROMPTS = {
+    "sham_lira": {
+        "name": "شام كاش ليرة",
+        "prompt": (
+            "💳 **صفقة #{deal_id} — إدخال حساب: شام كاش ليرة**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال عنوان حساب شام كاش الخاص بك (مكوّن من 32 خانة هكسا).\n\n"
+            "📋 **مثال صالح:**\n"
+            "`82b2a4fafc335c4f39c58910248c63d1`"
+        )
+    },
+    "sham_usd": {
+        "name": "شام كاش دولار",
+        "prompt": (
+            "💵 **صفقة #{deal_id} — إدخال حساب: شام كاش دولار**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال عنوان حساب شام كاش الخاص بك (مكوّن من 32 خانة هكسا).\n\n"
+            "📋 **مثال صالح:**\n"
+            "`82b2a4fafc335c4f39c58910248c63d1`"
+        )
+    },
+    "syriatel": {
+        "name": "سيريتيل كاش",
+        "prompt": (
+            "📱 **صفقة #{deal_id} — إدخال حساب: سيريتيل كاش**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال رقم سيريتيل كاش الخاص بك (رقم سوري مكوّن من 10 أرقام يبدأ بـ 09).\n\n"
+            "📋 **مثال صالح:**\n"
+            "`0932063758`"
+        )
+    },
+    "haram": {
+        "name": "حوالة بنكية (الهرم)",
+        "prompt": (
+            "🏛️ **صفقة #{deal_id} — إدخال بيانات: حوالة بنكية (الهرم)**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال الاسم الثلاثي ورقم الموبايل الخاص بك لاستلام الحوالة.\n\n"
+            "📋 **مثال صالح:**\n"
+            "`محمد أحمد العلي - 0932063758`"
+        )
+    },
+    "fouad": {
+        "name": "حوالة بنكية (الفؤاد)",
+        "prompt": (
+            "🏢 **صفقة #{deal_id} — إدخال بيانات: حوالة بنكية (الفؤاد)**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال الاسم الثلاثي ورقم الموبايل الخاص بك لاستلام الحوالة.\n\n"
+            "📋 **مثال صالح:**\n"
+            "`محمد أحمد العلي - 0932063758`"
+        )
+    },
+}
+
+
+@deals_router.callback_query(F.data.startswith("deal_pm_"))
+async def cq_deal_choose_payment_method(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
+    parts = callback.data.split("_")
+    deal_id = int(parts[-1])
+    method_key = "_".join(parts[2:-1])
+
+    pm_info = DEAL_PM_PROMPTS.get(method_key)
+    if not pm_info:
+        await callback.answer("طريقة دفع غير معروفة.", show_alert=True)
+        return
+
+    valid, deal, err_code, err_msg = await acquire_deal_lock(
+        deal_id=deal_id,
+        user_id=callback.from_user.id,
+        expected_statuses=["USDT_DEPOSITED", "AWAITING_USDT_DEPOSIT", "AWAITING_SYP_PAYMENT"],
+        allowed_roles="seller",
+        db_session=db_session
+    )
+    if not valid:
+        await callback.answer(err_msg, show_alert=True)
+        return
+
+    await db_session.commit()
+
+    await state.set_state(DealPaymentFSM.waiting_for_seller_account)
+    await state.update_data(deal_id=deal_id, selected_pm=pm_info["name"])
+
+    prompt_text = pm_info["prompt"].format(deal_id=deal_id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+    ])
+    try:
+        sent_msg = await callback.message.edit_text(prompt_text, reply_markup=kb, parse_mode="Markdown")
+        await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
+    except Exception:
+        sent_msg = await callback.message.answer(prompt_text, reply_markup=kb, parse_mode="Markdown")
+        await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
     await callback.answer()
 
 
@@ -839,21 +947,15 @@ async def start_set_seller_info(callback: CallbackQuery, state: FSMContext, db_s
         await callback.answer()
         return
 
-    # Fallback to direct input if no saved info
-    await state.set_state(DealPaymentFSM.waiting_for_seller_account)
-    await state.update_data(deal_id=deal_id)
-
+    # Fallback to method selection if no saved info
     curr_info = deal.seller_payment_info.get("info", "") if isinstance(deal.seller_payment_info, dict) else ""
     curr_info_str = f"\n• البيانات المسجلة حالياً: `{escape_markdown(curr_info)}`" if curr_info and curr_info not in ["PENDING", "غير محدد", "N/A"] else ""
 
     await callback.message.answer(
-        f"💳 **صفقة #{deal.id} — إدخال حساب استلام الليرة (SYP)**\n\n"
+        f"💳 **صفقة #{deal.id} — حساب استلام الليرة (SYP)**\n\n"
         f"━━━━━━━━━━━━━━━{curr_info_str}\n"
-        f"أدخل تفاصيل حسابك لاستلام الدفعة بالليرة السورية\n"
-        f"(مثال: سيريتل كاش، شام كاش، الهرم، الفؤاد، أو رقم الحساب البنكي):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-        ]),
+        f"اختر وسيلة الدفع التي ترغب باستلام الدفعة عبرها:",
+        reply_markup=get_deal_payment_methods_kb(deal.id),
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -896,7 +998,7 @@ async def cq_manual_set_seller_info(callback: CallbackQuery, state: FSMContext, 
     valid, deal, err_code, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
-        expected_statuses="USDT_DEPOSITED",
+        expected_statuses=["USDT_DEPOSITED", "AWAITING_USDT_DEPOSIT", "AWAITING_SYP_PAYMENT"],
         allowed_roles="seller",
         db_session=db_session
     )
@@ -904,21 +1006,15 @@ async def cq_manual_set_seller_info(callback: CallbackQuery, state: FSMContext, 
         await callback.answer(err_msg, show_alert=True)
         return
 
-    await state.set_state(DealPaymentFSM.waiting_for_seller_account)
-    await state.update_data(deal_id=deal_id)
-
     # Release row lock before Telegram calls without expiring attributes
     await db_session.commit()
 
     text = (
-        f"💳 **صفقة #{deal.id} — إدخال بيانات جديدة لحساب استلام الليرة (SYP)**\n\n"
+        f"💳 **صفقة #{deal.id} — اختيار وسيلة استلام الليرة (SYP)**\n\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"أدخل تفاصيل حسابك الجديد لاستلام الدفعة الخاصة بهذه الصفقة\n"
-        f"(مثال: سيريتل كاش، شام كاش، الهرم، الفؤاد، أو رقم الحساب البنكي):"
+        f"اختر وسيلة الدفع التي ترغب باعتمادها لهذه الصفقة:"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-    ])
+    kb = get_deal_payment_methods_kb(deal.id)
     try:
         sent_msg = await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
@@ -937,15 +1033,28 @@ async def process_set_seller_info(message: Message, state: FSMContext, db_sessio
 
     data = await state.get_data()
     deal_id = data.get('deal_id')
+    selected_pm = data.get('selected_pm')
     if not deal_id:
         await message.answer("حدث خطأ في استعادة بيانات الجلسة.")
         await state.clear()
         return
 
+    is_valid, formatted_info, err_msg = validate_payment_method_info(selected_pm, info_text)
+    if not is_valid:
+        warn_msg = await message.answer(
+            f"{err_msg}\n\nيرجى إعادة إدخال البيانات بالشكل المطلوب أو الضغط على إلغاء:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+            ]),
+            parse_mode="Markdown"
+        )
+        await state.update_data(prompt_msg_id=warn_msg.message_id, prompt_chat_id=warn_msg.chat.id)
+        return
+
     valid, deal, err_code, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=message.from_user.id,
-        expected_statuses="USDT_DEPOSITED",
+        expected_statuses=["USDT_DEPOSITED", "AWAITING_USDT_DEPOSIT", "AWAITING_SYP_PAYMENT"],
         allowed_roles="seller",
         db_session=db_session
     )
@@ -958,7 +1067,7 @@ async def process_set_seller_info(message: Message, state: FSMContext, db_sessio
     await state.clear()
     await apply_seller_payment_info(
         deal=deal,
-        info_text=info_text,
+        info_text=formatted_info,
         bot=message.bot,
         db_session=db_session,
         event=message

@@ -83,20 +83,40 @@ def format_usdt(amount) -> str:
     except Exception:
         return str(amount)
 
-AVAILABLE_PAYMENT_METHODS = ["شام كاش", "سيريتل كاش", "بيمو", "كاش", "تحويل بنكي"]
+AVAILABLE_PAYMENT_METHODS = [
+    "شام كاش ليرة",
+    "شام كاش دولار",
+    "سيريتيل كاش",
+    "حوالة بنكية (الهرم)",
+    "حوالة بنكية (الفؤاد)",
+]
 
 PAYMENT_METHOD_ICONS = {
-    "شام كاش": "💳 شام كاش",
-    "سيريتل كاش": "📱 سيريتل كاش",
-    "بيمو": "🏦 بنك بيمو",
-    "كاش": "💵 كاش يداً بيد",
-    "تحويل بنكي": "🏛️ تحويل بنكي",
+    "شام كاش ليرة": "💳",
+    "شام كاش دولار": "💵",
+    "سيريتيل كاش": "📱",
+    "حوالة بنكية (الهرم)": "🏛️",
+    "حوالة بنكية (الفؤاد)": "🏢",
+    # Legacy aliases for backwards compatibility with pre-existing offers
+    "شام كاش": "💳",
+    "سيريتل كاش": "📱",
+    "بيمو": "🏦",
+    "كاش": "💵",
+    "تحويل بنكي": "🏛️",
 }
 
 def format_payment_methods(methods: list[str] | None) -> str:
     if not methods:
         return "غير محدد"
-    return "، ".join(PAYMENT_METHOD_ICONS.get(m, m) for m in methods)
+    formatted = []
+    for m in methods:
+        m_str = str(m).strip()
+        icon = PAYMENT_METHOD_ICONS.get(m_str, "💳")
+        if m_str.startswith(icon):
+            formatted.append(m_str)
+        else:
+            formatted.append(f"{icon} {m_str}")
+    return "، ".join(formatted)
 
 def humanize_time_remaining(expires_at: datetime | None, default_str: str = "غير محدد") -> str:
     """

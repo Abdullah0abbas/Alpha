@@ -83,6 +83,78 @@ class TestValidators(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("فارغ", err)
 
+    def test_sham_cash_validator(self):
+        from bot.utils.validators import validate_sham_cash_address
+        valid_addr = "82b2a4fafc335c4f39c58910248c63d1"
+        ok, norm, err = validate_sham_cash_address(valid_addr)
+        self.assertTrue(ok)
+        self.assertEqual(norm, valid_addr)
+        self.assertEqual(err, "")
+
+        # Uppercase
+        ok, norm, _ = validate_sham_cash_address(valid_addr.upper())
+        self.assertTrue(ok)
+        self.assertEqual(norm, valid_addr)
+
+        # Invalid lengths and characters
+        self.assertFalse(validate_sham_cash_address("82b2a4fafc")[0])
+        self.assertFalse(validate_sham_cash_address("82b2a4fafc335c4f39c58910248c63d1extra")[0])
+        self.assertFalse(validate_sham_cash_address("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")[0])
+        self.assertFalse(validate_sham_cash_address("")[0])
+
+    def test_syriatel_cash_validator(self):
+        from bot.utils.validators import validate_syriatel_cash_number
+        phone = "0932063758"
+        ok, norm, err = validate_syriatel_cash_number(phone)
+        self.assertTrue(ok)
+        self.assertEqual(norm, phone)
+
+        # With international prefixes and spaces
+        ok, norm, _ = validate_syriatel_cash_number("+963 932 063 758")
+        self.assertTrue(ok)
+        self.assertEqual(norm, phone)
+
+        ok, norm, _ = validate_syriatel_cash_number("00963932063758")
+        self.assertTrue(ok)
+        self.assertEqual(norm, phone)
+
+        # Invalid
+        self.assertFalse(validate_syriatel_cash_number("0932063")[0])
+        self.assertFalse(validate_syriatel_cash_number("0832063758")[0])
+        self.assertFalse(validate_syriatel_cash_number("093206375899")[0])
+
+    def test_bank_transfer_validator(self):
+        from bot.utils.validators import validate_bank_transfer_info
+        raw = "محمد أحمد العلي - 0932063758"
+        ok, norm, err = validate_bank_transfer_info(raw)
+        self.assertTrue(ok)
+        self.assertIn("محمد أحمد العلي", norm)
+        self.assertIn("0932063758", norm)
+
+        # Missing phone
+        self.assertFalse(validate_bank_transfer_info("محمد أحمد العلي")[0])
+        # Missing triple name (only 1 or 2 names)
+        self.assertFalse(validate_bank_transfer_info("محمد 0932063758")[0])
+        self.assertFalse(validate_bank_transfer_info("محمد أحمد 0932063758")[0])
+
+    def test_unified_payment_method_info(self):
+        from bot.utils.validators import validate_payment_method_info
+        # Sham cash
+        ok, norm, _ = validate_payment_method_info("شام كاش ليرة", "82b2a4fafc335c4f39c58910248c63d1")
+        self.assertTrue(ok)
+        self.assertIn("82b2a4fafc335c4f39c58910248c63d1", norm)
+
+        # Syriatel cash
+        ok, norm, _ = validate_payment_method_info("سيريتيل كاش", "0932063758")
+        self.assertTrue(ok)
+        self.assertIn("0932063758", norm)
+
+        # Bank transfer
+        ok, norm, _ = validate_payment_method_info("حوالة بنكية (الهرم)", "أحمد محمود حسن 0932063758")
+        self.assertTrue(ok)
+        self.assertIn("أحمد محمود حسن", norm)
+
 
 if __name__ == "__main__":
     unittest.main()
+

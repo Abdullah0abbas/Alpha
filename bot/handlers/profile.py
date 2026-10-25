@@ -10,7 +10,7 @@ from sqlalchemy import func
 from db.models import User, Deal, Offer
 from bot.states.flow_states import ProfileFSM
 from bot.utils.formatters import escape_markdown, safe_username, format_usdt
-from bot.utils.validators import validate_bep20_address
+from bot.utils.validators import validate_bep20_address, validate_payment_method_info
 from bot.utils.branding import BOT_NAME
 from config.settings import settings
 
@@ -241,6 +241,64 @@ async def process_saved_usdt(message: Message, state: FSMContext, db_session: As
     )
 
 # ================= 3. PAYMENT INFO MANAGEMENT =================
+PAYMENT_METHOD_PROMPTS = {
+    "prof_pm_sham_lira": {
+        "name": "شام كاش ليرة",
+        "icon": "💳",
+        "prompt": (
+            "💳 **إعداد حساب استلام: شام كاش ليرة**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال عنوان حساب شام كاش الخاص بك (مكوّن من 32 خانة هكسا).\n\n"
+            "📋 **مثال صالح:**\n"
+            "`82b2a4fafc335c4f39c58910248c63d1`"
+        )
+    },
+    "prof_pm_sham_usd": {
+        "name": "شام كاش دولار",
+        "icon": "💵",
+        "prompt": (
+            "💵 **إعداد حساب استلام: شام كاش دولار**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال عنوان حساب شام كاش الخاص بك (مكوّن من 32 خانة هكسا).\n\n"
+            "📋 **مثال صالح:**\n"
+            "`82b2a4fafc335c4f39c58910248c63d1`"
+        )
+    },
+    "prof_pm_syriatel": {
+        "name": "سيريتيل كاش",
+        "icon": "📱",
+        "prompt": (
+            "📱 **إعداد حساب استلام: سيريتيل كاش**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال رقم سيريتيل كاش الخاص بك (رقم سوري مكوّن من 10 أرقام يبدأ بـ 09).\n\n"
+            "📋 **مثال صالح:**\n"
+            "`0932063758`"
+        )
+    },
+    "prof_pm_haram": {
+        "name": "حوالة بنكية (الهرم)",
+        "icon": "🏛️",
+        "prompt": (
+            "🏛️ **إعداد حساب استلام: حوالة بنكية (الهرم)**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال الاسم الثلاثي ورقم الموبايل الخاص بك لاستلام الحوالة.\n\n"
+            "📋 **مثال صالح:**\n"
+            "`محمد أحمد العلي - 0932063758`"
+        )
+    },
+    "prof_pm_fouad": {
+        "name": "حوالة بنكية (الفؤاد)",
+        "icon": "🏢",
+        "prompt": (
+            "🏢 **إعداد حساب استلام: حوالة بنكية (الفؤاد)**\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "يرجى إرسال الاسم الثلاثي ورقم الموبايل الخاص بك لاستلام الحوالة.\n\n"
+            "📋 **مثال صالح:**\n"
+            "`محمد أحمد العلي - 0932063758`"
+        )
+    },
+}
+
 @profile_router.callback_query(F.data == "prof_payment")
 async def cq_prof_payment(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
     user_id = callback.from_user.id
@@ -249,33 +307,70 @@ async def cq_prof_payment(callback: CallbackQuery, state: FSMContext, db_session
     
     current_acc = escape_markdown(user.saved_payment_info) if user and user.saved_payment_info else "لم يتم التعيين بعد"
 
-    await state.set_state(ProfileFSM.waiting_for_payment_info)
     text = (
-        f"💳 **إدارة حساب استلام الليرة السورية**\n\n"
+        f"💳 **إدارة حساب استلام المستحقات المالية**\n\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"الحساب المحفوظ حالياً:\n`{current_acc}`\n\n"
-        f"يتم تزويد المشتري بهذا الحساب تلقائياً عند بيعك لـ USDT (مثال: شام كاش، سيريتل كاش، بيمو، الهرم).\n\n"
-        f"✍️ **لتحديث بياناتك:** أرسل تفاصيل الحساب ورقم الهاتف المعتمد الآن:"
+        f"• الحساب المحفوظ حالياً:\n`{current_acc}`\n\n"
+        f"يتم تزويد المشتري بهذا الحساب تلقائياً عند بيعك لـ USDT لتسريع إتمام المعاملة.\n\n"
+        f"اختر وسيلة الدفع التي ترغب في تعيينها أو تحديثها أدناه:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ إلغاء", callback_data="menu_user_profile")]
+        [
+            InlineKeyboardButton(text="💳 شام كاش ليرة", callback_data="prof_pm_sham_lira"),
+            InlineKeyboardButton(text="💵 شام كاش دولار", callback_data="prof_pm_sham_usd")
+        ],
+        [
+            InlineKeyboardButton(text="📱 سيريتيل كاش", callback_data="prof_pm_syriatel")
+        ],
+        [
+            InlineKeyboardButton(text="🏛️ حوالة بنكية (الهرم)", callback_data="prof_pm_haram"),
+            InlineKeyboardButton(text="🏢 حوالة بنكية (الفؤاد)", callback_data="prof_pm_fouad")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 العودة للملف الشخصي", callback_data="menu_user_profile")
+        ]
     ])
     try:
-        sent_msg = await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+@profile_router.callback_query(F.data.startswith("prof_pm_"))
+async def cq_prof_choose_payment_method(callback: CallbackQuery, state: FSMContext):
+    key = callback.data
+    info = PAYMENT_METHOD_PROMPTS.get(key)
+    if not info:
+        await callback.answer("طريقة دفع غير معروفة.", show_alert=True)
+        return
+
+    await state.set_state(ProfileFSM.waiting_for_payment_info)
+    await state.update_data(selected_pm=info["name"])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="prof_payment")]
+    ])
+    try:
+        sent_msg = await callback.message.edit_text(info["prompt"], reply_markup=kb, parse_mode="Markdown")
         await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
     except Exception:
-        sent_msg = await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        sent_msg = await callback.message.answer(info["prompt"], reply_markup=kb, parse_mode="Markdown")
         await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
     await callback.answer()
 
 @profile_router.message(ProfileFSM.waiting_for_payment_info)
 async def process_saved_payment_info(message: Message, state: FSMContext, db_session: AsyncSession):
-    info = message.text.strip() if message.text else ""
-    if len(info) < 5:
+    data = await state.get_data()
+    selected_pm = data.get("selected_pm")
+    raw_text = message.text.strip() if message.text else ""
+
+    is_valid, formatted_info, err_msg = validate_payment_method_info(selected_pm, raw_text)
+
+    if not is_valid:
         warn_msg = await message.answer(
-            "⚠️ يرجى إرسال تفاصيل واضحة لحساب الدفع:",
+            f"{err_msg}\n\nيرجى إعادة المحاولة أو الضغط على إلغاء:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ إلغاء", callback_data="menu_user_profile")]
+                [InlineKeyboardButton(text="❌ إلغاء", callback_data="prof_payment")]
             ]),
             parse_mode="Markdown"
         )
@@ -285,12 +380,12 @@ async def process_saved_payment_info(message: Message, state: FSMContext, db_ses
     res = await db_session.execute(select(User).where(User.telegram_id == message.from_user.id))
     user = res.scalar_one_or_none()
     if user:
-        user.saved_payment_info = info
+        user.saved_payment_info = formatted_info
         await db_session.commit()
 
     await state.clear()
     await message.answer(
-        f"✅ **تم تحديث بيانات حساب الدفع بنجاح!**\n\n`{escape_markdown(info)}`",
+        f"✅ **تم حفظ بيانات حساب الدفع بنجاح!**\n\n`{escape_markdown(formatted_info)}`",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="👤 العودة للملف الشخصي", callback_data="menu_user_profile")]
         ]),
