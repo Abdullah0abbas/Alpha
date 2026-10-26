@@ -17,6 +17,8 @@ from bot.utils.transitions import (
     can_admin_release_escrow,
     get_next_deal_status_after_syp_confirmed,
     SELLER_INFO_ALLOWED_STATUSES,
+    should_release_orphan_offer,
+    can_user_interact_with_offer,
 )
 
 
@@ -224,6 +226,42 @@ class TestTransitions(unittest.TestCase):
         self.assertEqual(SELLER_INFO_ALLOWED_STATUSES, ("USDT_DEPOSITED",))
         self.assertNotIn("AWAITING_USDT_DEPOSIT", SELLER_INFO_ALLOWED_STATUSES)
         self.assertNotIn("AWAITING_SYP_PAYMENT", SELLER_INFO_ALLOWED_STATUSES)
+
+    def test_should_release_orphan_offer(self):
+        eleven_mins_ago = self.now - timedelta(minutes=11)
+        five_mins_ago = self.now - timedelta(minutes=5)
+
+        # Reserved offer with no live deal or negotiation and >10m elapsed -> release
+        self.assertTrue(should_release_orphan_offer("reserved", False, False, eleven_mins_ago, self.now))
+
+        # Negotiating offer with no live deal or negotiation and >10m elapsed -> release
+        self.assertTrue(should_release_orphan_offer("negotiating", False, False, eleven_mins_ago, self.now))
+
+        # Active offer -> do not release
+        self.assertFalse(should_release_orphan_offer("active", False, False, eleven_mins_ago, self.now))
+
+        # Has live deal -> do not release
+        self.assertFalse(should_release_orphan_offer("reserved", True, False, eleven_mins_ago, self.now))
+
+        # Has live negotiation -> do not release
+        self.assertFalse(should_release_orphan_offer("negotiating", False, True, eleven_mins_ago, self.now))
+
+        # Elapsed time less than 10 mins -> do not release
+        self.assertFalse(should_release_orphan_offer("reserved", False, False, five_mins_ago, self.now))
+
+        # status_changed_at is None -> do not release
+        self.assertFalse(should_release_orphan_offer("reserved", False, False, None, self.now))
+
+    def test_can_user_interact_with_offer(self):
+        # Same user -> forbidden
+        can_int, msg = can_user_interact_with_offer(offer_user_id=1001, user_id=1001)
+        self.assertFalse(can_int)
+        self.assertIn("بنفسك", msg)
+
+        # Different user -> allowed
+        can_int, msg = can_user_interact_with_offer(offer_user_id=1001, user_id=2002)
+        self.assertTrue(can_int)
+        self.assertEqual(msg, "")
 
 
 if __name__ == "__main__":

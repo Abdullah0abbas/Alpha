@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -40,6 +40,7 @@ class Offer(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     negotiable: Mapped[bool] = mapped_column(Boolean, server_default="false", default=False)
     negotiable_type: Mapped[str] = mapped_column(String, server_default="none", default="none")
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
@@ -71,9 +72,22 @@ class Deal(Base):
     
     # Expiry timestamp (15 minutes after entering AWAITING_USDT_DEPOSIT in v2.6)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    seller_card_msg_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    buyer_card_msg_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        CheckConstraint("seller_id <> buyer_id", name="chk_deals_different_parties"),
+        Index(
+            "uq_open_deal_per_offer",
+            "offer_id",
+            unique=True,
+            postgresql_where=text("status NOT IN ('CANCELLED','EXPIRED','COMPLETED')")
+        ),
+    )
 
 class PaymentProof(Base):
     __tablename__ = "payment_proofs"
@@ -128,6 +142,15 @@ class Negotiation(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index(
+            "uq_open_negotiation_per_offer",
+            "offer_id",
+            unique=True,
+            postgresql_where=text("status IN ('PENDING_MAKER','PENDING_TAKER')")
+        ),
+    )
 
 class SystemSetting(Base):
     __tablename__ = "system_settings"

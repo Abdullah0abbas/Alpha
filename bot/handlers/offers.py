@@ -376,7 +376,8 @@ async def _create_and_publish_offer(message: Message, state: FSMContext, db_sess
         negotiable=data.get('negotiable', False),
         negotiable_type=data.get('negotiable_type', 'none'),
         expires_at=expires_at,
-        status="active"
+        status="active",
+        status_changed_at=now
     )
     db_session.add(new_offer)
     await db_session.commit()
@@ -444,6 +445,8 @@ async def _create_and_publish_offer(message: Message, state: FSMContext, db_sess
         except Exception as e:
             print(f"Failed to broadcast to channel: {e}")
 
+from bot.utils.deal_views import build_offer_action_buttons
+
 @offers_router.message(Command("offers"))
 async def list_offers(message: Message, db_session: AsyncSession):
     result = await db_session.execute(select(Offer).where(Offer.status == "active").order_by(Offer.created_at.desc()).limit(10))
@@ -461,12 +464,14 @@ async def list_offers(message: Message, db_session: AsyncSession):
         return
         
     for offer in offers:
-        buttons = [
-            [InlineKeyboardButton(text="⚡ تنفيذ فوري بالسعر الحالي", callback_data=f"start_deal_{offer.id}")]
-        ]
-        if offer.negotiable and offer.negotiable_type != "none":
-            buttons.append([InlineKeyboardButton(text="🤝 تقديم طلب تفاوض", callback_data=f"start_neg_{offer.id}")])
-
+        buttons = build_offer_action_buttons(
+            offer_id=offer.id,
+            offer_user_id=offer.user_id,
+            viewer_id=message.from_user.id,
+            negotiable=offer.negotiable,
+            negotiable_type=offer.negotiable_type,
+            context="offers"
+        )
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         rate_str = format_syp(offer.rate)
         min_str = format_usdt(offer.min_limit)
@@ -517,6 +522,7 @@ async def handle_delete_offer(callback: CallbackQuery, db_session: AsyncSession)
         return
 
     offer.status = "cancelled"
+    offer.status_changed_at = datetime.now(timezone.utc)
     await db_session.commit()
 
     from bot.handlers.deals import update_channel_offer_message
@@ -612,6 +618,7 @@ async def handle_extend_offer_duration(callback: CallbackQuery, db_session: Asyn
 
     now = datetime.now(timezone.utc)
     offer.status = "active"
+    offer.status_changed_at = now
     offer.expires_at = now + timedelta(hours=hours)
     await db_session.commit()
 

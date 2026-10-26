@@ -196,3 +196,41 @@ def get_next_deal_status_after_syp_confirmed(current_status: str) -> Optional[st
     return None
 
 
+def should_release_orphan_offer(
+    status: str,
+    has_live_deal: bool,
+    has_live_negotiation: bool,
+    status_changed_at: Optional[datetime],
+    now: Optional[datetime] = None
+) -> bool:
+    """
+    Pure validator that determines if a 'reserved' or 'negotiating' offer has become
+    an orphan (no active Deal and no active Negotiation) and 10 minutes have elapsed since last status change.
+    """
+    if status not in ("reserved", "negotiating"):
+        return False
+    if has_live_deal or has_live_negotiation:
+        return False
+    if status_changed_at is None:
+        return False
+    current_time = now or datetime.now(timezone.utc)
+    if status_changed_at.tzinfo is None:
+        status_changed_at = status_changed_at.replace(tzinfo=timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+
+    elapsed_seconds = (current_time - status_changed_at).total_seconds()
+    return elapsed_seconds >= 600
+
+
+def can_user_interact_with_offer(offer_user_id: int, user_id: int) -> Tuple[bool, str]:
+    """
+    Validates that a user cannot trade or negotiate on their own offer.
+    Returns (can_interact, reason_ar).
+    """
+    if offer_user_id == user_id:
+        return False, "عذراً، لا يمكنك إجراء صفقة أو تفاوض على عرض قمت بإنشائه بنفسك."
+    return True, ""
+
+
+

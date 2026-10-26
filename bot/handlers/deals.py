@@ -8,7 +8,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_, func, text
+from sqlalchemy import or_, func, text, update
+from sqlalchemy.exc import IntegrityError
 
 from db.models import Deal, Offer, User
 from bot.states.flow_states import DealCreateFSM, DealPaymentFSM
@@ -17,6 +18,7 @@ from config.settings import settings
 from aiogram import Bot
 from bot.services.channel import update_channel_offer_message
 from bot.utils.deal_views import format_admin_deal_review_text
+from bot.utils.deal_card import push_deal_card, render_deal_card
 from bot.utils.deal_guard import acquire_deal_lock
 from bot.utils.validators import validate_bep20_address, validate_payment_method_info
 from bot.utils.branding import BOT_NAME
@@ -34,7 +36,8 @@ from bot.utils.transitions import (
     can_seller_confirm_syp,
     can_admin_release_escrow,
     get_next_deal_status_after_syp_confirmed,
-    SELLER_INFO_ALLOWED_STATUSES
+    SELLER_INFO_ALLOWED_STATUSES,
+    can_user_interact_with_offer
 )
 
 logger = logging.getLogger(__name__)
@@ -73,21 +76,22 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
 
     offer_id = int(callback.data.split("_")[-1])
     result = await db_session.execute(
-        select(Offer).where(Offer.id == offer_id).with_for_update()
+        select(Offer).where(Offer.id == offer_id)
     )
     offer = result.scalar_one_or_none()
     
     if not offer:
         await callback.answer("عذراً، لم يتم العثور على العرض.", show_alert=True)
         return
-        
+
+    allowed, err_msg = can_user_interact_with_offer(offer.user_id, callback.from_user.id)
+    if not allowed:
+        await callback.answer(err_msg, show_alert=True)
+        return
+
     if offer.status != "active":
         await callback.answer("عذراً، هذا العرض لم يعد متاحاً للتداول حالياً.", show_alert=True)
         return
-        
-    offer.status = "reserved"
-    await db_session.commit()
-    await update_channel_offer_message(callback.bot, offer)
         
     await state.update_data(
         offer_id=offer.id, 
@@ -125,6 +129,7 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
         parse_mode="Markdown"
     )
     await state.set_state(DealCreateFSM.waiting_for_amount)
+    await callback.answer()
 
 @deals_router.message(DealCreateFSM.waiting_for_amount)
 async def process_deal_amount(message: Message, state: FSMContext, db_session: AsyncSession):
@@ -136,57 +141,6 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
         amount_usdt = clean_numeric_input(message.text)
         if not amount_usdt:
             raise ValueError("Invalid amount")
-
-        min_limit = Decimal(data['min_limit'])
-        max_limit = Decimal(data['max_limit'])
-        
-        min_str = format_usdt(min_limit)
-        max_str = format_usdt(max_limit)
-
-        if amount_usdt < min_limit or amount_usdt > max_limit:
-            await message.answer(
-                f"⚠️ **الكمية المدخلة خارج الحدود المسموحة!**\n\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"• الحد الأدنى: `{min_str} USDT`\n"
-                f"• الحد الأقصى: `{max_str} USDT`\n"
-                f"━━━━━━━━━━━━━━━\n\n"
-                f"⌨️ يرجى إعادة إدخال كمية مناسبة ضمن هذا النطاق:",
-                reply_markup=cancel_kb,
-                parse_mode="Markdown"
-            )
-            return
-
-        rate = Decimal(data['rate'])
-        amount_syp = (amount_usdt * rate).quantize(Decimal("1"))
-        await state.update_data(amount_usdt=str(amount_usdt), amount_syp=str(amount_syp))
-
-        offer_type = data['offer_type']
-        creator_id = data['creator_id']
-        taker_id = message.from_user.id
-
-        if offer_type == 'buy':
-            # Maker is BUYER, Taker is SELLER
-            seller_id = taker_id
-            buyer_id = creator_id
-            buyer_payout_address = data.get('payout_info') or "PENDING"
-            seller_payment_info = {"info": "PENDING"}
-        else:
-            # Maker is SELLER, Taker is BUYER
-            seller_id = creator_id
-            buyer_id = taker_id
-            buyer_payout_address = "PENDING"
-            seller_payment_info = {"info": data.get('payout_info') or "PENDING"}
-
-        await _finalize_deal_creation(
-            message=message,
-            state=state,
-            db_session=db_session,
-            data=data,
-            seller_id=seller_id,
-            buyer_id=buyer_id,
-            buyer_payout_address=buyer_payout_address,
-            seller_payment_info=seller_payment_info
-        )
     except Exception:
         await message.answer(
             "⚠️ **قيمة غير صحيحة!**\n\n"
@@ -194,6 +148,58 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
+        return
+
+    min_limit = Decimal(data['min_limit'])
+    max_limit = Decimal(data['max_limit'])
+    
+    min_str = format_usdt(min_limit)
+    max_str = format_usdt(max_limit)
+
+    if amount_usdt < min_limit or amount_usdt > max_limit:
+        await message.answer(
+            f"⚠️ **الكمية المدخلة خارج الحدود المسموحة!**\n\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"• الحد الأدنى: `{min_str} USDT`\n"
+            f"• الحد الأقصى: `{max_str} USDT`\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"⌨️ يرجى إعادة إدخال كمية مناسبة ضمن هذا النطاق:",
+            reply_markup=cancel_kb,
+            parse_mode="Markdown"
+        )
+        return
+
+    rate = Decimal(data['rate'])
+    amount_syp = (amount_usdt * rate).quantize(Decimal("1"))
+    await state.update_data(amount_usdt=str(amount_usdt), amount_syp=str(amount_syp))
+
+    offer_type = data['offer_type']
+    creator_id = data['creator_id']
+    taker_id = message.from_user.id
+
+    if offer_type == 'buy':
+        # Maker is BUYER, Taker is SELLER
+        seller_id = taker_id
+        buyer_id = creator_id
+        buyer_payout_address = data.get('payout_info') or "PENDING"
+        seller_payment_info = {"info": "PENDING"}
+    else:
+        # Maker is SELLER, Taker is BUYER
+        seller_id = creator_id
+        buyer_id = taker_id
+        buyer_payout_address = "PENDING"
+        seller_payment_info = {"info": data.get('payout_info') or "PENDING"}
+
+    await _finalize_deal_creation(
+        message=message,
+        state=state,
+        db_session=db_session,
+        data=data,
+        seller_id=seller_id,
+        buyer_id=buyer_id,
+        buyer_payout_address=buyer_payout_address,
+        seller_payment_info=seller_payment_info
+    )
 
 
 async def derive_escrow_address(db_session: AsyncSession) -> tuple[str, int]:
@@ -216,16 +222,45 @@ async def _finalize_deal_creation(
     offer_id = data['offer_id']
     amount_usdt = Decimal(data['amount_usdt'])
     amount_syp = Decimal(data['amount_syp'])
-    creator_id = data['creator_id']
-    taker_id = message.from_user.id
-
-    mock_deposit_address, mock_deposit_index = await derive_escrow_address(db_session)
 
     now = datetime.now(timezone.utc)
+
+    # Re-verify offer availability under FOR UPDATE lock
+    offer_res = await db_session.execute(
+        select(Offer).where(Offer.id == offer_id).with_for_update()
+    )
+    offer = offer_res.scalar_one_or_none()
+
+    if not offer or offer.status != "active" or (offer.expires_at and offer.expires_at <= now):
+        await db_session.commit()
+        await state.clear()
+        await message.answer("⚠️ عذراً، هذا العرض لم يعد متاحاً للتداول حالياً.")
+        return
+
+    allowed, err_msg = can_user_interact_with_offer(offer.user_id, message.from_user.id)
+    if not allowed or seller_id == buyer_id:
+        await db_session.commit()
+        await state.clear()
+        await message.answer(f"⚠️ {err_msg}")
+        return
+
+    min_limit = Decimal(str(offer.min_limit))
+    max_limit = Decimal(str(offer.max_limit))
+    if amount_usdt < min_limit or amount_usdt > max_limit:
+        await db_session.commit()
+        await state.clear()
+        await message.answer("⚠️ عذراً، الكمية المطلوبة أصبحت خارج حدود العرض الحالية.")
+        return
+
+    # Update offer status and status_changed_at atomically
+    offer.status = "reserved"
+    offer.status_changed_at = now
+
+    mock_deposit_address, mock_deposit_index = await derive_escrow_address(db_session)
     approval_expires_at = now + timedelta(minutes=30)
 
     new_deal = Deal(
-        offer_id=offer_id,
+        offer_id=offer.id,
         seller_id=seller_id,
         buyer_id=buyer_id,
         amount_usdt=amount_usdt,
@@ -238,63 +273,29 @@ async def _finalize_deal_creation(
         status="PENDING_OWNER_APPROVAL",
         expires_at=approval_expires_at
     )
-    db_session.add(new_deal)
-    await db_session.commit()
-    await db_session.refresh(new_deal)
+    try:
+        db_session.add(new_deal)
+        await db_session.commit()
+        await db_session.refresh(new_deal)
+    except IntegrityError:
+        await db_session.rollback()
+        await state.clear()
+        await message.answer("⚠️ عذراً، هذا العرض لم يعد متاحاً للتداول حالياً.")
+        return
+    await state.clear()
+
+    # Update channel offer message post-commit
+    try:
+        await update_channel_offer_message(message.bot, offer)
+    except Exception as e:
+        logger.warning(f"Failed to update channel offer message: {e}")
     await state.clear()
 
     usdt_str = format_usdt(amount_usdt)
     syp_str = format_syp(amount_syp)
 
-    # 1. Notify Taker (Requester)
-    taker_role_ar = "🔴 بائع USDT" if taker_id == seller_id else "🟢 مشتري USDT"
-    taker_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ إلغاء الطلب", callback_data=f"ask_cancel_{new_deal.id}")]
-    ])
-    await message.answer(
-        f"⏳ **طلب صفقة جديدة #{new_deal.id}**\n\n\n"
-        f"• الحالة:  **بانتظار موافقة الطرف الآخر**\n\n"
-        f"• دورك في الصفقة:  {taker_role_ar}\n\n"
-        f"• الكمية:  `{usdt_str}` USDT\n\n"
-        f"• المبلغ الإجمالي:  `{syp_str}` SYP\n\n"
-        f"• المهلة المتاحة:  30 دقيقة\n\n\n"
-        f"تم إرسال إشعار لصاحب العرض. سيتم إشعارك فور اتخاذ قراره للمتابعة.",
-        reply_markup=taker_kb,
-        parse_mode="Markdown"
-    )
-
-    # 2. Fetch Taker completed deals count from users table
-    taker_user_res = await db_session.execute(select(User).where(User.telegram_id == taker_id))
-    taker_user = taker_user_res.scalar_one_or_none()
-    completed_deals = taker_user.completed_deals_count if taker_user else 0
-
-    # 3. Notify Maker (Owner) - STRICT PRIVACY: only amount and completed deals count, NO personal info
-    maker_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ موافقة", callback_data=f"appr_deal_{new_deal.id}"),
-            InlineKeyboardButton(text="❌ رفض", callback_data=f"rejc_deal_{new_deal.id}")
-        ]
-    ])
-    maker_role_ar = "🔴 بائع USDT" if creator_id == seller_id else "🟢 مشتري USDT"
-    maker_text = (
-        f"🔔 **طلب بدء صفقة جديد على عرضك #{offer_id}**\n\n\n"
-        f"• رقم الصفقة:  `#{new_deal.id}`\n\n"
-        f"• دورك في الصفقة:  {maker_role_ar}\n\n"
-        f"• الكمية المطلوبة:  `{usdt_str}` USDT\n\n"
-        f"• المبلغ الإجمالي:  `{syp_str}` SYP\n\n"
-        f"• سجل الطرف الآخر:  `{completed_deals}` صفقة مكتملة\n\n"
-        f"• المهلة المتاحة:  30 دقيقة\n\n\n"
-        f"هل توافق على بدء تنفيذ الصفقة وحجز الضمان؟"
-    )
-    try:
-        await message.bot.send_message(
-            chat_id=creator_id,
-            text=maker_text,
-            reply_markup=maker_kb,
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.warning(f"Failed to notify offer creator {creator_id}: {e}")
+    # Dispatch unified Deal Card to both Counterparties
+    await push_deal_card(new_deal.id, message.bot)
 
 # ================= OWNER APPROVAL / REJECTION HANDLERS =================
 
@@ -334,48 +335,7 @@ async def approve_deal_request(callback: CallbackQuery, db_session: AsyncSession
     syp_str = format_syp(deal.amount_syp)
 
     await callback.answer("تمت الموافقة على الطلب بنجاح ✅")
-    
-    # Notify Seller (the one who must deposit USDT)
-    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تأكيد إيداع الضمان", callback_data=f"man_dep_{deal.id}")]
-    ])
-    seller_msg_text = (
-        f"🔐 **صفقة #{deal.id} — مرحلة إيداع رصيد الضمان**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🔴 بائع USDT\n"
-        f"• القيمة المطلوبة: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
-        f"• المهلة المتاحة للإيداع: ⏱️ 15 دقيقة\n\n"
-        f"🔑 **عنوان محفظة الضمان للإيداع:**\n"
-        f"`{deal.deposit_address}`\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"قم بتحويل `{usdt_str} USDT` إلى العنوان أعلاه، ثم اضغط على زر التأكيد أدناه:",
-    )
-
-    # Notify Buyer (waiting for seller to deposit)
-    buyer_msg_text = (
-        f"✅ **صفقة #{deal.id} — تمت موافقة البائع**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🟢 مشتري USDT\n"
-        f"• القيمة المتفق عليها: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
-        f"• المهلة الزمنية: ⏱️ 15 دقيقة\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"بدأت مهلة إيداع الضمان للبائع لحجز الرصيد بمحفظة الضمان الآمنة. سيصلك إشعار فور تأكيد حجز الرصيد."
-    )
-
-    seller_text_str = seller_msg_text[0] if isinstance(seller_msg_text, tuple) else seller_msg_text
-
-    if callback.from_user.id == deal.seller_id:
-        await callback.message.edit_text(seller_text_str, reply_markup=seller_kb, parse_mode="Markdown")
-        try:
-            await callback.bot.send_message(chat_id=deal.buyer_id, text=buyer_msg_text, parse_mode="Markdown")
-        except Exception as e:
-            logger.warning(f"Failed to notify buyer {deal.buyer_id}: {e}")
-    else:
-        await callback.message.edit_text(buyer_msg_text, parse_mode="Markdown")
-        try:
-            await callback.bot.send_message(chat_id=deal.seller_id, text=seller_text_str, reply_markup=seller_kb, parse_mode="Markdown")
-        except Exception as e:
-            logger.warning(f"Failed to notify seller {deal.seller_id}: {e}")
+    await push_deal_card(deal.id, callback.bot)
 
 @deals_router.callback_query(F.data.startswith("rejc_deal_"))
 async def reject_deal_request(callback: CallbackQuery, db_session: AsyncSession):
@@ -404,34 +364,14 @@ async def reject_deal_request(callback: CallbackQuery, db_session: AsyncSession)
     deal.status = "CANCELLED"
     if offer and offer.status == "reserved":
         offer.status = "active"
+        offer.status_changed_at = datetime.now(timezone.utc)
 
     await db_session.commit()
     if offer:
         await update_channel_offer_message(callback.bot, offer)
 
     await callback.answer("تم رفض الطلب.")
-    await callback.message.edit_text(
-        f"❌ **صفقة #{deal.id} — تم رفض الطلب**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"تم رفض طلب بدء الصفقة وإعادة العرض فوراً إلى السوق كعرض نشط ومتاح للجميع.",
-        parse_mode="Markdown"
-    )
-
-    # Notify Taker (Requester)
-    taker_id = deal.buyer_id if creator_id == deal.seller_id else deal.seller_id
-    try:
-        await callback.bot.send_message(
-            chat_id=taker_id,
-            text=(
-                f"ℹ️ **تحديث صفقة #{deal.id}**\n\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"اعتذر صاحب العرض عن قبول طلب بدء الصفقة.\n"
-                f"يمكنك استكشاف وتصفح باقي العروض المتاحة في السوق عبر /offers."
-            ),
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.warning(f"Failed to notify taker {taker_id} of rejection: {e}")
+    await push_deal_card(deal.id, callback.bot)
 
 # ================= DEAL CANCELLATION (EARLY STATES ONLY) =================
 
@@ -565,6 +505,7 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
     offer = offer_result.scalar_one_or_none()
     if offer and offer.status == "reserved":
         offer.status = "active"
+        offer.status_changed_at = datetime.now(timezone.utc)
 
     add_audit(
         session=db_session,
@@ -588,6 +529,11 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
         except Exception as e:
             logger.warning(f"Failed to update channel offer message for cancelled deal #{deal.id}: {e}")
         
+    try:
+        await push_deal_card(deal.id, callback.bot, notify_handoff=False)
+    except Exception as e:
+        logger.warning(f"Failed to push deal card for cancelled deal #{deal.id}: {e}")
+
     try:
         await callback.message.edit_text(
             f"❌ **صفقة #{deal.id} — تم إلغاء الصفقة**\n\n"
@@ -619,52 +565,18 @@ async def apply_seller_payment_info(
     deal.status = "AWAITING_SYP_PAYMENT"
     await db_session.commit()
 
-    usdt_str = format_usdt(deal.amount_usdt)
-    syp_str = format_syp(deal.amount_syp)
-    escaped_info = escape_markdown(info_text)
-
-    seller_text = (
-        f"✅ **صفقة #{deal.id} — تم اعتماد حساب الاستلام بنجاح**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• حسابك المعتمد: 💳 `{escaped_info}`\n"
-        f"• المبلغ المطلوب: 💰 `{syp_str} SYP`\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"تم إرسال بيانات الحساب للمشتري لتحويل المبلغ.\n"
-        f"سيصلك إشعار فور تأكيد المشتري إتمام التحويل."
-    )
-
     if isinstance(event, CallbackQuery):
         try:
-            await event.message.edit_text(seller_text, parse_mode="Markdown")
+            await event.answer("تم اعتماد بيانات الحساب بنجاح ✅")
         except Exception:
-            await event.message.answer(seller_text, parse_mode="Markdown")
-        await event.answer()
-    else:
-        await event.answer(seller_text, parse_mode="Markdown")
+            pass
+    elif isinstance(event, Message):
+        try:
+            await event.answer("✅ تم اعتماد بيانات الحساب بنجاح.")
+        except Exception:
+            pass
 
-    # Send payment instructions and Action button directly to the BUYER
-    buyer_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تأكيد تحويل الليرة", callback_data=f"man_syp_{deal.id}")]
-    ])
-    try:
-        await bot.send_message(
-            chat_id=deal.buyer_id,
-            text=(
-                f"💸 **صفقة #{deal.id} — مطلوب تحويل الدفعة المحلية (SYP)**\n\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"• دورك: 🟢 مشتري USDT\n"
-                f"• المبلغ المطلوب تحويله: 💰 `{syp_str} SYP`\n"
-                f"• رصيد الضمان المحجوز: 🔒 `{usdt_str} USDT`\n\n"
-                f"💳 **بيانات حساب استلام البائع:**\n"
-                f"`{escaped_info}`\n"
-                f"━━━━━━━━━━━━━━━\n\n"
-                f"قم بتحويل المبلغ بدقة إلى حساب البائع أعلاه، ثم اضغط على زر التأكيد أدناه:"
-            ),
-            reply_markup=buyer_kb,
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.warning(f"Failed to notify buyer {deal.buyer_id} of payment info: {e}")
+    await push_deal_card(deal.id, bot)
 
 
 async def apply_buyer_payout_wallet(
@@ -687,48 +599,18 @@ async def apply_buyer_payout_wallet(
         deal.status = "SYP_PAYMENT_SENT"
         await db_session.commit()
 
-        usdt_str = format_usdt(deal.amount_usdt)
-        syp_str = format_syp(deal.amount_syp)
-        escaped_wallet = escape_markdown(normalized_address)
-
-        buyer_text = (
-            f"✅ **صفقة #{deal.id} — تم اعتماد المحفظة وتأكيد التحويل بنجاح**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"• القيمة: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
-            f"• محفظة الاستلام المعتمدة (BEP-20):\n`{escaped_wallet}`\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"تم إشعار البائع للتحقق ومطابقة الحساب وتأكيد استلام الليرة."
-        )
-
         if isinstance(event, CallbackQuery):
             try:
-                await event.message.edit_text(buyer_text, parse_mode="Markdown")
+                await event.answer("✅ تم تأكيد التحويل بنجاح.")
             except Exception:
-                await event.message.answer(buyer_text, parse_mode="Markdown")
-            await event.answer()
-        else:
-            await event.answer(buyer_text, parse_mode="Markdown")
+                pass
+        elif isinstance(event, Message):
+            try:
+                await event.answer("✅ تم تأكيد التحويل بنجاح.")
+            except Exception:
+                pass
 
-        # Send prompt with Confirmation button to the SELLER
-        seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ تأكيد استلام الليرة", callback_data=f"ask_conf_{deal.id}")]
-        ])
-        try:
-            await bot.send_message(
-                chat_id=deal.seller_id,
-                text=(
-                    f"🔔 **صفقة #{deal.id} — إشعار تحويل دفعة من المشتري**\n\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"• دورك: 🔴 بائع USDT\n"
-                    f"• المبلغ المحول لحسابك: 💰 `{syp_str} SYP`\n"
-                    f"━━━━━━━━━━━━━━━\n\n"
-                    f"يرجى فتح تطبيق حسابك والتأكد من وصول المبلغ كاملاً، ثم اضغط على زر التأكيد أدناه:"
-                ),
-                reply_markup=seller_kb,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to notify seller {deal.seller_id}: {e}")
+        await push_deal_card(deal.id, bot)
 
     elif deal.status == "ADMIN_APPROVAL":
         await db_session.commit()
@@ -1598,22 +1480,11 @@ async def cq_back_seller_deal(callback: CallbackQuery, db_session: AsyncSession)
         return
     await db_session.commit()
 
-    syp_str = format_syp(deal.amount_syp)
-    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تأكيد استلام الليرة", callback_data=f"ask_conf_{deal.id}")]
-    ])
-    text = (
-        f"🔔 **صفقة #{deal.id} — إشعار تحويل دفعة من المشتري**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🔴 بائع USDT\n"
-        f"• المبلغ المحول لحسابك:  `{syp_str}` SYP\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"يرجى فتح تطبيق حسابك والتأكد من وصول المبلغ كاملاً، ثم اضغط على زر التأكيد أدناه:"
-    )
+    card_text, kb = render_deal_card(deal, callback.from_user.id)
     try:
-        await callback.message.edit_text(text, reply_markup=seller_kb, parse_mode="Markdown")
+        await callback.message.edit_text(card_text, reply_markup=kb, parse_mode="Markdown")
     except Exception:
-        await callback.message.answer(text, reply_markup=seller_kb, parse_mode="Markdown")
+        await callback.message.answer(card_text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
 
@@ -1664,6 +1535,12 @@ async def _dispatch_admin_approval(
                 )
         except Exception as e:
             logger.warning(f"Failed to edit origin message in admin dispatch for deal #{deal.id}: {e}")
+
+    # Synchronize Deal Cards for counterparties
+    try:
+        await push_deal_card(deal.id, bot, notify_handoff=False)
+    except Exception as e:
+        logger.warning(f"Failed to push deal card in _dispatch_admin_approval for deal #{deal.id}: {e}")
 
     # 2. Notify Buyer (single notification)
     if not (origin_callback and origin_callback.from_user.id == deal.buyer_id):
@@ -1958,6 +1835,12 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
     except Exception as e:
         logger.warning(f"Failed to edit admin message after release for deal #{deal.id}: {e}")
 
+    # Synchronize Deal Cards for counterparties
+    try:
+        await push_deal_card(deal.id, callback.bot, notify_handoff=False)
+    except Exception as e:
+        logger.warning(f"Failed to push deal card on release for deal #{deal.id}: {e}")
+
     # Notify Buyer and Seller of completion
     try:
         await callback.bot.send_message(
@@ -2017,19 +1900,6 @@ async def my_deals(message: Message, db_session: AsyncSession):
     if not deals and not admin_pending_deals:
         await message.answer("ℹ️ ليس لديك أي صفقات نشطة حالياً.")
         return
-        
-    status_map = {
-        "PENDING_OWNER_APPROVAL": "بانتظار موافقة الطرف الآخر",
-        "CREATED": "قيد الإنشاء",
-        "AWAITING_USDT_DEPOSIT": "بانتظار إيداع الضمان",
-        "USDT_DEPOSITED": "الضمان محجوز",
-        "AWAITING_SYP_PAYMENT": "بانتظار دفع الليرة",
-        "SYP_PAYMENT_SENT": "تم التحويل — بانتظار التأكيد",
-        "SYP_PAYMENT_CONFIRMED": "الدفع مؤكد — بانتظار الاعتماد",
-        "ADMIN_APPROVAL": "قيد التدقيق والاعتماد",
-        "COMPLETED": "مكتملة",
-        "CANCELLED": "ملغاة"
-    }
 
     # If admin, show deals awaiting admin approval first
     if admin_pending_deals:
@@ -2041,91 +1911,20 @@ async def my_deals(message: Message, db_session: AsyncSession):
             ])
             await message.answer(admin_text, reply_markup=admin_kb, parse_mode="Markdown")
 
-    # Show user's personal deals
+    # Show user's personal deals using unified render_deal_card
     if deals:
         if admin_pending_deals:
             await message.answer("📋 **صفقاتك النشطة:**", parse_mode="Markdown")
 
         for deal in deals:
-            role = "🟢 مشتري USDT" if deal.buyer_id == user_id else "🔴 بائع USDT"
-            status_ar = status_map.get(deal.status, deal.status)
-            usdt_str = format_usdt(deal.amount_usdt)
-            syp_str = format_syp(deal.amount_syp)
-            
-            kb = None
-            action_desc = "الصفقة قيد المتابعة."
-            
-            if deal.status == "CREATED":
-                if deal.seller_id == user_id:
-                    action_desc = "اضغط أدناه لبدء نافذة الإيداع:"
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🔐 بدء إيداع الضمان", callback_data=f"man_aw_dep_{deal.id}")]
-                    ])
-                else:
-                    action_desc = "بانتظار قيام البائع ببدء نافذة الإيداع."
-            elif deal.status == "AWAITING_USDT_DEPOSIT":
-                if deal.seller_id == user_id:
-                    action_desc = "حوّل الرصيد لمحفظة الضمان ثم اضغط تأكيد الإيداع:"
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="✅ تأكيد إيداع الضمان", callback_data=f"man_dep_{deal.id}")]
-                    ])
-                else:
-                    action_desc = "بانتظار قيام البائع بإيداع الضمان."
-            elif deal.status == "USDT_DEPOSITED":
-                if deal.seller_id == user_id:
-                    seller_info_val = deal.seller_payment_info.get("info") if isinstance(deal.seller_payment_info, dict) else ""
-                    if not seller_info_val or seller_info_val in ["PENDING", "غير محدد", "N/A"]:
-                        action_desc = "تم تأمين الضمان. يرجى تحديد حسابك لاستلام الليرة:"
-                        kb = InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="💳 تحديد حساب استلام الليرة", callback_data=f"set_seller_info_{deal.id}")]
-                        ])
-                    else:
-                        action_desc = "تم حجز الضمان وتحديد الحساب. اضغط للمتابعة:"
-                        kb = InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="⏳ متابعة مرحلة الدفع", callback_data=f"man_aw_syp_{deal.id}")]
-                        ])
-                else:
-                    action_desc = "تم تأمين الضمان. بانتظار تزويد البائع لبيانات حسابه."
-            elif deal.status == "AWAITING_SYP_PAYMENT":
-                if deal.buyer_id == user_id:
-                    action_desc = "حوّل المبلغ للبائع ثم اضغط زر التأكيد:"
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="✅ تأكيد تحويل الليرة", callback_data=f"man_syp_{deal.id}")]
-                    ])
-                else:
-                    action_desc = "بانتظار قيام المشتري بتحويل المبلغ بالليرة."
-            elif deal.status == "SYP_PAYMENT_SENT":
-                if deal.seller_id == user_id:
-                    action_desc = "أبلغ المشتري عن التحويل. راجع حسابك واضغط تأكيد الاستلام:"
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="✅ تأكيد استلام الليرة", callback_data=f"ask_conf_{deal.id}")]
-                    ])
-                else:
-                    action_desc = "تم الإبلاغ عن التحويل. بانتظار مراجعة البائع وتأكيده."
-            elif deal.status == "SYP_PAYMENT_CONFIRMED":
-                if deal.seller_id == user_id:
-                    action_desc = "أكدت الاستلام. اضغط أدناه لإحالة الصفقة للإدارة:"
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🛡️ طلب اعتماد الإدارة", callback_data=f"man_adm_appr_{deal.id}")]
-                    ])
-                else:
-                    action_desc = "أكد البائع استلام الليرة. الصفقة بانتظار اعتماد الإدارة."
-            elif deal.status == "ADMIN_APPROVAL":
-                if is_admin:
-                    action_desc = "إجراء الإدارة: اضغط أدناه لإطلاق الرصيد:"
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")]
-                    ])
-                else:
-                    action_desc = "الصفقة قيد المراجعة الإدارية لإطلاق الرصيد للمشتري."
+            offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+            offer = offer_res.scalar_one_or_none()
+            is_offer_owner = bool(offer and offer.user_id == user_id)
+            card_text, kb = render_deal_card(deal, user_id, is_offer_owner=is_offer_owner)
+            sent_msg = await message.answer(card_text, reply_markup=kb, parse_mode="Markdown")
 
-            text = (
-                f"📑 **صفقة #{deal.id}**\n\n\n"
-                f"• الحالة:  **{status_ar}**\n\n"
-                f"• دورك في الصفقة:  {role}\n\n"
-                f"• الكمية:  `{usdt_str}` USDT\n\n"
-                f"• الإجمالي:  `{syp_str}` SYP\n\n\n"
-                f"{action_desc}"
+            col = Deal.buyer_card_msg_id if deal.buyer_id == user_id else Deal.seller_card_msg_id
+            await db_session.execute(
+                update(Deal).where(Deal.id == deal.id).values({col: sent_msg.message_id})
             )
-            
-            await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        await db_session.commit()

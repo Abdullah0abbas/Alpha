@@ -45,12 +45,14 @@ async def start_daily_backup_scheduler(bot: Bot, target_hour_utc: int = 0, targe
             # Wait 5 minutes before retrying on failure
             await asyncio.sleep(300)
 
+from bot.utils.deal_card import push_deal_card
 from bot.utils.transitions import (
     can_expire_deal,
     can_enter_grace_period,
     can_permanently_expire_offer,
     can_expire_negotiation,
     resolve_deal_parties,
+    should_release_orphan_offer,
 )
 
 async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
@@ -117,6 +119,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                         maker_id_val = offer.user_id
                         if offer.status == "reserved":
                             offer.status = "active"
+                            offer.status_changed_at = now
                             revert_offer_to_active = True
                             reverted_offer = offer
 
@@ -131,6 +134,11 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                 logger.info(f"Deal #{deal_id_val} ({prev_status}) expired at {now.isoformat()}")
 
                 # Post-commit notifications
+                try:
+                    await push_deal_card(deal_id_val, bot, notify_handoff=False)
+                except Exception as e:
+                    logger.warning(f"Failed to push deal card on expiration for deal #{deal_id_val}: {e}")
+
                 if revert_offer_to_active and reverted_offer:
                     try:
                         await update_channel_offer_message(bot, reverted_offer)
@@ -210,6 +218,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                     continue
 
                 offer.status = "expired_grace"
+                offer.status_changed_at = now
                 offer.expires_at = now + timedelta(minutes=30)
                 offer_id_val = offer.id
                 user_id_val = offer.user_id
@@ -280,6 +289,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                     continue
 
                 offer.status = "expired"
+                offer.status_changed_at = now
                 offer_id_val = offer.id
                 user_id_val = offer.user_id
 
@@ -348,6 +358,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                     offer = offer_res.scalar_one_or_none()
                     if offer and offer.status == "negotiating":
                         offer.status = "active"
+                        offer.status_changed_at = now
                         revert_offer = True
                         reverted_offer = offer
 
@@ -388,7 +399,71 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
         except Exception as item_err:
             logger.error(f"Error expiring negotiation #{neg_id}: {item_err}", exc_info=True)
 
-    return expired_deals_count, grace_offers_count, final_offers_count, expired_negs_count
+    # ----------------------------------------------------
+    # Branch 5: Orphan Reserved/Negotiating Offers Safety Net (Max 100 per cycle)
+    # ----------------------------------------------------
+    orphan_released_count = 0
+    orphan_candidate_ids = []
+    try:
+        async with AsyncSessionLocal() as read_session:
+            orphan_stmt = select(Offer.id).where(
+                Offer.status.in_(["reserved", "negotiating"])
+            ).limit(100)
+            orphan_res = await read_session.execute(orphan_stmt)
+            orphan_candidate_ids = list(orphan_res.scalars().all())
+    except Exception as e:
+        logger.error(f"Error querying candidate orphan offer IDs: {e}", exc_info=True)
+
+    for offer_id in orphan_candidate_ids:
+        try:
+            async with AsyncSessionLocal() as item_session:
+                offer_res = await item_session.execute(
+                    select(Offer).where(Offer.id == offer_id).with_for_update(skip_locked=True)
+                )
+                offer = offer_res.scalar_one_or_none()
+                if not offer:
+                    continue
+
+                live_deal_res = await item_session.execute(
+                    select(Deal.id).where(
+                        Deal.offer_id == offer_id,
+                        Deal.status.not_in(["COMPLETED", "CANCELLED", "EXPIRED"])
+                    ).limit(1)
+                )
+                has_live_deal = live_deal_res.scalar_one_or_none() is not None
+
+                live_neg_res = await item_session.execute(
+                    select(Negotiation.id).where(
+                        Negotiation.offer_id == offer_id,
+                        Negotiation.status.in_(["PENDING_MAKER", "PENDING_TAKER"])
+                    ).limit(1)
+                )
+                has_live_neg = live_neg_res.scalar_one_or_none() is not None
+
+                if not should_release_orphan_offer(
+                    offer.status,
+                    has_live_deal,
+                    has_live_neg,
+                    offer.status_changed_at,
+                    now
+                ):
+                    continue
+
+                prev_status = offer.status
+                offer.status = "active"
+                offer.status_changed_at = now
+                await item_session.commit()
+                orphan_released_count += 1
+                logger.info(f"Orphan offer #{offer.id} ({prev_status}) returned to active at {now.isoformat()}")
+
+                try:
+                    await update_channel_offer_message(bot, offer)
+                except Exception as e:
+                    logger.warning(f"Failed to update channel message for released orphan offer #{offer.id}: {e}")
+        except Exception as item_err:
+            logger.error(f"Error releasing orphan offer #{offer_id}: {item_err}", exc_info=True)
+
+    return expired_deals_count, grace_offers_count, final_offers_count, expired_negs_count, orphan_released_count
 
 
 async def run_startup_recovery(bot: Bot):
@@ -400,11 +475,16 @@ async def run_startup_recovery(bot: Bot):
     logger.info("Initiating startup recovery audit for pending timers and expiries...")
     try:
         counts = await process_expiries(bot)
-        expired_deals, grace_offers, final_offers, expired_negs = counts
+        if len(counts) == 5:
+            expired_deals, grace_offers, final_offers, expired_negs, orphan_offers = counts
+        else:
+            expired_deals, grace_offers, final_offers, expired_negs = counts[:4]
+            orphan_offers = 0
         logger.info(
             f"Startup recovery completed successfully: "
             f"{expired_deals} expired deals, {grace_offers} grace offers, "
-            f"{final_offers} final offers, {expired_negs} expired negotiations reconciled."
+            f"{final_offers} final offers, {expired_negs} expired negotiations, "
+            f"{orphan_offers} orphan offers released."
         )
     except Exception as e:
         logger.critical(f"Startup recovery encountered an error: {e}", exc_info=True)

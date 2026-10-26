@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import or_, and_, func
+from sqlalchemy.exc import IntegrityError
 
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -21,6 +22,9 @@ from bot.utils.formatters import (
 from bot.services.channel import update_channel_offer_message
 from config.settings import settings
 from bot.utils.branding import BOT_NAME
+from bot.utils.deal_card import push_deal_card
+
+from bot.utils.transitions import can_user_interact_with_offer
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +63,7 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
             return
 
     result = await db_session.execute(
-        select(Offer).where(Offer.id == offer_id).with_for_update()
+        select(Offer).where(Offer.id == offer_id)
     )
     offer = result.scalar_one_or_none()
 
@@ -67,8 +71,9 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
         await callback.answer("عذراً، لم يتم العثور على العرض.", show_alert=True)
         return
 
-    if offer.user_id == taker_id:
-        await callback.answer("عذراً، لا يمكنك التفاوض على عرض قمت بإنشائه بنفسك.", show_alert=True)
+    allowed, err_msg = can_user_interact_with_offer(offer.user_id, taker_id)
+    if not allowed:
+        await callback.answer(err_msg, show_alert=True)
         return
 
     if not offer.negotiable or offer.negotiable_type == "none":
@@ -90,11 +95,6 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
     if prev_neg_res.scalars().first():
         await callback.answer("عذراً، يحق لكل مستخدم جولة تفاوض واحدة فقط على هذا العرض.", show_alert=True)
         return
-
-    # Lock the offer to 'negotiating'
-    offer.status = "negotiating"
-    await db_session.commit()
-    await update_channel_offer_message(callback.bot, offer)
 
     await state.update_data(
         offer_id=offer.id,
@@ -142,6 +142,7 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
             parse_mode="Markdown"
         )
         await state.set_state(NegotiationFSM.waiting_for_taker_rate)
+    await callback.answer()
 
 
 @negotiations_router.message(NegotiationFSM.waiting_for_taker_amount)
@@ -206,6 +207,31 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
     from db.session import AsyncSessionLocal
     async with AsyncSessionLocal() as db_session:
         now = datetime.now(timezone.utc)
+
+        # Re-verify offer under FOR UPDATE lock
+        offer_res = await db_session.execute(
+            select(Offer).where(Offer.id == offer_id).with_for_update()
+        )
+        offer = offer_res.scalar_one_or_none()
+
+        if not offer or offer.status != "active" or (offer.expires_at and offer.expires_at <= now):
+            await db_session.commit()
+            await state.clear()
+            await message.answer("⚠️ عذراً، هذا العرض لم يعد متاحاً للتفاوض حالياً.")
+            return
+
+        min_limit = Decimal(str(offer.min_limit))
+        max_limit = Decimal(str(offer.max_limit))
+        if amount_val < min_limit or amount_val > max_limit:
+            await db_session.commit()
+            await state.clear()
+            await message.answer("⚠️ عذراً، الكمية المقترحة أصبحت خارج حدود العرض الحالية.")
+            return
+
+        # Lock offer to negotiating and update status_changed_at atomically
+        offer.status = "negotiating"
+        offer.status_changed_at = now
+
         expires_at = now + timedelta(minutes=30)
 
         neg = Negotiation(
@@ -218,9 +244,21 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
             round=1,
             expires_at=expires_at
         )
-        db_session.add(neg)
-        await db_session.commit()
-        await db_session.refresh(neg)
+        try:
+            db_session.add(neg)
+            await db_session.commit()
+            await db_session.refresh(neg)
+        except IntegrityError:
+            await db_session.rollback()
+            await state.clear()
+            await message.answer("⚠️ عذراً، هذا العرض لم يعد متاحاً للتفاوض حالياً.")
+            return
+
+        # Update channel offer message post-commit
+        try:
+            await update_channel_offer_message(message.bot, offer)
+        except Exception as e:
+            logger.warning(f"Failed to update channel message for negotiation #{neg.id}: {e}")
 
         # Get Taker stats
         taker_deals_res = await db_session.execute(
@@ -345,6 +383,7 @@ async def maker_reject_negotiation(callback: CallbackQuery, db_session: AsyncSes
         offer = offer_res.scalar_one_or_none()
         if offer and offer.status == "negotiating":
             offer.status = "active"
+            offer.status_changed_at = datetime.now(timezone.utc)
             reverted_offer = offer
 
     await db_session.commit()
@@ -643,6 +682,7 @@ async def taker_reject_counter(callback: CallbackQuery, db_session: AsyncSession
         offer = offer_res.scalar_one_or_none()
         if offer and offer.status == "negotiating":
             offer.status = "active"
+            offer.status_changed_at = datetime.now(timezone.utc)
             reverted_offer = offer
 
     await db_session.commit()
@@ -698,6 +738,7 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
     # Atomic state transition in a single transaction
     neg.status = "ACCEPTED"
     offer.status = "reserved"
+    offer.status_changed_at = datetime.now(timezone.utc)
 
     # Determine seller and buyer
     if offer.offer_type == 'sell':
@@ -706,6 +747,15 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
     else:
         seller_id = neg.taker_id
         buyer_id = offer.user_id
+
+    if seller_id == buyer_id or neg.taker_id == offer.user_id:
+        await db_session.rollback()
+        if isinstance(origin_message, Message):
+            try:
+                await origin_message.answer("⚠️ عذراً، لا يمكن تنفيذ صفقة مع صاحب العرض نفسه.")
+            except Exception:
+                pass
+        return False
 
     amount_usdt = neg.proposed_amount
     amount_syp = amount_usdt * neg.proposed_rate
@@ -732,9 +782,18 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
         status="AWAITING_USDT_DEPOSIT",
         expires_at=deposit_expires_at
     )
-    db_session.add(new_deal)
-    await db_session.commit()
-    await db_session.refresh(new_deal)
+    try:
+        db_session.add(new_deal)
+        await db_session.commit()
+        await db_session.refresh(new_deal)
+    except IntegrityError:
+        await db_session.rollback()
+        if isinstance(origin_message, Message):
+            try:
+                await origin_message.answer("⚠️ عذراً، هذا العرض لم يعد متاحاً للتداول حالياً.")
+            except Exception:
+                pass
+        return False
 
     # Post-commit channel update and user notifications (all wrapped in try/except)
     try:
@@ -742,48 +801,10 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
     except Exception as e:
         logger.warning(f"Failed to update channel message for deal #{new_deal.id} offer: {e}")
 
-    usdt_str = format_usdt(amount_usdt)
-    syp_str = format_syp(amount_syp)
-    rate_str = format_syp(neg.proposed_rate)
-
-    # Notify Seller
-    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تأكيد إيداع الضمان", callback_data=f"man_dep_{new_deal.id}")]
-    ])
-    seller_text = (
-        f"🔐 **بدء تنفيذ صفقة #{new_deal.id} — مرحلة إيداع الضمان**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🔴 بائع USDT\n"
-        f"• المبلغ المتفق عليه: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
-        f"• سعر الصرف المعتمد: 💵 `{rate_str} SYP`\n"
-        f"• مهلة الإيداع: ⏱️ 15 دقيقة\n\n"
-        f"🔑 **عنوان محفظة الضمان للإيداع:**\n"
-        f"`{new_deal.deposit_address}`\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"يرجى تحويل `{usdt_str} USDT` إلى العنوان أعلاه ثم الضغط على زر تأكيد الإيداع أدناه:"
-    )
-
-    # Notify Buyer
-    buyer_text = (
-        f"✅ **بدء تنفيذ صفقة #{new_deal.id} — مرحلة إيداع الضمان**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🟢 مشتري USDT\n"
-        f"• المبلغ المتفق عليه: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
-        f"• سعر الصرف: 💵 `{rate_str} SYP`\n"
-        f"• المهلة الزمنية: ⏱️ 15 دقيقة\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"بانتظار قيام البائع بإيداع رصيد الضمان في المحفظة المشفرة الآمنة.\n"
-        f"سيتم إشعارك فور تأكيد حجز الرصيد لتزويدك ببيانات الدفع."
-    )
-
+    # Dispatch unified Deal Card to both Counterparties
     try:
-        await bot.send_message(chat_id=seller_id, text=seller_text, reply_markup=seller_kb, parse_mode="Markdown")
+        await push_deal_card(new_deal.id, bot)
     except Exception as e:
-        logger.warning(f"Failed to notify deal seller {seller_id}: {e}")
-
-    try:
-        await bot.send_message(chat_id=buyer_id, text=buyer_text, parse_mode="Markdown")
-    except Exception as e:
-        logger.warning(f"Failed to notify deal buyer {buyer_id}: {e}")
+        logger.warning(f"Failed to push deal card for negotiated deal #{new_deal.id}: {e}")
 
     return True

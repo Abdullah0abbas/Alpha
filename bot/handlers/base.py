@@ -19,6 +19,7 @@ from bot.handlers.offers import (
     humanize_time_remaining,
     start_offer_creation
 )
+from bot.utils.deal_views import build_offer_action_buttons
 from bot.handlers.deals import my_deals
 from bot.utils.support_texts import (
     SUPPORT_FAQ_TEXT,
@@ -97,13 +98,14 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                 }
                 neg_str = neg_type_labels.get(offer.negotiable_type, "غير متاح") if offer.negotiable else "غير متاح"
 
-                buttons = [
-                    [InlineKeyboardButton(text="⚡ تنفيذ الصفقة فوراً", callback_data=f"start_deal_{offer.id}")]
-                ]
-                if offer.negotiable and offer.negotiable_type != "none" and offer.user_id != user_id:
-                    buttons.append([InlineKeyboardButton(text="🤝 تقديم طلب تفاوض", callback_data=f"start_neg_{offer.id}")])
-
-                buttons.append([InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")])
+                buttons = build_offer_action_buttons(
+                    offer_id=offer.id,
+                    offer_user_id=offer.user_id,
+                    viewer_id=user_id,
+                    negotiable=offer.negotiable,
+                    negotiable_type=offer.negotiable_type,
+                    context="start"
+                )
                 kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
                 await message.answer(
@@ -313,12 +315,16 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
             f"─────────────────"
         )
 
-        row = [
-            InlineKeyboardButton(text=f"⚡ صفقة #{off.id}", callback_data=f"start_deal_{off.id}")
-        ]
-        if off.negotiable and off.negotiable_type != "none" and off.user_id != callback.from_user.id:
-            row.append(InlineKeyboardButton(text=f"🤝 تفاوض #{off.id}", callback_data=f"start_neg_{off.id}"))
-        inline_buttons.append(row)
+        rows = build_offer_action_buttons(
+            offer_id=off.id,
+            offer_user_id=off.user_id,
+            viewer_id=callback.from_user.id,
+            negotiable=off.negotiable,
+            negotiable_type=off.negotiable_type,
+            context="browse"
+        )
+        if rows:
+            inline_buttons.extend(rows)
 
     # Navigation pagination bar
     nav_row = []

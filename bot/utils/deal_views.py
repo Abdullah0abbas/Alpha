@@ -2,8 +2,48 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from aiogram.types import InlineKeyboardButton
+
 from db.models import Deal, User
 from bot.utils.formatters import format_syp, format_usdt, safe_username, escape_markdown, format_local_datetime
+
+
+def build_offer_action_buttons(
+    offer_id: int,
+    offer_user_id: int,
+    viewer_id: int,
+    negotiable: bool,
+    negotiable_type: str = "none",
+    context: str = "offers"
+) -> list[list[InlineKeyboardButton]]:
+    """
+    Pure builder for offer action buttons ('start_deal' / 'start_neg') across /offers, paged browse, and start deeplinks.
+    Strictly omits deal/negotiation action buttons if viewer_id is the offer creator.
+    """
+    if offer_user_id == viewer_id:
+        if context == "start":
+            return [[InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")]]
+        return []
+
+    buttons = []
+    if context == "browse":
+        row = [InlineKeyboardButton(text=f"⚡ صفقة #{offer_id}", callback_data=f"start_deal_{offer_id}")]
+        if negotiable and negotiable_type != "none":
+            row.append(InlineKeyboardButton(text=f"🤝 تفاوض #{offer_id}", callback_data=f"start_neg_{offer_id}"))
+        return [row]
+
+    if context == "start":
+        buttons.append([InlineKeyboardButton(text="⚡ تنفيذ الصفقة فوراً", callback_data=f"start_deal_{offer_id}")])
+        if negotiable and negotiable_type != "none":
+            buttons.append([InlineKeyboardButton(text="🤝 تقديم طلب تفاوض", callback_data=f"start_neg_{offer_id}")])
+        buttons.append([InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")])
+        return buttons
+
+    # Default context == "offers"
+    buttons.append([InlineKeyboardButton(text="⚡ تنفيذ فوري بالسعر الحالي", callback_data=f"start_deal_{offer_id}")])
+    if negotiable and negotiable_type != "none":
+        buttons.append([InlineKeyboardButton(text="🤝 تقديم طلب تفاوض", callback_data=f"start_neg_{offer_id}")])
+    return buttons
 
 async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) -> str:
     """Format rich, detailed notification text for platform administrators."""
