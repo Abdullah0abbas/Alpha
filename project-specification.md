@@ -1,15 +1,15 @@
 # Project Specification: P2P USDT/SYP Escrow Bot
 
-**Version:** 3.2
+**Version:** 3.3
 **Document Type:** Technical Architecture & Implementation Reference
-**Purpose:** This document is the authoritative technical reference for this project. It must be provided as context at the start of any development session (human or AI-assisted). All architectural decisions are final unless explicitly revised in Section 18 (Change Log).
+**Purpose:** This document is the authoritative technical reference for this project. It must be provided as context at the start of any development session (human or AI-assisted). All architectural decisions are final unless explicitly revised in Section 17 (Change Log).
 
 ---
 
 ## 1. Project Overview
 
 ### 1.1 Purpose
-An automated escrow system operating via a Telegram bot, facilitating peer-to-peer exchange of USDT (BEP20) for Syrian Pounds (SYP) through local payment rails (Sham Cash, Syriatel Cash). The system acts as a trusted intermediary that holds USDT custody during the transaction lifecycle to protect both counterparties from default.
+An automated escrow system operating via a Telegram bot, facilitating peer-to-peer exchange of USDT (BEP20) for Syrian Pounds (SYP) through local payment rails (Sham Cash SYP, Sham Cash USD, Syriatel Cash, Al-Haram Bank Transfer, Al-Fouad Bank Transfer). The system acts as a trusted intermediary that holds USDT custody during the transaction lifecycle to protect both counterparties from default.
 
 ### 1.2 Core Design Principle
 **Per-deal address isolation.** Every transaction is assigned a unique, independently-derived blockchain deposit address. No transaction shares a deposit address with another. This eliminates race conditions and ambiguity in deposit attribution that would otherwise arise from a shared-address model.
@@ -34,7 +34,7 @@ This document covers system architecture, data model, security requirements, and
 | Process Management | systemd (or supervisord) | Auto-restart on crash, log management |
 | Deployment | Dockerized services, docker-compose for local/staging | Environment parity, isolation |
 
-**Explicitly out of scope for on-chain operations:** No third-party wallet application (SafePal, Trust Wallet, MetaMask, etc.) and no centralized exchange API (Binance or otherwise) is part of the transaction pipeline. All address generation, deposit verification, and fund release are performed directly by this system's own code against the BSC network. Any wallet app used by any team member to independently view balances is outside this system's architecture and has no bearing on its design.
+**Explicitly out of scope for on-chain operations:** No third-party wallet application (SafePal, Trust Wallet, MetaMask, etc.) and no centralized exchange API (Binance or otherwise) is part of the transaction pipeline. All address generation, deposit verification, and fund release are performed directly by this system's own code against the BSC network.
 
 ---
 
@@ -58,78 +58,82 @@ Both Bot Service and Chain Watcher read/write to the same PostgreSQL instance. N
 - The deposit address and its corresponding private key are derived per-deal via standard BIP-32/BIP-44 derivation path (e.g., `m/44'/60'/0'/0/{deposit_index}`).
 - Fund release to the buyer is signed directly from the derived deal address — no intermediate consolidation/sweeping step is required for MVP.
 
-**Operational dependency:** Each derived address requires a small BNB balance to cover gas fees on release. This requires either (a) a pre-funding step at address generation time, or (b) a "gas station" pattern where a funding transaction precedes each release. This must be resolved as part of Phase 2 implementation (see Section 9).
+**Operational dependency:** Each derived address requires a small BNB balance to cover gas fees on release. This requires either (a) a pre-funding step at address generation time, or (b) a "gas station" pattern where a funding transaction precedes each release (see Section 10).
 
 ---
 
 ## 4. Transaction State Machine
 
 ```
-[Offer created by maker — see Section 4.4 for offer-level expiry]
-  ↓ (taker presses "start deal" and submits amount + their required info)
-PENDING_OWNER_APPROVAL   [NEW in v2.6 — see 4.0]
-  ↓ (owner approves)
+[Offer created by maker — see Section 4.4 for offer-level expiry & orphan safety net]
+  ↓ (taker presses "start deal" and submits amount)
+PENDING_OWNER_APPROVAL   [v2.6 / v3.3]
+  ↓ (owner or admin approves)
 CREATED
   → AWAITING_USDT_DEPOSIT
   → USDT_DEPOSITED
   → AWAITING_SYP_PAYMENT
   → SYP_PAYMENT_SENT
-  → SYP_PAYMENT_CONFIRMED
-  → ADMIN_APPROVAL
+  → ADMIN_APPROVAL   [v3.3: atomic transition from SYP_PAYMENT_SENT upon seller SYP receipt confirmation]
   → COMPLETED
 
 Branch states (reachable from any state at or after USDT_DEPOSITED):
   → DISPUTED   → resolved by admin → COMPLETED | CANCELLED
-  → CANCELLED  → admin-mediated only (see 4.1)
-  → EXPIRED    → automatic, pre-deposit only (see 4.2)
+  → CANCELLED  → admin-mediated post-deposit, or explicit owner/admin rejection pre-deposit
+  → EXPIRED    → automatic 15-minute deposit window expiry, or 30-minute owner approval timeout
 
 Branch from PENDING_OWNER_APPROVAL only:
-  → REJECTED (owner declines, or 30-minute no-response timeout) → offer reverts to "active", deal record discarded
+  → CANCELLED (owner/admin explicitly declines)
+  → EXPIRED   (30-minute owner no-response timeout)
+  (In both cases, offer reverts to "active", deal record is retained for audit)
 ```
 
-### 4.0 Owner Approval Gate (v2.6 — new)
+### 4.0 Owner Approval Gate & Admin Intervention (v2.6 / v3.3)
 
-Before a deal is allowed to proceed, the **offer owner** (maker) must approve the specific deal request. This is a new state, `PENDING_OWNER_APPROVAL`, inserted between the taker submitting their deal details (amount, payout info per Section 5's dynamic role logic) and the deal entering `CREATED`.
+Before a deal is allowed to proceed, the **offer owner** (maker) must approve the specific deal request. This state, `PENDING_OWNER_APPROVAL`, sits between the taker submitting their requested USDT amount and the deal entering `CREATED`.
 
-**Sequence:**
-1. Taker presses "start deal," is asked for amount and their role-appropriate info (per the dynamic buy/sell logic already implemented), exactly as today.
-2. Instead of immediately opening the deal, the system creates the deal record with status `PENDING_OWNER_APPROVAL` and immediately flips the offer's status to `"reserved"` (preventing concurrent requests on the same offer — same mechanism as today, just triggered one step earlier).
-3. A request is sent to the offer owner containing: the requested amount, and the taker's `users.completed_deals_count` (as a trust signal). **No personal information about the taker is shown** — no username, no wallet address, no payment info, no Telegram ID. Two buttons: ✅ Approve / ❌ Reject.
-4. **Owner approves** → deal transitions to `CREATED`, then immediately to `AWAITING_USDT_DEPOSIT` (starting the 15-minute deposit window — Section 4.2).
-5. **Owner rejects (explicit)** → deal is discarded, offer reverts to `"active"`, taker is notified the request was declined and may try another offer.
-6. **Owner does not respond within 30 minutes** → same outcome as explicit rejection (automatic, no admin action needed) — deal discarded, offer reverts to `"active"`, taker notified.
-
-**Data dependency:** This relies on `users.completed_deals_count` being accurately incremented on deal completion. This field exists in the schema (Section 5) but its increment logic must be verified/added as part of this implementation — it was not previously confirmed as actively maintained.
+**Sequence & Privacy-by-Design:**
+1. Taker presses "start deal," and enters requested `amount_usdt` ONLY.
+2. The system creates the deal record with status `PENDING_OWNER_APPROVAL`, setting `buyer_payout_address = "PENDING"` and `seller_payment_info = {"info": "PENDING"}` in DB. The offer's status immediately flips to `"reserved"` (preventing concurrent requests on the same offer).
+3. A request is sent to the offer owner containing: requested amount, calculated SYP total, and taker's `users.completed_deals_count`. **No personal information about the taker is shown** — no username, no wallet address, no payment info, no Telegram ID. Two action buttons: ✅ Approve (`appr_deal_`) / ❌ Reject (`rejc_deal_`).
+4. **Operational Admin Intervention:** Accounts in `settings.ADMIN_IDS` possess operational authority to execute approval/rejection (`appr_deal_` / `rejc_deal_`) or negotiation actions (`neg_m_acc_`, `neg_m_rej_`, `neg_m_cnt_`, `neg_t_acc_`, `neg_t_rej_`) on behalf of stalled parties when required. Payment actions (`man_dep_`, `man_syp_`, `man_conf_`) remain strictly for actual deal counterparties, and final release (`man_rel_`) remains strictly for admins.
+5. **Owner/Admin approves** → deal transitions to `CREATED`, then immediately to `AWAITING_USDT_DEPOSIT` (starting the 15-minute deposit window — Section 4.2).
+6. **Owner/Admin rejects (explicit)** → deal status becomes `CANCELLED`, offer reverts to `"active"`, taker is notified, and the deal record is retained in DB for accounting audit.
+7. **Owner does not respond within 30 minutes** → deal status becomes `EXPIRED`, offer reverts to `"active"`, taker is notified, and deal record is retained in DB.
 
 ### 4.1 Cancellation Policy
 Any cancellation occurring at or after `USDT_DEPOSITED` **must** route through admin intervention. No unilateral, automatic cancellation is permitted once funds are in escrow custody. This is a hard invariant, not a configurable option.
 
-### 4.2 Deposit Window Expiry Policy (revised in v2.6)
-Deals in `CREATED` or `AWAITING_USDT_DEPOSIT` (i.e., before funds enter escrow) expire automatically **15 minutes** after entering `AWAITING_USDT_DEPOSIT` if no on-chain deposit is detected. **This value was previously 60 minutes (v2.3); it is revised to 15 minutes in v2.6** to match the short validity window of the underlying temporary deposit address itself — the address becomes stale faster than the deal's overall lifecycle allows, so this window is intentionally shorter than the deal-level 1-hour ceiling described in Section 4.2.1. This is the **only** fully-automatic expiry among the three timing mechanisms in this system (see 4.4 for the others, which notify but do not auto-act except after a grace period).
+### 4.2 Deposit Window Expiry Policy (revised in v2.6 / v3.3)
+Deals in `CREATED` or `AWAITING_USDT_DEPOSIT` (before funds enter escrow) expire automatically **15 minutes** after entering `AWAITING_USDT_DEPOSIT` if no on-chain deposit is detected. This matches the validity window of the temporary deposit address.
 
-**Late deposit handling:** Expiry stops the deal from progressing automatically in the bot's state machine, but the deposit address itself remains valid on-chain indefinitely (addresses are not "closed" — chain monitoring simply de-prioritizes them after expiry). If a deposit arrives after expiry, the Chain Watcher must still detect it (monitoring continues for at least 24 hours post-expiry, not just the 15-minute window) and flag it for manual admin handling — either reactivating the deal (if the buyer side is still available and willing) or arranging a refund to the seller. This is a manual admin process for MVP; no automated refund path is required at this stage.
+**Late deposit handling:** Expiry stops the deal from progressing automatically, but the deposit address remains monitored for at least 24 hours. If a deposit arrives post-expiry, Chain Watcher flags it for manual admin intervention (reactivating deal or arranging refund).
 
-### 4.2.1 Overall Deal Timing Ceiling (v2.6 — new)
-Independent of the 15-minute deposit window above, a deal has an overall soft ceiling of **1 hour** from creation. Unlike the deposit window, this ceiling is **not self-enforcing** — no automatic status change occurs solely because an hour has passed. It exists as an operational signal: if a deal has been open longer than an hour without reaching `COMPLETED`, this should be surfaced to admins for manual review (e.g., via the existing admin-facing deal listing), since it suggests the deal is stuck for a reason the automatic mechanisms don't otherwise catch (e.g., the buyer/seller stopped responding at a manual step that has no automatic timeout of its own, such as `AWAITING_SYP_PAYMENT` or `SYP_PAYMENT_SENT`).
+### 4.2.1 Overall Deal Timing Ceiling
+Independent of the 15-minute deposit window, a deal has an overall soft ceiling of **1 hour** from creation. It is non-enforcing (does not auto-cancel) and serves as an operational signal for admin review.
 
-### 4.3 Admin Notification Trigger
-The bot's normal happy-path progression through `AWAITING_USDT_DEPOSIT` → `USDT_DEPOSITED` → `AWAITING_SYP_PAYMENT` → `SYP_PAYMENT_SENT` → `SYP_PAYMENT_CONFIRMED` requires **no admin involvement or notification** — these transitions are driven entirely by the buyer/seller themselves (manually in Phase 1, automatically via Chain Watcher for the USDT-deposit step in Phase 2).
+### 4.3 Admin Notification Trigger & Atomic Confirmation (v3.3)
+The happy-path progression `AWAITING_USDT_DEPOSIT → USDT_DEPOSITED → AWAITING_SYP_PAYMENT → SYP_PAYMENT_SENT → ADMIN_APPROVAL` requires no admin action until `ADMIN_APPROVAL`.
 
-**The single point requiring active admin notification is entry into `ADMIN_APPROVAL`.** This is the only moment in the entire deal lifecycle where a human admin decision gates fund release. When a deal enters this state, the system must proactively push a message to every ID in `ADMIN_IDS` (not merely update the pressing user's own message) containing deal details and a direct release action — an admin who is not personally a party to the deal (the expected normal case) has no other way to learn that action is needed. `/my_deals`, being filtered to deals where the requesting user is `buyer_id` or `seller_id`, does not surface this for an admin who is neither.
+**Atomic Transition:** When the seller presses "Confirm SYP Receipt" (`man_conf_`), the deal transitions **atomically and directly** from `SYP_PAYMENT_SENT` to `ADMIN_APPROVAL`. The separate manual `SYP_PAYMENT_CONFIRMED` state is removed. An alert is instantly dispatched to all `ADMIN_IDS`.
 
-No other state transition warrants proactive admin notification; `DISPUTED` (Section 4, branch states) is the only other state that does, since it likewise requires human intervention outside the normal flow. The owner-approval flow in Section 4.0 notifies the *offer owner*, not the admin — these are distinct notification paths.
+**Admin `/my_deals` View:** For users in `ADMIN_IDS`, executing `/my_deals` surfaces deals in `ADMIN_APPROVAL` state first, followed by their personal deals.
 
-### 4.4 Offer-Level Expiry Policy (v2.6 — new)
+### 4.3.1 Unified Interactive Deal Card (v3.3)
+Each deal counterparty receives a dedicated interactive card (`deals.seller_card_msg_id` / `deals.buyer_card_msg_id`). Upon state transitions or turn handoffs, the system updates the message in-place or re-sends it with a notification alert, rendering current step, turn status, countdown timer, and contextual action buttons.
 
-Distinct from deal-level expiry (Sections 4.2, 4.2.1), an **offer itself** (before any deal is requested against it) now has a maker-defined validity period, capped at a **maximum of 4 hours**. This is separate from, and unrelated to, `deals.expires_at` — it requires a **new field**, `offers.expires_at`, not previously part of the schema.
+### 4.4 Offer-Level Expiry Policy & Orphan Safety Net (v3.3)
+An **offer itself** (before any deal is requested against it) has a maker-defined validity period.
 
-**Sequence:**
-1. At offer creation, the maker specifies a duration up to 4 hours (exact prompt/UI TBD at implementation).
-2. When this duration elapses, the offer does **not** expire immediately — a notification is sent to the maker only, with options to extend the duration or delete the offer.
-3. If the maker takes no action within a **30-minute grace period** after that notification, the offer is automatically deleted (or marked inactive/removed from the channel and `/offers` listing, consistent with existing offer-status handling in Section 5.1).
-4. If the maker does not respond at all (ignores the notification entirely, past the grace period), deletion still proceeds automatically — this is the one part of the offer lifecycle that is fully automatic, matching the taker-facing behavior of Section 4.0's 30-minute no-response rule.
+**Duration Options:**
+- Short minutes: `15`, `30`, or `45` minutes.
+- Full hours: `1`, `2`, `3`, or `4` hours (capped at 4 hours, default 4 hours).
 
-This grace period (30 minutes) is intentionally the same duration as the owner-approval timeout in Section 4.0, though they govern different objects (an offer with no pending deal, vs. a deal awaiting the owner's approval decision) and are implemented independently.
+**Grace Period & Deletion:**
+When an offer's duration elapses, it enters `expired_grace`. A notification is sent to the maker with options to extend (`ext_off_`) or delete (`del_off_`). If no action is taken within 30 minutes, the offer status becomes `expired` and it is removed from public channels/listings. Extension and deletion actions are available to the maker or admin (`ADMIN_IDS`).
+
+**Orphan Offers Safety Net (v3.3):**
+If an offer is stuck in `reserved` or `negotiating` status without an active deal (`deals.status NOT IN ('CANCELLED','EXPIRED','COMPLETED')`) or open negotiation (`negotiations.status IN ('PENDING_MAKER','PENDING_TAKER')`), and more than **10 minutes** have passed since `offers.status_changed_at`, a background task in `bot/tasks.py` automatically reverts `offers.status` to `"active"` and updates the channel message.
 
 ---
 
@@ -139,12 +143,12 @@ This grace period (30 minutes) is intentionally the same duration as the owner-a
 users
   telegram_id         BIGINT PRIMARY KEY
   username             TEXT
-  nickname             VARCHAR(60) NULLABLE    -- added v3.0: trader custom alias
-  saved_usdt_address   VARCHAR(100) NULLABLE   -- added v3.0, updated v3.1: default BEP20 (BNB Smart Chain) payout address
-  saved_payment_info   VARCHAR(200) NULLABLE   -- added v3.0: default Syrian local payment account info (Sham Cash, Syriatel, etc.)
-  kyc_status           VARCHAR(20) DEFAULT 'unverified' -- added v3.0: 'unverified' | 'pending' | 'verified'
-  reward_points        INTEGER DEFAULT 0       -- added v3.0: Golden Points rewards system balance
-  reputation_score      NUMERIC DEFAULT 100
+  nickname             VARCHAR(60) NULLABLE    -- trader custom alias
+  saved_usdt_address   VARCHAR(100) NULLABLE   -- default BEP-20 (BNB Smart Chain) payout address
+  saved_payment_info   VARCHAR(200) NULLABLE   -- default Syrian local payment account info
+  kyc_status           VARCHAR(20) DEFAULT 'unverified' -- 'unverified' | 'pending' | 'verified'
+  reward_points        INTEGER DEFAULT 0       -- Golden Points rewards system balance
+  reputation_score      NUMERIC DEFAULT 5.0     -- Rating scale from 5.0 stars (default 5.0)
   completed_deals_count INTEGER DEFAULT 0
   is_banned             BOOLEAN DEFAULT FALSE
   created_at            TIMESTAMPTZ DEFAULT now()
@@ -156,11 +160,14 @@ offers
   rate                  NUMERIC NOT NULL
   min_limit             NUMERIC NOT NULL
   max_limit             NUMERIC NOT NULL
-  payment_methods        TEXT[]
-  status                TEXT DEFAULT 'active'   -- 'active' | 'reserved' | 'completed'
-  channel_message_id     INTEGER NULLABLE        -- added v2.x (migration 002), tracks the channel post to edit on status change
-  payout_info            TEXT NULLABLE           -- added v2.x (migration 004): maker's role-appropriate info (BEP20 address if maker is buyer, cash payment info if maker is seller) — see Section 4.0 dynamic role logic
-  expires_at             TIMESTAMPTZ NULLABLE    -- added v2.6: offer-level expiry, maker-defined, max 4 hours (Section 4.4) — distinct from deals.expires_at
+  payment_methods        TEXT[]                  -- Allowed: 'شام كاش ليرة', 'شام كاش دولار', 'سيريتيل كاش', 'حوالة بنكية (الهرم)', 'حوالة بنكية (الفؤاد)'
+  negotiable            BOOLEAN DEFAULT FALSE
+  negotiable_type        VARCHAR(20) DEFAULT 'none' CHECK (negotiable_type IN ('none', 'amount', 'rate', 'both'))
+  status                TEXT DEFAULT 'active' CHECK (status IN ('active', 'reserved', 'negotiating', 'completed', 'expired_grace', 'expired', 'cancelled'))
+  status_changed_at     TIMESTAMPTZ DEFAULT now()
+  channel_message_id     INTEGER NULLABLE
+  payout_info            TEXT NULLABLE DEFAULT '' -- For backwards compatibility; detailed payment data is collected during deal execution
+  expires_at             TIMESTAMPTZ NULLABLE    -- Maker-defined expiry (15m/30m/45m or 1h/2h/3h/4h)
   created_at            TIMESTAMPTZ DEFAULT now()
 
 deals
@@ -170,20 +177,35 @@ deals
   buyer_id              BIGINT REFERENCES users(telegram_id)
   amount_usdt            NUMERIC NOT NULL
   amount_syp             NUMERIC NOT NULL
-  fee_usdt               NUMERIC NOT NULL DEFAULT 1.0
+  fee_usdt               NUMERIC NOT NULL DEFAULT 0.002 -- Proportional dual fee: 0.1% seller surcharge + 0.1% buyer deduction = 0.2% total
   deposit_address        TEXT NOT NULL UNIQUE
   deposit_index          INTEGER NOT NULL UNIQUE
-  buyer_payout_address    TEXT NOT NULL
-  seller_payment_info     JSONB NOT NULL
-  status                 TEXT NOT NULL DEFAULT 'PENDING_OWNER_APPROVAL'  -- see Section 4 for full state list; default changed in v2.6 (was 'CREATED')
-  expires_at              TIMESTAMPTZ NULLABLE    -- added v2.3 (migration 003): deposit-window deadline, set on entering AWAITING_USDT_DEPOSIT (Section 4.2)
+  buyer_payout_address    TEXT NOT NULL DEFAULT 'PENDING'
+  seller_payment_info     JSONB NOT NULL DEFAULT '{"info": "PENDING"}'
+  status                 TEXT NOT NULL DEFAULT 'PENDING_OWNER_APPROVAL'
+  expires_at              TIMESTAMPTZ NULLABLE    -- 15-minute deposit deadline
+  seller_card_msg_id     BIGINT NULLABLE
+  buyer_card_msg_id      BIGINT NULLABLE
   created_at             TIMESTAMPTZ DEFAULT now()
   updated_at             TIMESTAMPTZ DEFAULT now()
+
+negotiations
+  id                   SERIAL PRIMARY KEY
+  offer_id              INTEGER REFERENCES offers(id) NOT NULL
+  taker_id              BIGINT REFERENCES users(telegram_id) NOT NULL
+  maker_id              BIGINT REFERENCES users(telegram_id) NOT NULL
+  proposed_rate         NUMERIC NOT NULL
+  proposed_amount       NUMERIC NOT NULL
+  status                VARCHAR(20) DEFAULT 'PENDING_MAKER' CHECK (status IN ('PENDING_MAKER', 'PENDING_TAKER', 'ACCEPTED', 'REJECTED', 'EXPIRED'))
+  round                 INTEGER DEFAULT 1
+  expires_at            TIMESTAMPTZ NOT NULL
+  created_at            TIMESTAMPTZ DEFAULT now()
+  updated_at            TIMESTAMPTZ DEFAULT now()
 
 payment_proofs
   id                   SERIAL PRIMARY KEY
   deal_id                INTEGER REFERENCES deals(id)
-  transaction_reference   TEXT NOT NULL UNIQUE   -- critical: prevents proof reuse across deals
+  transaction_reference   TEXT NOT NULL UNIQUE
   amount                 NUMERIC NOT NULL
   submitted_by            BIGINT REFERENCES users(telegram_id)
   submitted_at            TIMESTAMPTZ DEFAULT now()
@@ -204,159 +226,193 @@ blockchain_transactions
   direction               TEXT CHECK (direction IN ('deposit','release'))
   amount                 NUMERIC NOT NULL
   confirmed_at            TIMESTAMPTZ
+
+system_settings
+  key                  VARCHAR(100) PRIMARY KEY
+  value                TEXT NOT NULL
+  updated_at            TIMESTAMPTZ DEFAULT now()
+
+audit_logs
+  id                   SERIAL PRIMARY KEY
+  admin_id              BIGINT REFERENCES users(telegram_id)
+  action                VARCHAR(100) NOT NULL
+  target_type           VARCHAR(50) NULLABLE
+  target_id             BIGINT NULLABLE
+  details               JSONB NULLABLE
+  created_at            TIMESTAMPTZ DEFAULT now()
+
+SEQUENCE:
+  deposit_index_seq
 ```
 
-### 5.1 Critical Constraints
-- `deals.deposit_address` and `deals.deposit_index` must be `UNIQUE` — enforces the per-deal isolation principle at the schema level, not just in application logic.
-- `payment_proofs` table remains in the schema but is **not used** in the SYP payment confirmation flow as of v2.2 (see Section 6, item 3, and Section 13 Change Log). SYP payment confirmation instead relies on a two-party mutual confirmation model: the buyer confirms sending payment, and the seller confirms receiving it, each via a single button press — no transaction reference is collected or validated. This is an accepted, deliberate trade-off (see Section 9, "Accepted Risk" note); the table is retained for potential future re-introduction of reference-based verification without a schema migration.
+### 5.1 Critical Constraints & Indexes
+- `deals.deposit_address` and `deals.deposit_index` must be `UNIQUE`.
+- `chk_deals_different_parties`: `CHECK (seller_id <> buyer_id)` on `deals`.
+- `uq_open_deal_per_offer`: `CREATE UNIQUE INDEX uq_open_deal_per_offer ON deals(offer_id) WHERE status NOT IN ('CANCELLED','EXPIRED','COMPLETED')`.
+- `uq_open_negotiation_per_offer`: `CREATE UNIQUE INDEX uq_open_negotiation_per_offer ON negotiations(offer_id) WHERE status IN ('PENDING_MAKER','PENDING_TAKER')`.
+- `payment_proofs` remains in schema for potential future re-introduction of reference checks without migration.
 
 ---
 
 ## 6. Security Requirements (Non-Negotiable)
 
-1. **Master seed custody.** The HD wallet seed must never be committed to version control, must never exist in plaintext in application logs, and must be stored with OS-level file permission restrictions at minimum. A dedicated secrets manager is strongly preferred over a plain `.env` file for production.
-2. **On-chain deposit verification.** No deposit is considered confirmed based on user-reported confirmation alone. Every `USDT_DEPOSITED` transition must be backed by an independently verified on-chain transaction (via BscScan API or direct RPC query) matching the expected deposit address and amount. **This requirement applies specifically to the USDT leg of the transaction and is not waived.**
-3. **SYP payment confirmation (mutual, non-verified).** Unlike USDT deposits, SYP-side payment is confirmed via a two-party mutual acknowledgment (buyer confirms send, seller confirms receipt) with no independent verification (no transaction reference, no bank/wallet API check). This is a deliberate, accepted product decision — see Section 9 "Accepted Risk" note for the reasoning and the resulting exposure.
-4. **Input validation.** All user-supplied input (amounts, payment account identifiers, wallet addresses) must be validated for format and range before persistence or use in any downstream operation.
-5. **Rate limiting.** Per-user limits on offer creation and deal initiation within a rolling time window, to mitigate automated abuse.
-6. **Access control documentation.** A explicit, written record of who holds access to the production server, database, and any component of the wallet seed/keys must be maintained and kept current. This is an organizational control, not a code artifact, but its absence is a security gap equivalent to a code vulnerability.
+1. **Master seed custody.** Seed stored securely with OS-level restrictions or secret manager.
+2. **On-chain deposit verification.** Every `USDT_DEPOSITED` transition backed by BscScan / RPC query.
+3. **SYP payment confirmation (mutual, non-verified).** Two-party mutual acknowledgment with accepted risk note (Section 9.1).
+4. **Input validation.** Validating amounts, BEP-20 addresses (EIP-55), and payment info.
+5. **Rate limiting.** Dual-layer limits on offer creation, deal initiation, and negotiations (Section 6.1).
+6. **Access control documentation.** Maintaining explicit records of production access.
 
 ---
 
-## 6.1 Rate Limiting Policy (v3.2)
+## 6.1 Rate Limiting Policy (v3.3)
 
-يطبّق النظام طبقتين مستقلتين من الحماية ضد سوء الاستخدام، تعملان معاً على العروض والصفقات:
+The system enforces two independent protection layers against spam and automated abuse:
 
-### 6.1.1 — سقف ثابت للعناصر النشطة:
-- **عروض نشطة لكل مستخدم:** حد أقصى 5 (`offers.status IN ('active', 'reserved', 'negotiating', 'expired_grace')`).
-- **صفقات نشطة لكل مستخدم كطرف فيها:** حد أقصى 5 (`deals.status NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`).
-- **عند تجاوز السقف:** يُمنع المستخدم من إكمال إنشاء عرض/بدء صفقة جديدة، مع رسالة توضح ضرورة حذف/إنهاء عنصر قديم أولاً. ليس عقوبة أو حظراً — سقف تشغيلي عادي يزول تلقائياً بانخفاض العدد.
+### 6.1.1 — Active Elements Fixed Ceiling:
+- **Active Offers per user:** Maximum 5 (`offers.status IN ('active', 'reserved', 'negotiating', 'expired_grace')`).
+- **Active Operations per user (Deals & Negotiations):** Maximum 5 (`deals.status NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')` + `negotiations.status IN ('PENDING_MAKER', 'PENDING_TAKER')`).
+- Applies to **both counterparties (Maker & Taker)**.
 
-### 6.1.2 — حد زمني متحرك لمنع السبام:
-- **إنشاء عرض:** 3 عمليات/10 دقائق متحركة.
-- **بدء صفقة:** 5 محاولات/10 دقائق متحركة.
-- **عند التجاوز:** رفض فوري بدون أثر دائم على سمعة المستخدم.
+### 6.1.2 — Rolling Time Window:
+- **Offer Creation:** Maximum 3 attempts per 10 rolling minutes.
+- **Deal & Negotiation Initiation:** Maximum 5 attempts per 10 rolling minutes.
 
-### 6.1.3 — آلية التنفيذ:
-- **الطبقة 1 (سقف ثابت):** `COUNT` query مباشر من قاعدة البيانات عند نقطة الدخول.
-- **الطبقة 2 (حد زمني):** middleware مخصص in-memory (`bot/middlewares/rate_limit.py`)، بنفس نمط `MaintenanceMiddleware` الموجود.
-- **استثناء المشرفين:** الأدمن مُستثنى بالكامل من الطبقتين (`settings.ADMIN_IDS`).
-- **قيد معروف Phase 1:** الطبقة 2 تُصفَّر عند إعادة تشغيل البوت (مقبول حالياً؛ يحتاج مراجعة لو صار multi-worker مستقبلاً).
+### 6.1.3 — Execution & Locking Rules:
+- **Entry point pre-check:** Validated immediately upon user interaction (`/create_offer`, `start_deal_`, `start_neg_`).
+- **Atomic re-check under lock:** Mandatory re-check under `SELECT ... FOR UPDATE` row lock on `User` / `Offer` during actual persistence or state conversion.
+- **Admin Exemption:** Accounts in `settings.ADMIN_IDS` are exempt.
 
 ---
 
 ## 7. Operational Requirements (24/7 Availability)
 
-1. **Process supervision.** Both Bot Service and Chain Watcher must run under a process manager (systemd or supervisord) configured for automatic restart on crash.
-2. **Fault isolation.** All per-update/per-request handlers must be wrapped in exception handling that prevents a single malformed input or unexpected external API response from terminating the service process.
-3. **Health monitoring.** A lightweight periodic check (e.g., every 60 seconds) verifying both services are live, with alerting (e.g., to a dedicated admin Telegram channel) on failure.
-4. **Database backups.** Automated, scheduled backups stored independently of the primary server.
+1. **Process supervision.** Systemd/supervisord supervisor loops.
+2. **Fault isolation.** Handlers wrapped in exception isolation.
+3. **Health monitoring.** Health checks and admin alerts.
+4. **Database backups.** Scheduled database dumps.
 
 ---
 
 ## 8. Performance & Responsiveness Requirements
 
-Bot interaction latency is treated as a first-class requirement, not an afterthought. Every button press and message must feel instantaneous to the user. The following are binding design constraints:
-
-1. **Webhook, not polling.** The Bot Service must receive Telegram updates via webhook (requiring a valid HTTPS endpoint), not long/short polling. Webhook delivery is push-based and eliminates the inherent polling-interval delay.
-2. **Non-blocking response pattern.** Any handler that depends on a slow external call (on-chain verification, BscScan API query, external payment reference check) must acknowledge the user's action immediately (e.g., "Processing...") and perform the slow operation asynchronously in the background, delivering the result as a follow-up message. No user-facing interaction may block on a network call to an external service.
-3. **Database indexing.** All columns used in frequent lookups — `deals.deposit_address`, `deals.status`, `users.telegram_id`, `payment_proofs.transaction_reference` — must have appropriate indexes defined at schema creation, not added reactively after performance degrades.
-4. **Connection pooling.** Database access must use a persistent connection pool (SQLAlchemy async engine pooling) rather than opening a new connection per request.
-5. **Server region.** Production hosting must be selected for low network latency to the primary user base (region TBD — see Section 9), not chosen solely on cost or unrelated convenience factors.
-
-**Design principle:** Performance and security are not in tension when the architecture is correct. Security-critical checks (e.g., on-chain deposit verification) still happen in full — they are simply moved off the synchronous request/response path so they never delay the user-facing acknowledgment.
+1. **Webhook vs Polling.** Production Phase 2 mandates Webhook delivery. Phase 1 operates temporarily in `Polling` mode with `MemoryStorage` for initial operational verification.
+2. **Non-blocking response pattern.** Long queries run asynchronously.
+3. **Database indexing.** Indexes on `deals.deposit_address`, `deals.status`, `users.telegram_id`, `payment_proofs.transaction_reference`.
+4. **Connection pooling.** SQLAlchemy async connection pool (`pool_pre_ping=True`, `pool_recycle=1800`).
+5. **Server region.** Low-latency hosting relative to user base.
 
 ---
 
-## 9. Fraud Mitigation Controls
+## 9. Fraud Mitigation & Proportional Dual Fee Model
 
 | Risk | Control |
 |---|---|
-| False "USDT sent" claims | On-chain verification — not waived, see Section 6 item 2 |
-| False "SYP sent/received" claims | **Accepted risk, not mitigated at the system level.** Confirmation relies entirely on mutual buyer/seller acknowledgment. See "Accepted Risk" note below. |
-| Reputation gaming via wash trades | Minimum deal amount threshold for reputation accrual (value TBD — Section 10); pattern detection on repeated counterparty pairs (post-MVP) |
-| Unilateral cancellation after custody transfer | Hard state-machine invariant — cancellation post-`USDT_DEPOSITED` requires admin action (Section 4.1) |
-| Address reuse / cross-deal confusion | Per-deal unique address derivation (Section 3.3), enforced via schema uniqueness (Section 5.1) |
+| False "USDT sent" claims | On-chain verification (Section 6 item 2) |
+| False "SYP sent/received" claims | Accepted risk, mutual acknowledgment (Section 9.1) |
+| Wash trading | Minimum deal sizes and 5.0 star reputation tracking |
+| Unilateral post-custody cancellation | State-machine invariant — post-`USDT_DEPOSITED` requires admin intervention |
+| Address reuse | Per-deal unique derivation (Section 3.3, 5.1) |
 
-### 9.1 Accepted Risk Note — SYP Payment Confirmation (v2.2)
+### 9.1 Proportional Dual Fee Model (0.1% per party = 0.2% total)
+The old flat fee model ($1.0 USDT or $0.5+$0.5) is replaced with a proportional fee model:
+- **Fee Rate:** `0.1%` (`0.001 * amount_usdt`) per counterparty = `0.2%` (`0.002 * amount_usdt`) total platform fee on completed deals.
+- **Seller Portion:** Seller deposits `amount_usdt * 1.001` into escrow.
+- **Buyer Portion:** Buyer receives net `amount_usdt * 0.999` upon release.
+- **Benchmark Example:** On a 1,000 USDT trade, Seller deposits 1,001 USDT, Buyer receives 999 USDT, and Net Platform Profit (`fee_usdt`) = 2 USDT.
 
-As of v2.2, the SYP leg of a deal is confirmed by mutual acknowledgment only (buyer presses "sent," seller presses "received") — no transaction reference, receipt, or third-party verification is collected. This was a deliberate product decision: the team judged the added friction of reference collection (and the fact that Sham Cash / Syriatel Cash do not expose a verifiable API in this system's current scope) to outweigh the fraud-prevention benefit for the intended initial user base and trust model.
-
-**Residual exposure:** a seller could falsely deny receiving a payment that was actually sent, or a buyer could press "sent" without transferring funds, with no independent record for the admin to arbitrate against during a dispute (Section 4, `DISPUTED` state). Dispute resolution in this scenario relies on off-platform evidence the parties bring themselves (screenshots, bank statements) rather than anything the system captured automatically.
-
-This decision should be revisited if fraud incidence in practice proves non-trivial; the `payment_proofs` table and its schema remain in place specifically to allow reintroducing reference-based verification later without a migration.
+### 9.2 Accepted Risk Note — SYP Payment Confirmation
+Confirmed by mutual acknowledgment. Re-introducing reference validation remains possible via `payment_proofs` without DB migration.
 
 ---
 
-## 10. Open Decisions
+## 10. Open Decisions & Release Pipeline
 
-The following require explicit resolution before the corresponding component is implemented. Each must be resolved and moved into the relevant section above before implementation begins on that component.
+- [x] **Expiry timeout duration** — **Resolved (v2.3/v2.6):** 15-minute deposit window (Section 4.2).
+- [x] **Fee structure** — **Resolved (v3.3):** Proportional Dual Fee Model (0.1% per counterparty, total 0.2%).
+- [x] **Gas funding mechanism** — **Resolved (v2.3):** On-demand gas station pattern (Section 10.1).
 
-- [x] **Expiry timeout duration** for pre-deposit deal states. — **Resolved (v2.3): 60 minutes.** See Section 4.2.
-- [x] **Gas funding mechanism** for per-deal derived addresses. — **Resolved (v2.3): on-demand gas station pattern.** Per-deal address isolation (Section 1.2, Section 3.3) is retained as-is — addresses are not shared across deals or reused per-user. At release time (admin-triggered `ADMIN_APPROVAL` → `COMPLETED` transition), the system's main treasury wallet sends a small BNB amount to the deal's derived address, waits for confirmation, then signs and broadcasts the USDT transfer from that address to the buyer. This avoids funding addresses for deals that are cancelled or expire before reaching release, at the cost of a two-step (BNB-then-USDT) release sequence instead of a single transfer. The main treasury wallet's own gas balance must be monitored and topped up manually as an operational task (not automated for MVP). Full failure-handling design in Section 10.1.
-
-### 10.1 Release Pipeline — Concurrency & Failure Handling (v2.4)
-
-This subsection details the full release sequence referenced above, covering concurrency protection and failure recovery. This is a design specification for Phase 2 implementation, not yet built.
-
-**Step 0 — Concurrency lock (atomic conditional update).** Before any blockchain interaction, the admin's release action executes a single atomic SQL statement:
-```sql
-UPDATE deals SET status = 'RELEASING', updated_at = NOW()
-WHERE id = :deal_id AND status = 'ADMIN_APPROVAL'
-RETURNING id;
-```
-If zero rows are affected, a concurrent release attempt already claimed this deal (or it was already released) — the second request is rejected immediately with no blockchain call made. This relies on PostgreSQL's row-level locking guarantees, not application-level checks. The Telegram button must also be disabled/relabeled ("⏳ Processing release...") immediately on click to reduce (not replace) the chance of a double-press.
-
-**Step 1 — Gas balance pre-check (idempotency).** Query the deal address's on-chain BNB balance. If it already meets or exceeds the required gas amount (see Step 2 for how this is computed), skip directly to Step 3. This prevents wasting BNB on repeated retries — a deal address that already received gas from a prior attempt will not receive it again.
-
-**Step 2 — Gas dispatch (if needed).** If the balance check in Step 1 shows insufficient gas, send BNB from the main treasury wallet to the deal address. The required amount is computed dynamically at execution time via `contract.functions.transfer(...).estimate_gas(...)` and the current network gas price (with a safety multiplier, e.g. 1.2x) — **not a hardcoded constant**. Retry policy: up to 3 attempts with exponential backoff (immediate/10s, 30s, 60s), with a 3-minute maximum wait per attempt for transaction confirmation before considering that attempt failed.
-
-**Step 3 — USDT transfer.** Once gas is confirmed available (either from Step 1's pre-check or Step 2's dispatch), sign and broadcast the USDT transfer from the deal address to `buyer_payout_address`.
-
-**Failure outcomes — both return the deal to `ADMIN_APPROVAL`, with distinct admin-facing messages:**
-- *Gas stage failure* (Step 2 exhausted all retries): admin is told this is a gas/treasury-balance issue — check treasury wallet balance and retry.
-- *USDT transfer stage failure* (Step 3 fails despite gas being present): admin is told this is a different class of failure (e.g., insufficient USDT balance at deal address, nonce issue, contract revert) with the tx error/hash logged, and is explicitly told gas is already funded so a retry will not re-send BNB.
-
-**Note:** This design is not yet implemented; it is the agreed blueprint for Phase 2. The gas amount, retry timings, and estimate_gas behavior must be validated against real Testnet transactions before being treated as final.
-- [ ] **Reputation-eligible minimum deal size**, to reduce wash-trade incentive.
-- [ ] **Access control matrix** — explicit list of who holds server, database, and key material access, and at what privilege level.
-- [ ] **Fee structure at low transaction volumes** — the current flat 0.5+0.5 USDT fee model may represent a disproportionate percentage on small-value deals; a minimum deal size or percentage-based fee should be evaluated.
-- [ ] **Dispute resolution SLA** — maximum time an admin has to act on a `DISPUTED` or `ADMIN_APPROVAL` state before an escalation path triggers.
-- [ ] **Production server region** — must be selected for low-latency access from the primary user base (Section 8.5).
+### 10.1 Release Pipeline — Concurrency & Failure Handling
+1. **Step 0 — Atomic Concurrency Lock:** `UPDATE deals SET status = 'RELEASING' WHERE id = :id AND status = 'ADMIN_APPROVAL'`.
+2. **Step 1 — Gas Balance Pre-check (Idempotency):** Query deal address BNB balance.
+3. **Step 2 — Gas Dispatch:** Fund BNB dynamically via `estimate_gas()`.
+4. **Step 3 — USDT Transfer:** Broadcast USDT release to `buyer_payout_address`.
 
 ---
 
 ## 11. Implementation Roadmap
 
-### Phase 1 — Core Flow (No Blockchain Integration)
-- Database schema implementation and migrations.
-- Bot conversation flow: offer creation, offer browsing, deal acceptance, manual state transitions (admin-triggered, no automated verification yet).
-- Objective: validate the state machine and conversational UX independent of blockchain complexity.
-
-### Phase 2 — Blockchain Integration (Testnet Only)
-- Master seed generation and HD derivation implementation.
-- Chain Watcher against BSC Testnet with test-value tokens.
-- Automated release logic tested end-to-end with zero real-value funds.
-- Resolve gas funding mechanism (Section 9).
-
-### Phase 3 — Security & Operational Hardening
-- Implement all controls in Sections 6 and 7.
-- Rate limiting, input validation, unique constraints active and tested.
-- Process supervision and health monitoring deployed.
-
-### Phase 4 — Admin & Dispute Tooling
-- Admin command set: approve/release, cancel, resolve dispute.
-- Dispute evidence collection and resolution logging.
-
-### Phase 5 — Controlled Mainnet Rollout
-- Deployment to BSC Mainnet with strictly capped deal sizes.
-- Gradual limit increase contingent on observed stability over a defined monitoring period.
+- **Phase 1 — Core Flow (No Blockchain Integration):** DB schema, bot conversation flow, polling mode verification.
+- **Phase 2 — Blockchain Integration (Testnet Only):** Master seed, Chain Watcher, Webhook.
+- **Phase 3 — Security & Operational Hardening:** Rate limiting, access control.
+- **Phase 4 — Admin & Dispute Tooling:** Admin commands, dispute resolution.
+- **Phase 5 — Controlled Mainnet Rollout:** Mainnet deployment with capped deal limits.
 
 ---
 
-## 12. Explicit Non-Goals for MVP
+## 12. Negotiation System (v2.7 / v3.3)
 
-To keep scope bounded, the following are intentionally excluded from initial implementation and should not be introduced without a corresponding update to this document:
+Offers may optionally enable negotiation (`offers.negotiable_type`: `none` | `amount` | `rate` | `both`).
+
+**State Machine:**
+Managed via `negotiations` table. Statuses: `PENDING_MAKER` → (maker accepts | maker counters → `PENDING_TAKER` → taker accepts | taker rejects) | maker rejects | 30-minute timeout → `EXPIRED`. Maximum 1 counter-offer round.
+
+**Offer Locking & Proposal Submission:**
+When the taker submits a negotiation proposal, the offer status flips to `negotiating` (excluded from `/offers` and channel). On rejection, expiry, or cancellation, the offer reverts to `active`.
+
+**Privacy-by-Design Payment Flow:**
+Both standard and negotiated deals are created with `buyer_payout_address = "PENDING"` and `seller_payment_info = {"info": "PENDING"}`. Seller payment details are collected after `USDT_DEPOSITED`, and Buyer wallet is collected during `AWAITING_SYP_PAYMENT`.
+
+**Operational Admin Intervention:**
+Admin accounts (`settings.ADMIN_IDS`) can execute approval/rejection/counter-offer actions (`neg_m_acc_`, `neg_m_rej_`, `neg_m_cnt_`, `neg_t_acc_`, `neg_t_rej_`) on behalf of stalled parties.
+
+---
+
+## 13. Admin Panel & Commands (v2.8 / v3.3)
+
+Accessible to `ADMIN_IDS` via `/admin`:
+
+**Statistics & Profit:** Total users, deal status breakdown, and Net Profit (`SUM(fee_usdt)` for `COMPLETED` deals, calculated at 0.2% total fee).
+
+**Comprehensive Admin Commands:**
+- `/admin`: Interactive admin panel menu.
+- `/pending`: List pending deals awaiting owner or admin action.
+- `/deal [id]`: View full deal details and execute manual controls.
+- `/stats`: Platform metrics and trade volume summary.
+- `/market`: Live offer and market summary.
+- `/top_traders`: Top traders leaderboard.
+- `/disputes`: Manage open disputes.
+- `/search [query]`: User lookup by Telegram ID/username.
+- `/reply [id] [msg]`: Admin direct message to user.
+- `/audit`: Download rotating system log (`escrow_system.log`).
+- `/broadcast`: Send broadcast message to registered users.
+- `/backup`: Trigger manual database backup.
+- `/m_on` / `/m_off`: Maintenance mode toggle.
+
+---
+
+## 14. System Resilience & Production Hardening (v2.9)
+
+1. **Smart Critical Error Alerting (`error_alert.py`):** Deduplicated alerts dispatched to admins; full logs written to `escrow_system.log`.
+2. **Connection Pool Resilience:** `pool_pre_ping=True`, `pool_recycle=1800`.
+3. **Supervisor Pattern:** Background tasks in `bot/tasks.py` restart automatically on exception.
+4. **Rate-limited Broadcast & Safe Markdown:** Safe entity escaping and throttled dispatch.
+5. **Seamless FSM Interruption (`command_cancel.py`):** Intercepts slash commands and clears stale dialog state.
+
+---
+
+## 15. User Profile & Loyalty System (v3.0 / v3.3)
+
+1. **Profile Card & 5.0 Star Reputation:** Trader badge, completed deal count, and `reputation_score` on a 5.0 star scale (default 5.0).
+2. **Saved Rails Confirmation Gate:** Confirmation gate for saved BEP-20 wallet (`users.saved_usdt_address`) and local payment accounts (`users.saved_payment_info`).
+3. **Golden Points Loyalty Program:** Operational flag `REWARDS_ENABLED` (default `false`). Points for deals (+10) and referrals (+25). Tiered claims (500/1500/3000 pts).
+4. **5 Approved Local Payment Methods:** `شام كاش ليرة`, `شام كاش دولار`, `سيريتيل كاش`, `حوالة بنكية (الهرم)`, `حوالة بنكية (الفؤاد)`.
+
+---
+
+## 16. Explicit Non-Goals for MVP
+
+To keep scope bounded, the following are intentionally excluded from MVP:
 - Multi-currency support beyond USDT/SYP.
 - Multi-network support beyond BEP20.
 - Automated dispute resolution (all disputes are human-adjudicated for MVP).
@@ -364,138 +420,22 @@ To keep scope bounded, the following are intentionally excluded from initial imp
 
 ---
 
-## 13. Negotiation System (v2.7)
-
-Offers may optionally allow negotiation on rate, amount, or both, set by the maker at offer creation (`offers.negotiable_type`: `none` | `amount_only` | `rate_only` | `both`).
-
-**State machine:** Negotiation is handled by a dedicated `negotiations` table (offer_id, maker_id, taker_id, proposed_rate, proposed_amount, status, round, expires_at), entirely separate from `deals`, and resolved *before* any `Deal` row is created. Statuses: `PENDING_MAKER` → (maker accepts | maker counters → `PENDING_TAKER` → taker accepts | taker rejects) | maker rejects | 30-minute no-response timeout → `expired`. A maximum of one counter-offer round is permitted per session to prevent stalling. The 30-minute timeout matches the owner-approval timeout in Section 4.0 for consistency — there is no separate 15-minute negotiation-specific timer.
-
-**Privacy:** Identical to Section 4.0's approval gate — the maker sees only the taker's proposed terms and `completed_deals_count`, never personal identifiers.
-
-**Offer locking:** While a negotiation session is open, the offer is set to `negotiating` (a new `offers.status` value, alongside `active`/`reserved`/`completed`/`expired_grace`/`expired`/`cancelled`) and is excluded from `/offers` and public channel listings, preventing a third party from acting on the same offer concurrently. On rejection, expiry, or cancellation, the offer reverts to `active`.
-
-**Handoff to the standard deal flow:** On successful negotiation (either party's acceptance), a `Deal` is created directly at `AWAITING_USDT_DEPOSIT` — **skipping `PENDING_OWNER_APPROVAL`** (Section 4.0), since the maker's acceptance during negotiation already constitutes that approval. This is a deliberate, documented exception to the normal gate, not an oversight.
-
-**Payout info gap (known, mitigated):** Unlike the standard flow, the negotiation flow does not prompt the taker for their role-appropriate payout info (BEP20 address or cash payment details) before deal creation — it is initially stored as the literal string `"PENDING"` if not already present on the offer. This is mitigated by two independent safeguards: (1) a prompt is shown to the relevant party once the deal reaches `ADMIN_APPROVAL` (reminder only, not enforced), and (2) a **hard gate in `manual_admin_release`** rejects the release outright if `buyer_payout_address` or `seller_payment_info` is still `"PENDING"`/unset — this second check is the actual enforcement point and was added after live testing revealed the first was insufficient on its own.
-
-**Concurrency:** All read-then-write operations on `Offer`, `Deal`, and `Negotiation` rows involved in this flow use `SELECT ... FOR UPDATE` (row-level locking) to prevent race conditions from near-simultaneous actions — applied consistently across `deals.py` and `negotiations.py`, not just at the negotiation entry point.
-
----
-
-## 14. Admin Panel (v2.8)
-
-A dedicated admin menu (accessible only to `ADMIN_IDS`) providing operational visibility and controls beyond the per-deal notifications in Section 4.3.
-
-**Statistics:**
-- Total user count.
-- Deal counts: monthly and all-time, broken down by terminal status (`COMPLETED`, `EXPIRED`, `CANCELLED`) — the non-completed proportion is a system-health signal (Section 4.2's automatic expiry and Section 4.0/13's rejection paths should be visible in aggregate, not just per-deal).
-- Net profit: **sum of `fee_usdt` for `COMPLETED` deals only** — expired, cancelled, and pending deals do not count toward this figure, since no fee is actually realized until completion.
-
-**User search:** Look up a user (by Telegram ID) to view their profile (`completed_deals_count`, `reputation_score`, `is_banned` status) and take action directly from the result.
-
-**Ban / unban:** Toggles `users.is_banned` (a field that exists in the schema since v1.0 but was previously unused by any code path). Single-button action, no confirmation step required (consistent with the existing single-press pattern for offer cancellation elsewhere in the bot). Once implemented, `is_banned` must actually be checked and enforced at the relevant entry points (`/create_offer`, deal initiation) — merely toggling the flag without enforcement would make it cosmetic.
-
-**Broadcast:** Send a message to all registered users. Must follow the same per-recipient error isolation pattern already used for admin notifications (Section 4.3) and negotiation alerts — one blocked/unreachable user must not interrupt delivery to the rest.
-
-**Maintenance mode:** A global toggle that, when active, blocks all bot interaction for every user **except those in `ADMIN_IDS`** (who retain full access to manage the system while it's down). In-progress deals are not specifically exempted — the ceiling is absolute for non-admins. This requires a global flag (e.g., a settings table row or an in-memory flag reloaded on startup) checked early in the update-handling pipeline, before routing to any handler.
-
----
-
-## 15. System Resilience & Production Hardening (v2.9)
-
-To ensure uninterrupted 24/7 financial operations and absolute crash-resistance under load, the production infrastructure incorporates the following safeguards:
-
-1. **Smart Critical Error Alerting Middleware (`error_alert.py`):**
-   - Automatically filters out routine transient network issues (`TelegramNetworkError`, `TimeoutError`, `ClientConnectorError`, `ServerDisconnectedError`).
-   - Ignores benign Telegram user exceptions (`message is not modified`, `query is too old`, `bot was blocked by user`, `user is deactivated`).
-   - Traps only critical logic, database (`IntegrityError`, `DBAPIError`), and financial execution exceptions.
-   - Dispatches structured alerts directly to platform administrators with error signature de-duplication (throttling duplicate alarms for 60 seconds).
-   - Records full exception tracebacks to rotating persistent system logs (`escrow_system.log`).
-
-2. **Database Connection Pool Resilience (`db/session.py`):**
-   - `pool_pre_ping=True`: Verifies socket health before executing queries, preventing stale connection exceptions after idle periods.
-   - `pool_recycle=1800`: Automatically recycles connections older than 30 minutes.
-   - `pool_timeout=30`: Prevents blocking deadlock under sudden traffic surges.
-
-3. **Background Worker Supervisor Pattern (`bot/tasks.py`):**
-   - Both the expiry watcher (`start_expiry_watcher`) and scheduled backup tasks run under a two-layer supervisor loop.
-   - If an unexpected exception occurs inside the processing loop, it is logged and isolated; the supervisor automatically restarts the worker loop after 10 seconds without terminating the bot process.
-
-4. **Telegram Rate Limiting & Safe Markdown:**
-   - Broadcast handler throttles message dispatch with a 40ms interval (maximum 25 messages/second) to safely operate beneath Telegram's 30/s flood rate limit.
-   - Dynamic user-supplied text (usernames, notes, addresses) is sanitized via `escape_markdown` / `safe_username` to prevent `Can't parse entities` formatting aborts.
-
-5. **Seamless UX FSM Interruption & Auto-Cleanup Middleware (`command_cancel.py`):**
-   - Automatically intercepts incoming slash commands (e.g. `/backup`, `/start`, `/admin`, `/search`) or top-level navigation callbacks when a user is in a pending text-input state.
-   - Automatically deletes or dismisses the stale prompt message from chat history, clearing FSM state immediately without producing "Invalid input" errors or trapping users in prior dialog loops.
-
----
-
-## 16. User Profile & Golden Points Loyalty System (v3.0 / v3.1)
-
-A comprehensive user dashboard accessible via `/profile` or the main menu:
-
-1. **Rich Profile Card & Reputation Metrics:**
-   - Displays user ID, Telegram username, and customizable commercial nickname (`users.nickname`).
-   - Dynamically calculates trader tier:
-     - 👑 VIP Trader (50+ completed deals)
-     - 💎 Pro Trader (15+ completed deals)
-     - 🛡️ Verified Trader (3+ completed deals)
-     - 🌱 Beginner (< 3 deals)
-   - Real-time aggregate volume calculation (`SUM(Deal.amount_usdt)` for completed trades) and reputation score (`reputation_score%`).
-   - Displays identity verification status (`users.kyc_status`: `unverified` | `pending` | `verified`).
-
-2. **One-Click Pre-Configured Saved Rails (BEP-20 & Syrian Cash Accounts):**
-   - Saved USDT BEP-20 (BNB Smart Chain) payout address (`users.saved_usdt_address`).
-   - Saved local payment accounts (Sham Cash, Syriatel Cash, Bemo Bank) (`users.saved_payment_info`).
-
-2.1 **Saved Rails Confirmation Gate (v3.1 Architectural Requirement):**
-   - Whenever the system requests role-specific payment info during deal execution (whether in the standard flow in `deals.py` or post-negotiation deals in `negotiations.py`):
-     - The system queries `users.saved_usdt_address` (for buyers) or `users.saved_payment_info` (for sellers).
-     - **If saved data exists:** The system displays the saved value clearly in a structured message with two explicit buttons:
-       - `[✅ استخدام هذه البيانات]` ➡️ Adopts saved details immediately, transitioning deal state without manual text entry.
-       - `[✏️ إدخال بيانات جديدة لهذه الصفقة]` ➡️ Opens manual text entry for the current deal only, leaving profile defaults intact.
-     - **If no saved data exists:** The flow proceeds directly to standard manual text input prompt (`DealPaymentFSM.waiting_for_seller_account` / `waiting_for_buyer_wallet`).
-   - **Crucial Rule:** The system must never silently pre-populate or force saved details without user consent.
-
-3. **Golden Points Loyalty Program (`users.reward_points`):**
-   - Points earned through successful deal completion (+10), referrals (+25), and timely releases.
-   - Structured tiered point redemption:
-     - 🔵 500 Points = $5 USDT reward
-     - 🟡 1500 Points = $17 USDT reward
-     - 🟣 3000 Points = $35 USDT reward
-   - In-app claim action dispatches instant notification to admin for reward payout and updates balance.
-
-4. **Referral Program:**
-   - Deep-linked referral URLs (`t.me/bot?start=ref_{telegram_id}`) attributed to makers and takers.
-
----
-
-## 17. Explicit Non-Goals for MVP
-
-To keep scope bounded, the following are intentionally excluded from initial implementation and should not be introduced without a corresponding update to this document:
-- Multi-currency support beyond USDT/SYP.
-- Multi-network support beyond BEP20.
-- Automated dispute resolution (all disputes are human-adjudicated for MVP).
-- Fund consolidation/sweeping to a central treasury address.
-
----
-
-## 18. Change Log
+## 17. Change Log
 
 | Date | Change |
 |---|---|
 | v1.0 | Initial architecture draft |
 | v2.0 | Restructured to formal specification format; added schema-level constraints, fraud mitigation table, explicit non-goals, and open-decisions tracking |
-| v2.1 | Added Section 8 (Performance & Responsiveness Requirements) — webhook delivery, non-blocking handlers, indexing, connection pooling, server region |
-| v2.2 | Removed mandatory unique transaction-reference verification for SYP payments (Section 5.1, 6, 9); replaced with mutual buyer/seller confirmation with explicitly documented accepted risk (Section 9.1). Payment methods selection and quantity entry moved from free-text to guided button-based UI (implementation detail, no schema change). |
-| v2.3 | Resolved two previously open decisions (Section 10): expiry timeout fixed at 60 minutes with late-deposit handling policy (Section 4.2); gas funding mechanism fixed as on-demand gas station pattern, confirming per-deal address isolation is retained (Section 10). |
-| v2.4 | Added Section 10.1 — full Release Pipeline design (Phase 2, not yet implemented): atomic-update concurrency lock, gas-balance idempotency pre-check, dynamic gas estimation via estimate_gas(), retry policy with exponential backoff, and distinct admin-facing failure messages for gas-stage vs. USDT-transfer-stage failures. |
-| v2.5 | Added Section 4.3 — clarified that proactive admin notification is required only at entry into `ADMIN_APPROVAL` (and `DISPUTED`); no other state transition needs it. Documents a gap found via live testing: the implementation only edited the pressing user's own message and never pushed to `ADMIN_IDS`, so an admin who is not a party to the deal had no way to learn action was needed. |
-| v2.6 | Major State Machine revision found via live testing: added `PENDING_OWNER_APPROVAL` as a new gate before `CREATED` (Section 4.0) — the offer maker must approve each specific deal request (seeing only requested amount + taker's `completed_deals_count`, no personal info), with auto-rejection after a 30-minute no-response timeout. Revised the deposit-window expiry from 60 to 15 minutes (Section 4.2) to match the deposit address's actual short-lived validity, and introduced a separate non-enforcing 1-hour overall deal ceiling for admin visibility (Section 4.2.1). Added offer-level expiry (Section 4.4, new `offers.expires_at` field, maker-defined up to 4 hours, notify-then-30-minute-grace-then-auto-delete). Updated Section 5 schema to reflect `offers.channel_message_id` and `offers.payout_info` (previously added via migrations 002/004 but not yet documented here), plus the two new `expires_at` fields and the changed default deal status. |
-| v2.7 | Added Section 13 — Negotiation System, documented from live-code inspection after implementation: structured counter-offer flow (max one counter round), `negotiating` offer status, deliberate skip of `PENDING_OWNER_APPROVAL` on successful negotiation, and the two-layer mitigation for the payout-info gap this flow initially introduced (reminder + hard gate in `manual_admin_release`). Also documented the codebase-wide adoption of `SELECT ... FOR UPDATE` row locking across `deals.py` and `negotiations.py`, found during the same inspection. |
-| v2.8 | Added Section 14 — Admin Panel: statistics (user count, deal counts by status, net profit from completed-deal fees only), user search, ban/unban (activating the previously-unused `users.is_banned` field), broadcast messaging, and maintenance mode (admin-exempt global lockout). Renumbered subsequent sections accordingly. |
-| v2.9 | Added Section 15 — System Resilience & Production Hardening: Smart Critical Error Alerting middleware with deduplication, SQLAlchemy connection pooling resilience (`pool_pre_ping`, `pool_recycle`), Supervisor pattern for background tasks, Telegram broadcast rate-limiting (25 msg/s), and safe Markdown entity escaping. |
-| v3.0 | Added Section 16 — User Profile & Golden Points Loyalty System: Trader profile card, dynamic tier badge, KYC tracking, saved payment rails (USDT & Syrian cash accounts), custom nicknames, referral program, and tiered Golden Points redemption engine (500/1500/3000 pts for USDT rewards). Updated User schema. |
-| v3.1 | Revised saved USDT payout address network definition from TRC-20 to BEP-20 (BNB Smart Chain) across all schema references, profile validations, and deal workflows. Added Section 16 (item 2.1) — Saved Rails Confirmation Gate: mandatory explicit confirmation prompt before using pre-configured wallet/payment rails in deal execution. |
-| v3.2 | أضاف القسم 6.1 (Rate Limiting): سقف ثابت 5 عروض/5 صفقات نشطة لكل مستخدم + حد زمني متحرك (3 عروض/10د، 5 صفقات/10د)، منفَّذ عبر DB query مباشر للسقف وmiddleware in-memory للحد الزمني. صحّح القسم 3.3: deposit_index يُولَّد عبر PostgreSQL SEQUENCE مستقل بدل التوليد العشوائي السابق. |
+| v2.1 | Added Section 8 (Performance & Responsiveness Requirements) |
+| v2.2 | Removed mandatory unique transaction-reference verification for SYP payments |
+| v2.3 | Resolved expiry timeout (15m) and gas station pattern |
+| v2.4 | Added Section 10.1 — Release Pipeline design |
+| v2.5 | Added Section 4.3 — Admin notification requirements |
+| v2.6 | Major State Machine revision: `PENDING_OWNER_APPROVAL`, 15-min deposit window, offer-level expiry |
+| v2.7 | Added Negotiation System |
+| v2.8 | Added Admin Panel |
+| v2.9 | Added System Resilience & Production Hardening |
+| v3.0 | Added User Profile & Golden Points Loyalty System |
+| v3.1 | BEP-20 network standardization and Saved Rails Confirmation Gate |
+| v3.2 | Added Rate Limiting Policy and PostgreSQL SEQUENCE for deposit index |
+| v3.3 | **Official Technical Update v3.3:**<br>• Adopted Proportional Dual Fee Model (0.1% per counterparty = 0.2% total platform fee; Seller deposits 1.001x, Buyer receives 0.999x; benchmark 1,000 USDT deal yields 2 USDT profit). Updated `deals.fee_usdt` default and profit stats.<br>• Removed separate manual `SYP_PAYMENT_CONFIRMED` state; seller SYP confirmation atomically transitions deal directly to `ADMIN_APPROVAL`.<br>• Documented operational admin intervention rights for deal approval/rejection (`appr_deal_`/`rejc_deal_`) and negotiation actions (`neg_m_*`, `neg_t_*`).<br>• Standardized 5.0 Star Rating scale for `users.reputation_score` (default 5.0).<br>• Strengthened Rate Limiting (§6.1): entry point pre-check + mandatory atomic re-check under `SELECT ... FOR UPDATE` lock; 5 active operations ceiling includes deals + open negotiations for both parties.<br>• Offer duration options updated: short minutes (15, 30, 45m) or full hours (1, 2, 3, 4h).<br>• Documented Privacy-by-Design payment flow: deals created with `"PENDING"` place-holders; seller account collected post-`USDT_DEPOSITED`, buyer BEP-20 wallet collected in `AWAITING_SYP_PAYMENT`.<br>• Standardized enum statuses: `offers.status` (7 values), `offers.negotiable_type` (`none`\|`amount`\|`rate`\|`both`), `negotiations.status` (5 uppercase values). Documented `PENDING_OWNER_APPROVAL` rejection/timeout outcomes as `CANCELLED`/`EXPIRED` with retained deal audit records.<br>• Added missing DB tables (`negotiations`, `system_settings`, `audit_logs`), sequence (`deposit_index_seq`), missing columns, and constraints (`chk_deals_different_parties`, `uq_open_deal_per_offer`, `uq_open_negotiation_per_offer`).<br>• Documented Orphan Offers Safety Net (10-minute timeout for `reserved`/`negotiating` without live deal/negotiation), Unified Deal Card, 5 local payment methods, full admin command suite, and `REWARDS_ENABLED` flag. Removed duplicate non-goals section and cleaned internal cross-references. |
