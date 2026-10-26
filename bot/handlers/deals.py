@@ -33,7 +33,8 @@ from bot.utils.transitions import (
     can_cancel_deal,
     can_seller_confirm_syp,
     can_admin_release_escrow,
-    get_next_deal_status_after_syp_confirmed
+    get_next_deal_status_after_syp_confirmed,
+    SELLER_INFO_ALLOWED_STATUSES
 )
 
 logger = logging.getLogger(__name__)
@@ -513,7 +514,15 @@ async def cq_back_cancel_deal(callback: CallbackQuery, db_session: AsyncSession)
         except Exception:
             await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
     else:
-        await cq_view_my_deal(callback, db_session)
+        neutral_text = "تم الرجوع. يمكنك متابعة صفقتك من «صفقاتي النشطة»."
+        neutral_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💼 صفقاتي النشطة", callback_data="main_my_deals")],
+            [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")]
+        ])
+        try:
+            await callback.message.edit_text(neutral_text, reply_markup=neutral_kb)
+        except Exception:
+            await callback.message.answer(neutral_text, reply_markup=neutral_kb)
     await callback.answer()
 
 
@@ -574,14 +583,24 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
     await db_session.commit()
     
     if offer:
-        await update_channel_offer_message(callback.bot, offer)
+        try:
+            await update_channel_offer_message(callback.bot, offer)
+        except Exception as e:
+            logger.warning(f"Failed to update channel offer message for cancelled deal #{deal.id}: {e}")
         
-    await callback.message.edit_text(
-        f"❌ **صفقة #{deal.id} — تم إلغاء الصفقة**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"تم إلغاء الصفقة بنجاح وإعادة العرض إلى السوق.",
-        parse_mode="Markdown"
-    )
+    try:
+        await callback.message.edit_text(
+            f"❌ **صفقة #{deal.id} — تم إلغاء الصفقة**\n\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"تم إلغاء الصفقة بنجاح وإعادة العرض إلى السوق.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to edit cancel message for deal #{deal.id}: {e}")
+    try:
+        await callback.answer()
+    except Exception:
+        pass
 
 # ================= UNIFIED PAYMENT & WALLET HELPERS =================
 
@@ -592,6 +611,9 @@ async def apply_seller_payment_info(
     db_session: AsyncSession,
     event: Union[CallbackQuery, Message]
 ) -> None:
+    if deal.status != "USDT_DEPOSITED":
+        raise ValueError(f"Invalid deal status for seller payment info: {deal.status}")
+
     # TODO: بند منفصل — تحقق صيغة عنوان BEP20 (0x + 40 hex) وEIP-55 checksum قبل الحفظ.
     deal.seller_payment_info = {"info": info_text}
     deal.status = "AWAITING_SYP_PAYMENT"
@@ -970,7 +992,7 @@ async def cq_deal_choose_payment_method(callback: CallbackQuery, state: FSMConte
     valid, deal, err_code, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
-        expected_statuses=["USDT_DEPOSITED", "AWAITING_USDT_DEPOSIT", "AWAITING_SYP_PAYMENT"],
+        expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
         allowed_roles="seller",
         db_session=db_session
     )
@@ -1002,7 +1024,7 @@ async def start_set_seller_info(callback: CallbackQuery, state: FSMContext, db_s
     valid, deal, err_code, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
-        expected_statuses="USDT_DEPOSITED",
+        expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
         allowed_roles="seller",
         db_session=db_session
     )
@@ -1060,7 +1082,7 @@ async def cq_use_saved_seller_info(callback: CallbackQuery, db_session: AsyncSes
     valid, deal, err_code, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
-        expected_statuses="USDT_DEPOSITED",
+        expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
         allowed_roles="seller",
         db_session=db_session
     )
@@ -1091,7 +1113,7 @@ async def cq_manual_set_seller_info(callback: CallbackQuery, state: FSMContext, 
     valid, deal, err_code, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
-        expected_statuses=["USDT_DEPOSITED", "AWAITING_USDT_DEPOSIT", "AWAITING_SYP_PAYMENT"],
+        expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
         allowed_roles="seller",
         db_session=db_session
     )
@@ -1147,7 +1169,7 @@ async def process_set_seller_info(message: Message, state: FSMContext, db_sessio
     valid, deal, err_code, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=message.from_user.id,
-        expected_statuses=["USDT_DEPOSITED", "AWAITING_USDT_DEPOSIT", "AWAITING_SYP_PAYMENT"],
+        expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
         allowed_roles="seller",
         db_session=db_session
     )
@@ -1627,7 +1649,7 @@ async def _dispatch_admin_approval(
                     f"• دورك: 🔴 بائع USDT\n"
                     f"• المبلغ:  `{usdt_str}` USDT ⇄ `{syp_str}` SYP\n"
                     f"━━━━━━━━━━━━━━━\n\n"
-                    f"تم إشعار إدارة المنصة لمراجعة الصفقة وإطلاق رصيد الضمان للمشتري.",
+                    f"تم إشعار إدارة {BOT_NAME} لمراجعة الصفقة وإطلاق رصيد الضمان للمشتري.",
                     reply_markup=None,
                     parse_mode="Markdown"
                 )

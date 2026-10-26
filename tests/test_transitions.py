@@ -16,6 +16,7 @@ from bot.utils.transitions import (
     can_seller_confirm_syp,
     can_admin_release_escrow,
     get_next_deal_status_after_syp_confirmed,
+    SELLER_INFO_ALLOWED_STATUSES,
 )
 
 
@@ -218,6 +219,11 @@ class TestTransitions(unittest.TestCase):
         # Any other status returns None
         self.assertIsNone(get_next_deal_status_after_syp_confirmed("CREATED"))
         self.assertIsNone(get_next_deal_status_after_syp_confirmed("COMPLETED"))
+
+    def test_seller_info_allowed_statuses(self):
+        self.assertEqual(SELLER_INFO_ALLOWED_STATUSES, ("USDT_DEPOSITED",))
+        self.assertNotIn("AWAITING_USDT_DEPOSIT", SELLER_INFO_ALLOWED_STATUSES)
+        self.assertNotIn("AWAITING_SYP_PAYMENT", SELLER_INFO_ALLOWED_STATUSES)
 
 
 if __name__ == "__main__":

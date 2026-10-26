@@ -5,6 +5,8 @@ Contains zero database or Telegram dependencies to enable fast, deterministic un
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
+SELLER_INFO_ALLOWED_STATUSES = ("USDT_DEPOSITED",)
+
 
 def can_expire_deal(
     current_status: str,
