@@ -1,7 +1,9 @@
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 class Settings:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
@@ -22,5 +24,13 @@ class Settings:
     def REWARDS_ENABLED(self) -> bool:
         val = os.getenv("REWARDS_ENABLED", "false").strip().lower()
         return val in ("1", "true", "yes")
+
+    @property
+    def DISPLAY_UTC_OFFSET_HOURS(self) -> int:
+        val = os.getenv("DISPLAY_UTC_OFFSET_HOURS", "3").strip()
+        try:
+            return int(val)
+        except ValueError:
+            return 3
 
 settings = Settings()

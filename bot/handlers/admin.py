@@ -13,7 +13,7 @@ from sqlalchemy import func
 from db.models import User, Deal, Offer, SystemSetting, Dispute
 from bot.states.flow_states import AdminFSM
 from bot.middlewares.maintenance import get_cached_maintenance, set_cached_maintenance
-from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown
+from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown, format_local_datetime
 from bot.utils.deal_views import format_admin_deal_review_text
 from bot.services.backup_service import perform_and_send_backup
 import logging
@@ -365,7 +365,7 @@ async def process_user_search(message: Message, state: FSMContext, db_session: A
 async def send_user_card(event_or_msg, user: User, is_edit: bool = False):
     ban_badge = "🚫 محظور" if user.is_banned else "✅ نشط ومصرح"
     uname = safe_username(user.username, user.telegram_id)
-    reg_date = user.created_at.strftime("%Y-%m-%d %H:%M UTC") if user.created_at else "غير محدد"
+    reg_date = format_local_datetime(user.created_at) if user.created_at else "غير محدد"
 
     card_text = (
         f"👤 **ملف المستخدم:**  `{user.telegram_id}`\n\n\n"
@@ -622,7 +622,7 @@ async def cmd_admin_pending(message: Message, db_session: AsyncSession):
     for deal in pending_deals:
         admin_text = await format_admin_deal_review_text(deal, db_session)
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"man_rel_{deal.id}")],
+            [InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")],
             [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")]
         ])
         await message.answer(admin_text, reply_markup=admin_kb, parse_mode="Markdown")
@@ -652,7 +652,7 @@ async def cmd_admin_inspect_deal(message: Message, db_session: AsyncSession):
     admin_text = await format_admin_deal_review_text(deal, db_session)
     buttons = []
     if deal.status == "ADMIN_APPROVAL":
-        buttons.append([InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"man_rel_{deal.id}")])
+        buttons.append([InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
     buttons.append([InlineKeyboardButton(text="🔄 تحديث البيانات", callback_data=f"adm_inspect_deal_{deal.id}")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -676,7 +676,7 @@ async def cq_admin_inspect_deal(callback: CallbackQuery, db_session: AsyncSessio
     admin_text = await format_admin_deal_review_text(deal, db_session)
     buttons = []
     if deal.status == "ADMIN_APPROVAL":
-        buttons.append([InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"man_rel_{deal.id}")])
+        buttons.append([InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
     buttons.append([InlineKeyboardButton(text="🔄 تحديث البيانات", callback_data=f"adm_inspect_deal_{deal.id}")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -1013,7 +1013,7 @@ async def cmd_admin_audit(message: Message, db_session: AsyncSession):
     }
 
     for log in logs:
-        time_str = log.created_at.strftime("%Y-%m-%d %H:%M:%S") if log.created_at else "—"
+        time_str = format_local_datetime(log.created_at) if log.created_at else "—"
         act_title = action_names.get(log.action, log.action)
         actor_tag = f"`{log.actor_id}`" if log.actor_id else "SYSTEM"
         lines.append(
@@ -1065,7 +1065,7 @@ async def cq_admin_refresh_audit(callback: CallbackQuery, db_session: AsyncSessi
         "━━━━━━━━━━━━━━━\n"
     ]
     for log in logs:
-        time_str = log.created_at.strftime("%Y-%m-%d %H:%M:%S") if log.created_at else "—"
+        time_str = format_local_datetime(log.created_at) if log.created_at else "—"
         act_title = action_names.get(log.action, log.action)
         actor_tag = f"`{log.actor_id}`" if log.actor_id else "SYSTEM"
         lines.append(

@@ -99,3 +99,54 @@ TERMS_AND_CONDITIONS_TEXT = """📜 **شروط استخدام Alpha Bot**
 
 فريق Alpha Bot 🔥"""
 
+
+import re
+
+def split_terms_sections(raw_text: str = TERMS_AND_CONDITIONS_TEXT) -> tuple[str, list[tuple[str, str, str]]]:
+    """
+    Splits TERMS_AND_CONDITIONS_TEXT at numbered headers starting with '**N. '.
+    Returns:
+        (preamble, [(section_key, section_title, section_full_text), ...])
+    Reassembly contract:
+        preamble + "".join(section_full_text for _, _, section_full_text in sections) == raw_text
+    """
+    parts = re.split(r"(?=^\*\*\d+\.\s)", raw_text, flags=re.MULTILINE)
+    preamble = parts[0]
+    sections = []
+    for idx, part in enumerate(parts[1:], 1):
+        first_line = part.split("\n", 1)[0]
+        # Title is header text without '**'
+        title = first_line.replace("**", "").strip()
+        sections.append((str(idx), title, part))
+    return preamble, sections
+
+
+def reassemble_terms(preamble: str, sections: list[tuple[str, str, str]]) -> str:
+    """Reassembles terms sections back to the original text."""
+    return preamble + "".join(text for _, _, text in sections)
+
+
+def split_faq_items(raw_text: str = SUPPORT_FAQ_TEXT) -> tuple[str, list[tuple[str, str, str]]]:
+    """
+    Splits SUPPORT_FAQ_TEXT at questions starting with '• **'.
+    Returns:
+        (preamble, [(item_key, question_title, item_full_text), ...])
+    Reassembly contract:
+        preamble + "".join(item_full_text for _, _, item_full_text in items) == raw_text
+    """
+    parts = re.split(r"(?=^•\s+\*\*)", raw_text, flags=re.MULTILINE)
+    preamble = parts[0]
+    items = []
+    for idx, part in enumerate(parts[1:], 1):
+        first_line = part.split("\n", 1)[0]
+        # Title is question text without '•' and '**'
+        q_title = first_line.replace("•", "").replace("**", "").strip()
+        items.append((str(idx), q_title, part))
+    return preamble, items
+
+
+def reassemble_faq(preamble: str, items: list[tuple[str, str, str]]) -> str:
+    """Reassembles FAQ items back to the original text."""
+    return preamble + "".join(text for _, _, text in items)
+
+

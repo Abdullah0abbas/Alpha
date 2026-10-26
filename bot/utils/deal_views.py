@@ -3,14 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from db.models import Deal, User
-from bot.utils.formatters import format_syp, format_usdt, safe_username, escape_markdown
+from bot.utils.formatters import format_syp, format_usdt, safe_username, escape_markdown, format_local_datetime
 
 async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) -> str:
     """Format rich, detailed notification text for platform administrators."""
     usdt_str = format_usdt(deal.amount_usdt)
     syp_str = format_syp(deal.amount_syp)
     fee_str = format_usdt(deal.fee_usdt)
-    created_date_str = deal.created_at.strftime("%Y-%m-%d  —  %H:%M UTC") if deal.created_at else "غير محدد"
+    created_date_str = format_local_datetime(deal.created_at) if deal.created_at else "غير محدد"
 
     # Calculate effective exchange rate
     if deal.amount_usdt and deal.amount_usdt > 0:
@@ -43,7 +43,8 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
 
     return (
         f"🛡️ **مراجعة وتدقيق صفقة ضمان #{deal.id}**\n\n\n"
-        f"💰 **تفاصيل الصفقة المالية:**\n\n"
+        f"**تفاصيل الصفقة المالية:**\n\n"
+        f"• وقت الإنشاء:  `{created_date_str}`\n"
         f"• الكمية:  `{usdt_str}` USDT\n"
         f"• الإجمالي:  `{syp_str}` SYP\n"
         f"• سعر الصرف:  `{rate_str}` SYP\n"
@@ -57,7 +58,7 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
         f"• المعرف:  `{deal.buyer_id}` ({buyer_display})\n"
         f"• السجل:  `{buyer_deals_count}` صفقة ({buyer_rep})\n"
         f"• محفظة استلام USDT:  `{buyer_wallet_escaped}`\n\n\n"
-        f"📋 **سجل التحقق:**\n\n"
+        f"**سجل التحقق:**\n\n"
         f"• إيداع الضمان: مؤكد ومحجوز ✅\n"
         f"• تحويل الليرة: مؤكد استلامه من البائع ✅\n"
         f"• عنوان المستلم: مسجل ومتحقق منه ✅\n\n\n"

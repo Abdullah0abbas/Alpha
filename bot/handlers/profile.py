@@ -78,13 +78,13 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
     
     # Tier level badge
     if deals_count >= 50:
-        tier_badge = "👑 تاجر ماسي (VIP Trader)"
+        tier_badge = "تاجر ماسي (VIP)"
     elif deals_count >= 15:
-        tier_badge = "💎 تاجر محترف (Pro Trader)"
+        tier_badge = "تاجر محترف (Pro)"
     elif deals_count >= 3:
-        tier_badge = "🛡️ تاجر موثوق (Verified Trader)"
+        tier_badge = "تاجر موثوق (Verified)"
     else:
-        tier_badge = "🌱 متداول مبتدئ (Beginner)"
+        tier_badge = "متداول مبتدئ (Beginner)"
 
     saved_wallet = escape_markdown(user.saved_usdt_address) if user.saved_usdt_address else "لم يتم ضبطه بعد"
     saved_acc = escape_markdown(user.saved_payment_info) if user.saved_payment_info else "لم يتم ضبطه بعد"
@@ -98,7 +98,7 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
         }
         kyc_display = kyc_badges.get(user.kyc_status, "⚪ غير موثّق")
         points = user.reward_points or 0
-        rewards_section = f"• حالة التوثيق:  {kyc_display}\n• رصيد النقاط الذهبية:  🌟 `{points}` نقطة\n"
+        rewards_section = f"• حالة التوثيق:  {kyc_display}\n• رصيد النقاط الذهبية:  `{points}` نقطة\n"
 
     text = (
         f"👤 **الملف الشخصي للمتداول**\n\n"
@@ -106,13 +106,13 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
         f"• **المعرف:**  {user_display}\n"
         f"• **اللقب:**  `{nickname_display}`\n"
         f"• **رقم الحساب:**  `{user.telegram_id}`\n\n"
-        f"📊 **مؤشرات الثقة والتداول:**\n"
+        f"**مؤشرات الثقة والتداول:**\n\n"
         f"• المستوى:  **{tier_badge}**\n"
-        f"• نسبة السمعة:  ⭐ **{rep_score}**\n"
-        f"• الصفقات المكتملة:  🏁 `{deals_count}` صفقة ناجحة\n"
-        f"• إجمالي حجم التداول:  💰 `{format_usdt(total_volume)} USDT`\n"
+        f"• نسبة السمعة:  **{rep_score}**\n"
+        f"• الصفقات المكتملة:  `{deals_count}` صفقة\n"
+        f"• إجمالي حجم التداول:  `{format_usdt(total_volume)}` USDT\n"
         f"{rewards_section}\n"
-        f"⚙️ **البيانات المحفوظة تلقائياً:**\n"
+        f"**البيانات المحفوظة تلقائياً:**\n\n"
         f"• محفظة USDT (BEP20):  `{saved_wallet}`\n"
         f"• حساب الدفع (شام كاش/بنكي):  `{saved_acc}`\n"
         f"━━━━━━━━━━━━━━━\n\n"

@@ -23,7 +23,9 @@ from bot.handlers.deals import my_deals
 from bot.utils.support_texts import (
     SUPPORT_FAQ_TEXT,
     TERMS_AND_CONDITIONS_TEXT,
-    get_support_contact_text
+    get_support_contact_text,
+    split_terms_sections,
+    split_faq_items
 )
 from bot.utils.branding import BOT_NAME
 
@@ -88,12 +90,12 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                 methods_str = format_payment_methods(offer.payment_methods)
 
                 neg_type_labels = {
-                    "none": "غير متاح 🔒",
-                    "amount": "متاح على الكمية 📦",
-                    "rate": "متاح على السعر 💵",
-                    "both": "متاح على السعر والكمية ⚖️"
+                    "none": "غير متاح",
+                    "amount": "متاح على الكمية",
+                    "rate": "متاح على السعر",
+                    "both": "متاح على السعر والكمية"
                 }
-                neg_str = neg_type_labels.get(offer.negotiable_type, "غير متاح 🔒") if offer.negotiable else "غير متاح 🔒"
+                neg_str = neg_type_labels.get(offer.negotiable_type, "غير متاح") if offer.negotiable else "غير متاح"
 
                 buttons = [
                     [InlineKeyboardButton(text="⚡ تنفيذ الصفقة فوراً", callback_data=f"start_deal_{offer.id}")]
@@ -108,10 +110,10 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                     f"🏷️ **تفاصيل عرض تداول #{offer.id}**\n\n"
                     f"━━━━━━━━━━━━━━━\n"
                     f"• نوع العرض: {offer_type_label}\n"
-                    f"• سعر الصرف: 💵 `{rate_str} SYP`\n"
-                    f"• حدود الكمية: 📦 من `{min_str}` إلى `{max_str}` USDT\n"
-                    f"• وسائل الدفع المتاحة: 💳 {methods_str}\n"
-                    f"• إمكانية التفاوض: {neg_str}\n"
+                    f"• سعر الصرف:  `{rate_str} SYP`\n"
+                    f"• حدود الكمية:  من `{min_str}` إلى `{max_str}` USDT\n"
+                    f"• وسائل الدفع المتاحة:  {methods_str}\n"
+                    f"• إمكانية التفاوض:  {neg_str}\n"
                     f"━━━━━━━━━━━━━━━\n\n"
                     f"اختر الإجراء المطلوب للمتابعة:",
                     reply_markup=kb,
@@ -444,9 +446,9 @@ async def cq_menu_support(callback: CallbackQuery):
         f"💬 **مركز الدعم والمساعدة**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"يسعدنا خدمتك والإجابة عن جميع استفساراتك. يرجى اختيار القسم المطلوب:\n\n"
-        f"• 💡 **الأسئلة الشائعة**: دليلك لفهم آلية الضمان والتداول والمدد الزمنية.\n"
-        f"• 📞 **المساعدة والدعم**: معرفات التواصل المباشر مع إدارة الضمان.\n"
-        f"• ✍️ **تقديم اقتراح أو شكوى**: إرسال تذكرة أو رسالة فورية للإدارة.\n"
+        f"• **الأسئلة الشائعة**: دليلك لفهم آلية الضمان والتداول والمدد الزمنية.\n"
+        f"• **المساعدة والدعم**: معرفات التواصل المباشر مع إدارة الضمان.\n"
+        f"• **تقديم اقتراح أو شكوى**: إرسال تذكرة أو رسالة فورية للإدارة.\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"اختر القسم المطلوب:"
     )
@@ -459,7 +461,29 @@ async def cq_menu_support(callback: CallbackQuery):
 
 @base_router.callback_query(F.data == "menu_terms")
 async def cq_menu_terms(callback: CallbackQuery):
+    preamble, sections = split_terms_sections()
+    buttons = []
+    for idx_str, title, _ in sections:
+        buttons.append([InlineKeyboardButton(text=f"📄 {title}", callback_data=f"terms_sec_{idx_str}")])
+    buttons.append([InlineKeyboardButton(text="📜 عرض النص الكامل", callback_data="terms_full")])
+    buttons.append([InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    text = (
+        f"📜 **شروط الاستخدام والأحكام العامة**\n\n"
+        f"يرجى الاطلاع على بنود اتفاقية الاستخدام المنظمة لتداولات منصة {BOT_NAME}:"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@base_router.callback_query(F.data == "terms_full")
+async def cq_terms_full(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📑 فهرس البنود", callback_data="menu_terms")],
         [InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")]
     ])
     try:
@@ -469,13 +493,114 @@ async def cq_menu_terms(callback: CallbackQuery):
     await callback.answer()
 
 
+@base_router.callback_query(F.data.startswith("terms_sec_"))
+async def cq_terms_section(callback: CallbackQuery):
+    idx_str = callback.data.split("_")[-1]
+    preamble, sections = split_terms_sections()
+    total = len(sections)
+
+    target_sec = None
+    target_idx = 1
+    for i, (s_idx, s_title, s_text) in enumerate(sections, 1):
+        if s_idx == idx_str:
+            target_sec = (s_idx, s_title, s_text)
+            target_idx = i
+            break
+
+    if not target_sec:
+        await callback.answer("البند غير موجود.", show_alert=True)
+        return
+
+    s_idx, s_title, s_text = target_sec
+
+    nav_row = []
+    if target_idx > 1:
+        prev_idx = sections[target_idx - 2][0]
+        nav_row.append(InlineKeyboardButton(text="◀️ السابق", callback_data=f"terms_sec_{prev_idx}"))
+    nav_row.append(InlineKeyboardButton(text="📑 الفهرس", callback_data="menu_terms"))
+    if target_idx < total:
+        next_idx = sections[target_idx][0]
+        nav_row.append(InlineKeyboardButton(text="التالي ▶️", callback_data=f"terms_sec_{next_idx}"))
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        nav_row,
+        [InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")]
+    ])
+
+    text = s_text.strip()
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
 @base_router.callback_query(F.data == "supp_faq")
 async def cq_supp_faq(callback: CallbackQuery):
+    preamble, items = split_faq_items()
+    buttons = []
+    for idx_str, q_title, _ in items:
+        buttons.append([InlineKeyboardButton(text=f"❓ {q_title}", callback_data=f"faq_item_{idx_str}")])
+    buttons.append([InlineKeyboardButton(text="📜 عرض الدليل كاملاً", callback_data="faq_full")])
+    buttons.append([InlineKeyboardButton(text="🔙 عودة لقسم الدعم", callback_data="menu_support")])
+    buttons.append([InlineKeyboardButton(text="🏠 اللوحة الرئيسية", callback_data="menu_back_main")]
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    text = (
+        f"💡 **الأسئلة الشائعة**\n\n"
+        f"اختر السؤال للاطلاع على إجابته وتفاصيل آلية التداول:"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@base_router.callback_query(F.data == "faq_full")
+async def cq_faq_full(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 عودة لقسم الدعم", callback_data="menu_support")],
+        [InlineKeyboardButton(text="🔙 قائمة الأسئلة", callback_data="supp_faq")],
         [InlineKeyboardButton(text="🏠 اللوحة الرئيسية", callback_data="menu_back_main")]
     ])
-    await callback.message.edit_text(SUPPORT_FAQ_TEXT, reply_markup=kb, parse_mode="Markdown")
+    try:
+        await callback.message.edit_text(SUPPORT_FAQ_TEXT, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(SUPPORT_FAQ_TEXT, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@base_router.callback_query(F.data.startswith("faq_item_"))
+async def cq_faq_item(callback: CallbackQuery):
+    idx_str = callback.data.split("_")[-1]
+    preamble, items = split_faq_items()
+
+    target_item = None
+    for s_idx, q_title, q_text in items:
+        if s_idx == idx_str:
+            target_item = (s_idx, q_title, q_text)
+            break
+
+    if not target_item:
+        await callback.answer("السؤال غير موجود.", show_alert=True)
+        return
+
+    s_idx, q_title, q_text = target_item
+    text = (
+        f"💡 **الأسئلة الشائعة**\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"{q_text.strip()}\n"
+        f"━━━━━━━━━━━━━━━"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 قائمة الأسئلة", callback_data="supp_faq")],
+        [InlineKeyboardButton(text="🏠 اللوحة الرئيسية", callback_data="menu_back_main")]
+    ])
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
 

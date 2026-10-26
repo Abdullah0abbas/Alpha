@@ -20,7 +20,8 @@ from bot.utils.formatters import (
     AVAILABLE_PAYMENT_METHODS,
     PAYMENT_METHOD_ICONS,
     humanize_time_remaining,
-    clean_numeric_input
+    clean_numeric_input,
+    format_local_datetime
 )
 
 from bot.utils.branding import BOT_NAME, CHANNEL_NAME
@@ -620,13 +621,13 @@ async def handle_extend_offer_duration(callback: CallbackQuery, db_session: Asyn
     except Exception as e:
         logger.warning(f"Failed to update channel message for extended offer #{offer.id}: {e}")
 
-    expires_str = offer.expires_at.strftime('%H:%M UTC')
+    expires_str = format_local_datetime(offer.expires_at)
     await callback.answer("تم تمديد صلاحية العرض بنجاح.")
     await callback.message.edit_text(
         f"✅ **عرض #{offer.id} — تم تمديد الصلاحية بنجاح**\n\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"• المدة الإضافية: ⏱️ `{hours}` ساعة\n"
-        f"• الصلاحية حتى: ⏰ `{expires_str}`\n"
+        f"• المدة الإضافية:  `{hours}` ساعة\n"
+        f"• الصلاحية حتى:  `{expires_str}`\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"العرض نشط ومتاح حالياً في السوق والقناة الرسمية.",
         parse_mode="Markdown"

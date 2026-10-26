@@ -153,3 +153,44 @@ def resolve_deal_parties(
     taker_id = buyer_id if maker_id == seller_id else seller_id
     return maker_id, taker_id
 
+
+def can_cancel_deal(
+    deal_status: str,
+    user_id: int,
+    seller_id: int,
+    buyer_id: int,
+    admin_ids: list[int] | set[int]
+) -> Tuple[bool, str]:
+    """Pure validator for deal cancellation authorization and status."""
+    if user_id not in (seller_id, buyer_id) and user_id not in admin_ids:
+        return False, "غير مصرح: هذه ليست صفقتك."
+    if deal_status not in ("PENDING_OWNER_APPROVAL", "CREATED", "AWAITING_USDT_DEPOSIT"):
+        return False, "لا يمكن إلغاء الصفقة في هذه المرحلة دون مراجعة الإدارة."
+    return True, ""
+
+
+def can_seller_confirm_syp(deal_status: str, user_id: int, seller_id: int) -> Tuple[bool, str]:
+    """Pure validator for seller SYP payment confirmation."""
+    if user_id != seller_id:
+        return False, "غير مصرح: هذا الإجراء مخصص لبائع الصفقة فقط."
+    if deal_status != "SYP_PAYMENT_SENT":
+        return False, "لا يمكن تنفيذ هذا الإجراء في هذه المرحلة من الصفقة."
+    return True, ""
+
+
+def can_admin_release_escrow(deal_status: str, user_id: int, admin_ids: list[int] | set[int]) -> Tuple[bool, str]:
+    """Pure validator for admin escrow release."""
+    if user_id not in admin_ids:
+        return False, "غير مصرح: هذه الصلاحية للإدارة فقط."
+    if deal_status != "ADMIN_APPROVAL":
+        return False, "لا يمكن إطلاق هذه الصفقة — لم تصل بعد لمرحلة الاعتماد الإداري."
+    return True, ""
+
+
+def get_next_deal_status_after_syp_confirmed(current_status: str) -> Optional[str]:
+    """Returns next state for auto-dispatching to admin approval upon seller confirmation."""
+    if current_status in ("SYP_PAYMENT_SENT", "SYP_PAYMENT_CONFIRMED"):
+        return "ADMIN_APPROVAL"
+    return None
+
+

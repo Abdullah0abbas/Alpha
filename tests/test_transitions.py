@@ -12,6 +12,10 @@ from bot.utils.transitions import (
     can_taker_reject_negotiation,
     can_maker_counter_negotiation,
     resolve_deal_parties,
+    can_cancel_deal,
+    can_seller_confirm_syp,
+    can_admin_release_escrow,
+    get_next_deal_status_after_syp_confirmed,
 )
 
 
@@ -133,6 +137,87 @@ class TestTransitions(unittest.TestCase):
         maker, taker = resolve_deal_parties(maker_id=None, seller_id=1001, buyer_id=2002)
         self.assertIsNone(maker)
         self.assertIsNone(taker)
+
+    def test_can_cancel_deal(self):
+        admin_ids = [8888]
+        # Creator canceling when PENDING_OWNER_APPROVAL
+        allowed, _ = can_cancel_deal(
+            deal_status="PENDING_OWNER_APPROVAL",
+            user_id=1001,
+            seller_id=1001,
+            buyer_id=2002,
+            admin_ids=admin_ids,
+        )
+        self.assertTrue(allowed)
+
+        # Non-party cannot cancel
+        allowed, msg = can_cancel_deal(
+            deal_status="PENDING_OWNER_APPROVAL",
+            user_id=9999,
+            seller_id=1001,
+            buyer_id=2002,
+            admin_ids=admin_ids,
+        )
+        self.assertFalse(allowed)
+        self.assertIn("غير مصرح", msg)
+
+        # Admin canceling when CREATED
+        allowed, _ = can_cancel_deal(
+            deal_status="CREATED",
+            user_id=8888,
+            seller_id=1001,
+            buyer_id=2002,
+            admin_ids=admin_ids,
+        )
+        self.assertTrue(allowed)
+
+        # Cannot cancel once USDT deposited
+        allowed, msg = can_cancel_deal(
+            deal_status="USDT_DEPOSITED",
+            user_id=1001,
+            seller_id=1001,
+            buyer_id=2002,
+            admin_ids=admin_ids,
+        )
+        self.assertFalse(allowed)
+
+    def test_can_seller_confirm_syp(self):
+        # Valid seller confirming when SYP_PAYMENT_SENT
+        allowed, _ = can_seller_confirm_syp("SYP_PAYMENT_SENT", user_id=1001, seller_id=1001)
+        self.assertTrue(allowed)
+
+        # Buyer cannot confirm
+        allowed, msg = can_seller_confirm_syp("SYP_PAYMENT_SENT", user_id=2002, seller_id=1001)
+        self.assertFalse(allowed)
+        self.assertIn("بائع", msg)
+
+        # Already confirmed
+        allowed, msg = can_seller_confirm_syp("ADMIN_APPROVAL", user_id=1001, seller_id=1001)
+        self.assertFalse(allowed)
+
+    def test_can_admin_release_escrow(self):
+        admin_ids = [5001, 5002]
+        # Admin releasing in ADMIN_APPROVAL status
+        allowed, _ = can_admin_release_escrow("ADMIN_APPROVAL", user_id=5001, admin_ids=admin_ids)
+        self.assertTrue(allowed)
+
+        # Non-admin
+        allowed, msg = can_admin_release_escrow("ADMIN_APPROVAL", user_id=1001, admin_ids=admin_ids)
+        self.assertFalse(allowed)
+        self.assertIn("للإدارة فقط", msg)
+
+        # Wrong status
+        allowed, msg = can_admin_release_escrow("SYP_PAYMENT_SENT", user_id=5001, admin_ids=admin_ids)
+        self.assertFalse(allowed)
+
+    def test_get_next_deal_status_after_syp_confirmed(self):
+        # Normal flow returns ADMIN_APPROVAL
+        self.assertEqual(get_next_deal_status_after_syp_confirmed("SYP_PAYMENT_SENT"), "ADMIN_APPROVAL")
+        # Idempotent from SYP_PAYMENT_CONFIRMED
+        self.assertEqual(get_next_deal_status_after_syp_confirmed("SYP_PAYMENT_CONFIRMED"), "ADMIN_APPROVAL")
+        # Any other status returns None
+        self.assertIsNone(get_next_deal_status_after_syp_confirmed("CREATED"))
+        self.assertIsNone(get_next_deal_status_after_syp_confirmed("COMPLETED"))
 
 
 if __name__ == "__main__":

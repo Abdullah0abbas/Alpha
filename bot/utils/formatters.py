@@ -4,7 +4,48 @@ Focuses on visual whitespace, elegant typography, humanized durations, and reada
 """
 import re
 from decimal import Decimal, InvalidOperation
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from config.settings import settings
+
+def to_local(dt: datetime | None, offset_hours: int | None = None) -> datetime | None:
+    """
+    Converts a datetime to local timezone (Damascus fixed offset UTC+3 by default).
+    Naive datetime is treated as UTC.
+    Uses fixed timezone(timedelta(hours=...)) without zoneinfo or tzdata dependencies.
+    """
+    if dt is None:
+        return None
+    if offset_hours is None:
+        offset_hours = getattr(settings, "DISPLAY_UTC_OFFSET_HOURS", 3)
+    tz = timezone(timedelta(hours=offset_hours))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(tz)
+
+def format_local_datetime(dt: datetime | None, offset_hours: int | None = None, include_suffix: bool = True) -> str:
+    """
+    Formats a datetime as 'YYYY-MM-DD — HH:MM' with optional ' (بتوقيت دمشق)' suffix.
+    """
+    if not dt:
+        return "غير محدد"
+    local_dt = to_local(dt, offset_hours)
+    if not local_dt:
+        return "غير محدد"
+    formatted = local_dt.strftime("%Y-%m-%d — %H:%M")
+    if include_suffix:
+        formatted = f"{formatted} (بتوقيت دمشق)"
+    return formatted
+
+def format_local_time(dt: datetime | None, offset_hours: int | None = None) -> str:
+    """
+    Formats time portion as 'HH:MM'.
+    """
+    if not dt:
+        return "غير محدد"
+    local_dt = to_local(dt, offset_hours)
+    if not local_dt:
+        return "غير محدد"
+    return local_dt.strftime("%H:%M")
 
 ARABIC_EASTERN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
