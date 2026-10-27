@@ -120,28 +120,16 @@ def validate_bep20_address(raw: str | None) -> Tuple[bool, str, str]:
         return (
             False,
             "",
-            "عنوان المحفظة غير صالح. يجب أن يبدأ بـ 0x ويتكون من 42 خانة بنظام الست عشري (Hexadecimal)."
+            "⚠️ **عنوان المحفظة غير صالح!**\n\n"
+            "يجب أن يبدأ بـ 0x ويتكون تماماً من 42 خانة بنظام الست عشري (Hexadecimal)."
         )
 
-    cleaned = "0x" + cleaned[2:]
+    cleaned_lower = "0x" + cleaned[2:].lower()
 
-    if cleaned.lower() in BLACKLISTED_ADDRESSES:
+    if cleaned_lower in BLACKLISTED_ADDRESSES:
         return False, "", "هذا العنوان محظور (عنوان حرق أو عنوان صفري غير صالح للاستلام)."
 
-    hex_part = cleaned[2:]
-    if hex_part.islower() or hex_part.isupper() or hex_part.isdigit():
-        normalized = _to_checksum_address(cleaned)
-    else:
-        if not _is_checksum_address(cleaned):
-            return (
-                False,
-                "",
-                "العنوان يحتوي أحرفاً كبيرة وصغيرة غير مطابقة لـ EIP-55 checksum. يرجى التأكد من نسخه بدقة دون تعديل."
-            )
-        normalized = _to_checksum_address(cleaned)
-
-    if not _is_address(normalized):
-        return False, "", "عنوان المحفظة غير صالح."
+    normalized = _to_checksum_address(cleaned_lower)
 
     return True, normalized, ""
 
