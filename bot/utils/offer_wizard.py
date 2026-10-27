@@ -4,7 +4,9 @@ Strictly zero dependencies on aiogram or sqlalchemy.
 Provides navigation history management, completeness validation,
 primary payout info extraction, and summary presentation formatting.
 """
+import re
 from typing import Tuple, Optional
+from decimal import Decimal, InvalidOperation
 from bot.utils.fees import format_fee_rule_line
 
 FEE_RULE_LINE = f"⚡ **عمولة المنصة:** {format_fee_rule_line().replace('⚡ العمولة: ', '')}"
