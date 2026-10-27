@@ -821,7 +821,10 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         else:
-            await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+            try:
+                await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+            except Exception:
+                await message.answer(text, reply_markup=kb, parse_mode="Markdown")
         await state.set_state(OfferCreateFSM.waiting_for_payout_details)
 
     else:
@@ -861,7 +864,10 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         else:
-            await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+            try:
+                await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+            except Exception:
+                await message.answer(text, reply_markup=kb, parse_mode="Markdown")
         await state.set_state(OfferCreateFSM.waiting_for_payout_details)
 
 
@@ -1013,10 +1019,13 @@ async def _show_payout_confirmation(message: Message, state: FSMContext):
         "🔒 *ملاحظة:* هذه البيانات تظهر فقط لأطراف الصفقات التنفيذية ولا تُنشر في القناة العامة.\n\n"
         "هل ترغب باعتماد هذه البيانات والمتابعة؟"
     )
-    if hasattr(message, "edit_text"):
-        await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    if isinstance(message, CallbackQuery):
+        await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     else:
-        await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        try:
+            await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        except Exception:
+            await message.answer(text, reply_markup=kb, parse_mode="Markdown")
     await state.set_state(OfferCreateFSM.confirm_payout_details)
 
 
