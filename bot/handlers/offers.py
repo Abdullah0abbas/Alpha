@@ -91,7 +91,6 @@ async def process_offer_type(callback: CallbackQuery, state: FSMContext):
         f"📝 **إنشاء عرض جديد — {offer_type_ar}**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"💵 أدخل سعر الصرف بالليرة السورية مقابل 1 USDT:\n"
-        f"*(مثال: 15200)*\n"
         f"━━━━━━━━━━━━━━━",
         reply_markup=cancel_kb,
         parse_mode="Markdown"
@@ -113,7 +112,6 @@ async def process_offer_rate(message: Message, state: FSMContext):
             f"📝 **إنشاء عرض** | السعر المعتمد: 💵 `{rate_str} SYP`\n\n"
             f"━━━━━━━━━━━━━━━\n"
             f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
-            f"*(مثال: 50)*\n"
             f"━━━━━━━━━━━━━━━",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
@@ -122,7 +120,7 @@ async def process_offer_rate(message: Message, state: FSMContext):
     except Exception:
         await message.answer(
             "⚠️ **سعر الصرف غير صالح!**\n\n"
-            "يرجى إدخال رقم صحيح وموجب (مثال: `15200`):",
+            "يرجى إدخال رقم صحيح وموجب لسعر الصرف:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -318,7 +316,7 @@ async def process_custom_duration(message: Message, state: FSMContext, db_sessio
             return
     except Exception:
         await message.answer(
-            "⚠️ يرجى إرسال رقم صحيح لعدد الساعات (مثال: `2` أو `3`):",
+            "⚠️ يرجى إرسال رقم صحيح لعدد الساعات (بين 1 و 4):",
             parse_mode="Markdown"
         )
         return
@@ -406,6 +404,7 @@ async def _create_and_publish_offer(message: Message, state: FSMContext, db_sess
         f"• حدود الكمية: 📦 من `{min_str}` إلى `{max_str}` USDT\n"
         f"• وسائل الدفع: 💳 {methods_str}\n"
         f"• حالة التفاوض: {neg_status_ar}\n"
+        f"• العمولة: ⚡ 0.1% لكل طرف (مجاناً حتى 25 USDT)\n"
         f"• مدة الصلاحية: ⏱️ {duration_str}\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"تم إدراج العرض بنجاح في سوق {BOT_NAME} وقناة {CHANNEL_NAME}.",
@@ -424,6 +423,7 @@ async def _create_and_publish_offer(message: Message, state: FSMContext, db_sess
             f"• <b>سعر الصرف:</b> 💵 <code>{rate_str} SYP</code>\n"
             f"• <b>حدود الكمية:</b> 📦 <code>{min_str}</code> — <code>{max_str}</code> USDT\n"
             f"• <b>وسائل الدفع:</b> 💳 {methods_str}{neg_line}\n"
+            f"• <b>العمولة:</b> ⚡ 0.1% لكل طرف (مجاناً حتى 25 USDT)\n"
             f"• <b>المهلة المتاحة:</b> ⏱️ {duration_str}\n"
             f"━━━━━━━━━━━━━━━"
         )

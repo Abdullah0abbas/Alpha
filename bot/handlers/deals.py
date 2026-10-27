@@ -21,6 +21,7 @@ from bot.utils.deal_views import format_admin_deal_review_text
 from bot.utils.deal_card import push_deal_card, render_deal_card
 from bot.utils.deal_guard import acquire_deal_lock
 from bot.utils.validators import validate_bep20_address, validate_payment_method_info
+from bot.utils.fees import calculate_deal_fee
 from bot.utils.branding import BOT_NAME
 from bot.utils.formatters import (
     escape_markdown,
@@ -144,7 +145,7 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
     except Exception:
         await message.answer(
             "⚠️ **قيمة غير صحيحة!**\n\n"
-            "يرجى إدخال رقم صحيح وموجب (مثال: `100` أو `50.5`):",
+            "يرجى إدخال رقم صحيح وموجب يعبر عن كمية USDT المطلوبة:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -258,6 +259,7 @@ async def _finalize_deal_creation(
 
     mock_deposit_address, mock_deposit_index = await derive_escrow_address(db_session)
     approval_expires_at = now + timedelta(minutes=30)
+    fee_breakdown = calculate_deal_fee(amount_usdt)
 
     new_deal = Deal(
         offer_id=offer.id,
@@ -265,7 +267,9 @@ async def _finalize_deal_creation(
         buyer_id=buyer_id,
         amount_usdt=amount_usdt,
         amount_syp=amount_syp,
-        fee_usdt=Decimal("1.0"),
+        fee_usdt=fee_breakdown.total_fee,
+        seller_fee_usdt=fee_breakdown.seller_fee,
+        buyer_fee_usdt=fee_breakdown.buyer_fee,
         deposit_address=mock_deposit_address,
         deposit_index=mock_deposit_index,
         buyer_payout_address=buyer_payout_address,
@@ -791,7 +795,6 @@ def get_deal_payment_methods_kb(deal_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="💳 شام كاش ليرة", callback_data=f"deal_pm_sham_lira_{deal_id}"),
-            InlineKeyboardButton(text="💵 شام كاش دولار", callback_data=f"deal_pm_sham_usd_{deal_id}")
         ],
         [
             InlineKeyboardButton(text="📱 سيريتيل كاش", callback_data=f"deal_pm_syriatel_{deal_id}")
@@ -812,19 +815,7 @@ DEAL_PM_PROMPTS = {
         "prompt": (
             "💳 **صفقة #{deal_id} — إدخال حساب: شام كاش ليرة**\n\n"
             "━━━━━━━━━━━━━━━\n"
-            "يرجى إرسال عنوان حساب شام كاش الخاص بك (مكوّن من 32 خانة هكسا).\n\n"
-            "📋 **مثال صالح:**\n"
-            "`82b2a4fafc335c4f39c58910248c63d1`"
-        )
-    },
-    "sham_usd": {
-        "name": "شام كاش دولار",
-        "prompt": (
-            "💵 **صفقة #{deal_id} — إدخال حساب: شام كاش دولار**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "يرجى إرسال عنوان حساب شام كاش الخاص بك (مكوّن من 32 خانة هكسا).\n\n"
-            "📋 **مثال صالح:**\n"
-            "`82b2a4fafc335c4f39c58910248c63d1`"
+            "يرجى إرسال عنوان حساب شام كاش الخاص بك (مكوّن من 32 خانة hex دون مسافات):"
         )
     },
     "syriatel": {
@@ -832,9 +823,7 @@ DEAL_PM_PROMPTS = {
         "prompt": (
             "📱 **صفقة #{deal_id} — إدخال حساب: سيريتيل كاش**\n\n"
             "━━━━━━━━━━━━━━━\n"
-            "يرجى إرسال رقم سيريتيل كاش الخاص بك (رقم سوري مكوّن من 10 أرقام يبدأ بـ 09).\n\n"
-            "📋 **مثال صالح:**\n"
-            "`0932063758`"
+            "يرجى إرسال رقم سيريتيل كاش الخاص بك (رقم سوري مكوّن من 10 أرقام يبدأ بـ 09):"
         )
     },
     "haram": {
@@ -842,9 +831,7 @@ DEAL_PM_PROMPTS = {
         "prompt": (
             "🏛️ **صفقة #{deal_id} — إدخال بيانات: حوالة بنكية (الهرم)**\n\n"
             "━━━━━━━━━━━━━━━\n"
-            "يرجى إرسال الاسم الثلاثي ورقم الموبايل الخاص بك لاستلام الحوالة.\n\n"
-            "📋 **مثال صالح:**\n"
-            "`محمد أحمد العلي - 0932063758`"
+            "يرجى إرسال الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:"
         )
     },
     "fouad": {
@@ -852,9 +839,7 @@ DEAL_PM_PROMPTS = {
         "prompt": (
             "🏢 **صفقة #{deal_id} — إدخال بيانات: حوالة بنكية (الفؤاد)**\n\n"
             "━━━━━━━━━━━━━━━\n"
-            "يرجى إرسال الاسم الثلاثي ورقم الموبايل الخاص بك لاستلام الحوالة.\n\n"
-            "📋 **مثال صالح:**\n"
-            "`محمد أحمد العلي - 0932063758`"
+            "يرجى إرسال الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:"
         )
     },
 }

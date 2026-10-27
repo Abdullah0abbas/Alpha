@@ -153,7 +153,6 @@ SYRIATEL_PHONE_PATTERN = re.compile(r"^09\d{8}$")
 def validate_sham_cash_address(raw: str | None) -> Tuple[bool, str, str]:
     """
     Validates Sham Cash address (32-character hexadecimal account ID).
-    Example: 82b2a4fafc335c4f39c58910248c63d1
     """
     if not raw:
         return False, "", "يرجى إدخال عنوان حساب شام كاش (32 خانة)."
@@ -170,8 +169,7 @@ def validate_sham_cash_address(raw: str | None) -> Tuple[bool, str, str]:
             False,
             "",
             "⚠️ **عنوان حساب شام كاش غير صحيح!**\n\n"
-            "يجب أن يتكون العنوان تماماً من 32 خانة (أرقام وأحرف إنجليزية دون مسافات)، مثال:\n"
-            "`82b2a4fafc335c4f39c58910248c63d1`"
+            "يجب أن يتكون العنوان تماماً من 32 خانة (أرقام وأحرف إنجليزية دون مسافات)."
         )
     return True, cleaned.lower(), ""
 
@@ -179,10 +177,9 @@ def validate_sham_cash_address(raw: str | None) -> Tuple[bool, str, str]:
 def validate_syriatel_cash_number(raw: str | None) -> Tuple[bool, str, str]:
     """
     Validates Syriatel Cash Syrian mobile number (10 digits starting with 09).
-    Example: 0932063758
     """
     if not raw:
-        return False, "", "يرجى إدخال رقم سيريتيل كاش (مثال: 0932063758)."
+        return False, "", "يرجى إدخال رقم سيريتيل كاش (10 أرقام يبدأ بـ 09)."
     cleaned = str(raw).strip()
     for ch in INVISIBLE_CHARS:
         cleaned = cleaned.replace(ch, "")
@@ -201,8 +198,7 @@ def validate_syriatel_cash_number(raw: str | None) -> Tuple[bool, str, str]:
             False,
             "",
             "⚠️ **رقم سيريتيل كاش غير صحيح!**\n\n"
-            "يجب أن يكون رقماً سورياً مكوناً من 10 أرقام ويبدأ بـ 09، مثال:\n"
-            "`0932063758`"
+            "يجب أن يكون رقماً سورياً مكوناً من 10 أرقام ويبدأ بـ 09."
         )
     return True, cleaned, ""
 
@@ -211,10 +207,9 @@ def validate_bank_transfer_info(raw: str | None) -> Tuple[bool, str, str]:
     """
     Validates bank / remittance transfer info (e.g. Al-Haram, Al-Fouad).
     Requires: Triple full name (at least 3 words) and Syrian mobile number (09xxxxxxxx).
-    Example: محمد أحمد العلي - 0932063758
     """
     if not raw:
-        return False, "", "يرجى إدخال الاسم الثلاثي ورقم الموبايل (مثال: محمد أحمد العلي - 0932063758)."
+        return False, "", "يرجى إدخال الاسم الثلاثي ورقم الموبايل السوري."
     cleaned = str(raw).strip()
     for ch in INVISIBLE_CHARS:
         cleaned = cleaned.replace(ch, "")
@@ -226,8 +221,7 @@ def validate_bank_transfer_info(raw: str | None) -> Tuple[bool, str, str]:
             False,
             "",
             "⚠️ **رقم الموبايل غير موجود أو غير صحيح!**\n\n"
-            "يرجى كتابة رقم موبايل سوري يبدأ بـ 09 (10 أرقام)، مثال:\n"
-            "`محمد أحمد العلي - 0932063758`"
+            "يرجى كتابة رقم موبايل سوري يبدأ بـ 09 (10 أرقام)."
         )
 
     raw_phone = phone_match.group(0)
@@ -237,8 +231,7 @@ def validate_bank_transfer_info(raw: str | None) -> Tuple[bool, str, str]:
             False,
             "",
             "⚠️ **رقم الموبايل غير صحيح!**\n\n"
-            "يجب أن يتكون رقم الموبايل من 10 أرقام ويبدأ بـ 09، مثال:\n"
-            "`0932063758`"
+            "يجب أن يتكون رقم الموبايل من 10 أرقام ويبدأ بـ 09."
         )
 
     # Extract name parts
@@ -252,8 +245,7 @@ def validate_bank_transfer_info(raw: str | None) -> Tuple[bool, str, str]:
             False,
             "",
             "⚠️ **الاسم الثلاثي غير مكتمل!**\n\n"
-            "يجب إدخال الاسم الثلاثي كاملاً (3 أسماء على الأقل) ورقم الموبايل، مثال:\n"
-            "`محمد أحمد العلي - 0932063758`"
+            "يجب إدخال الاسم الثلاثي كاملاً (3 أسماء على الأقل) ورقم الموبايل."
         )
 
     full_name = " ".join(name_words)
@@ -312,7 +304,7 @@ def validate_payment_method_info(method: Optional[str], raw: str | None) -> Tupl
         False,
         "",
         "⚠️ **البيانات المدخلة غير متوافقة مع وسائل الدفع المعتمدة!**\n\n"
-        "• شام كاش: عنوان الحساب المكون من 32 خانة (مثال: `82b2a4fafc335c4f39c58910248c63d1`)\n"
-        "• سيريتيل كاش: رقم سوري 10 أرقام (مثال: `0932063758`)\n"
-        "• حوالة بنكية (الهرم/الفؤاد): الاسم الثلاثي ورقم الموبايل (مثال: `محمد أحمد العلي - 0932063758`)"
+        "• شام كاش: عنوان الحساب المكون من 32 خانة hex دون مسافات\n"
+        "• سيريتيل كاش: رقم سوري 10 أرقام يبدأ بـ 09\n"
+        "• حوالة بنكية (الهرم/الفؤاد): الاسم الثلاثي كاملاً ورقم الموبايل السوري"
     )

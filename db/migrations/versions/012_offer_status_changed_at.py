@@ -1,6 +1,6 @@
 """add status_changed_at to offers table
 
-Revision ID: 012_add_status_changed_at_to_offers
+Revision ID: 012_offer_status_changed_at
 Revises: 011_deal_card_message_ids
 Create Date: 2026-10-26 11:00:00.000000
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '012_add_status_changed_at_to_offers'
+revision = '012_offer_status_changed_at'
 down_revision = '011_deal_card_message_ids'
 branch_labels = None
 depends_on = None

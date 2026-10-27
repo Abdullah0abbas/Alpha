@@ -92,6 +92,8 @@ async def ensure_schema_updated():
         ("deals.expires_at", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;"),
         ("deals.seller_card_msg_id", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS seller_card_msg_id BIGINT;"),
         ("deals.buyer_card_msg_id", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS buyer_card_msg_id BIGINT;"),
+        ("deals.seller_fee_usdt", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS seller_fee_usdt NUMERIC DEFAULT 0.0;"),
+        ("deals.buyer_fee_usdt", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS buyer_fee_usdt NUMERIC DEFAULT 0.0;"),
     ]
 
     index_and_constraint_ddls = [

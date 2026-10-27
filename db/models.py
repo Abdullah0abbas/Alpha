@@ -56,7 +56,9 @@ class Deal(Base):
     buyer_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.telegram_id"))
     amount_usdt: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     amount_syp: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
-    fee_usdt: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default="1.0")
+    fee_usdt: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default="0.0")
+    seller_fee_usdt: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default="0.0")
+    buyer_fee_usdt: Mapped[Decimal] = mapped_column(Numeric, nullable=False, server_default="0.0")
     
     # Requirement 5.1 (UNIQUE) & Requirement 8.3 (INDEXED)
     deposit_address: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)

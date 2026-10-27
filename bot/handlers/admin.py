@@ -312,8 +312,7 @@ async def cq_admin_search_user(callback: CallbackQuery, state: FSMContext):
     text = (
         "🔍 **الاستعلام عن مستخدم**\n\n"
         "━━━━━━━━━━━━━━━\n"
-        "أرسل معرّف تيليغرام الرقمي للمستخدم:\n"
-        "*(مثال: 123456789)*\n"
+        "أرسل معرّف تيليغرام الرقمي للمستخدم (أرقام فقط):\n"
         "━━━━━━━━━━━━━━━"
     )
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -922,8 +921,7 @@ async def cmd_admin_reply_user(message: Message, bot: Bot):
     if len(args) < 3 or not args[1].isdigit():
         await message.answer(
             "⚠️ **طريقة الاستخدام:**\n"
-            "`/reply [معرف_المستخدم] [نص_الرد]`\n\n"
-            "*(مثال: `/reply 123456789 مرحباً، تم حل المشكلة وإطلاق الصفقة`)*",
+            "`/reply [معرف_المستخدم] [نص_الرد]`",
             parse_mode="Markdown"
         )
         return

@@ -49,7 +49,9 @@ class MockDeal:
         buyer_id=2002,
         amount_usdt=Decimal("100.0"),
         amount_syp=Decimal("1500000"),
-        fee_usdt=Decimal("1.0"),
+        fee_usdt=Decimal("0.2"),
+        seller_fee_usdt=Decimal("0.1"),
+        buyer_fee_usdt=Decimal("0.1"),
         deposit_address="0xTestDepositAddr",
         deposit_index=1,
         buyer_payout_address="0xBuyerTestAddr",
@@ -64,6 +66,8 @@ class MockDeal:
         self.amount_usdt = amount_usdt
         self.amount_syp = amount_syp
         self.fee_usdt = fee_usdt
+        self.seller_fee_usdt = seller_fee_usdt
+        self.buyer_fee_usdt = buyer_fee_usdt
         self.deposit_address = deposit_address
         self.deposit_index = deposit_index
         self.buyer_payout_address = buyer_payout_address
@@ -222,6 +226,37 @@ class TestDealCardPureFunctions(unittest.TestCase):
         self.assertIn("بطاقة صفقة الضمان #99", seller_text)
         self.assertIn("بانتظار قيام المشتري بتحويل المبلغ بالليرة", seller_text)
         self.assertIsNone(seller_kb)
+
+    def test_fee_model_and_card_rendering(self):
+        from bot.utils.fees import calculate_deal_fee
+
+        # Case 1: Amount <= 25 USDT -> Free
+        fee_free = calculate_deal_fee(Decimal("25"))
+        self.assertTrue(fee_free.is_free)
+        self.assertEqual(fee_free.seller_fee, Decimal("0.000000"))
+        self.assertEqual(fee_free.buyer_fee, Decimal("0.000000"))
+        self.assertEqual(fee_free.total_fee, Decimal("0.000000"))
+
+        # Case 2: Amount > 25 USDT -> 0.1% per side
+        fee_paid = calculate_deal_fee(Decimal("100"))
+        self.assertFalse(fee_paid.is_free)
+        self.assertEqual(fee_paid.seller_fee, Decimal("0.100000"))
+        self.assertEqual(fee_paid.buyer_fee, Decimal("0.100000"))
+        self.assertEqual(fee_paid.total_fee, Decimal("0.200000"))
+        self.assertEqual(fee_paid.seller_deposit_required, Decimal("100.100000"))
+        self.assertEqual(fee_paid.buyer_receives, Decimal("99.900000"))
+
+        # Card rendering for seller awaiting deposit with fee
+        deal = MockDeal(
+            amount_usdt=Decimal("100"),
+            fee_usdt=fee_paid.total_fee,
+            seller_fee_usdt=fee_paid.seller_fee,
+            buyer_fee_usdt=fee_paid.buyer_fee,
+            status="AWAITING_USDT_DEPOSIT"
+        )
+        card_text, _ = render_deal_card(deal, viewer_id=1001)
+        self.assertIn("المطلوب إيداعه", card_text)
+        self.assertIn("100.1", card_text)
 
 
 if __name__ == "__main__":

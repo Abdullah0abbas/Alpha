@@ -23,6 +23,7 @@ from bot.services.channel import update_channel_offer_message
 from config.settings import settings
 from bot.utils.branding import BOT_NAME
 from bot.utils.deal_card import push_deal_card
+from bot.utils.fees import calculate_deal_fee
 
 from bot.utils.transitions import can_user_interact_with_offer
 
@@ -768,13 +769,17 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
     buyer_payout = offer.payout_info if (buyer_id == offer.user_id and offer.payout_info) else "PENDING"
     seller_info = {"info": offer.payout_info if (seller_id == offer.user_id and offer.payout_info) else "PENDING"}
 
+    fee_breakdown = calculate_deal_fee(amount_usdt)
+
     new_deal = Deal(
         offer_id=offer.id,
         seller_id=seller_id,
         buyer_id=buyer_id,
         amount_usdt=amount_usdt,
         amount_syp=amount_syp,
-        fee_usdt=Decimal("1.0"),
+        fee_usdt=fee_breakdown.total_fee,
+        seller_fee_usdt=fee_breakdown.seller_fee,
+        buyer_fee_usdt=fee_breakdown.buyer_fee,
         deposit_address=deposit_address,
         deposit_index=deposit_index,
         buyer_payout_address=buyer_payout,

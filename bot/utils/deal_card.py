@@ -275,12 +275,31 @@ def render_deal_card(
     lines.append(f"💵 **الإجمالي:** `{syp_str}` SYP")
     lines.append(f"📊 **سعر الصرف:** `{rate_str}` SYP")
 
+    # Commission details
+    seller_fee = getattr(deal, "seller_fee_usdt", None)
+    buyer_fee = getattr(deal, "buyer_fee_usdt", None)
+    if seller_fee is None or buyer_fee is None:
+        from bot.utils.fees import calculate_deal_fee
+        fee_info = calculate_deal_fee(deal.amount_usdt)
+        seller_fee = fee_info.seller_fee
+        buyer_fee = fee_info.buyer_fee
+
+    if is_buyer:
+        net_buyer_str = format_usdt(deal.amount_usdt - buyer_fee)
+        if buyer_fee > Decimal("0"):
+            lines.append(f"📥 **صافي استلامك المتوقع:** `{net_buyer_str}` USDT (عمولة `{format_usdt(buyer_fee)}` USDT)")
+        else:
+            lines.append(f"📥 **صافي استلامك المتوقع:** `{net_buyer_str}` USDT (عمولة مجانية)")
+
     # Specific phase context
     if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and is_seller:
-        fee_str = format_usdt(deal.fee_usdt)
-        total_dep = format_usdt(deal.amount_usdt + (deal.fee_usdt or Decimal("0")))
+        total_dep = deal.amount_usdt + seller_fee
+        total_dep_str = format_usdt(total_dep)
         lines.append("━━━━━━━━━━━━━━━")
-        lines.append(f"💳 **المطلوب إيداعه:** `{total_dep}` USDT (تشمل عمولة `{fee_str}` USDT)")
+        if seller_fee > Decimal("0"):
+            lines.append(f"💳 **المطلوب إيداعه:** `{total_dep_str}` USDT (تشمل عمولة `{format_usdt(seller_fee)}` USDT)")
+        else:
+            lines.append(f"💳 **المطلوب إيداعه:** `{total_dep_str}` USDT (العمولة مجانية)")
         lines.append(f"📥 **محفظة الإيداع:** `{deal.deposit_address}`")
 
     elif deal.status in ("AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT", "SYP_PAYMENT_CONFIRMED", "ADMIN_APPROVAL"):
