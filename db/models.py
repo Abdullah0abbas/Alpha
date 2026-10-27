@@ -37,6 +37,7 @@ class Offer(Base):
     status: Mapped[str | None] = mapped_column(String, server_default="active")
     channel_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payout_info: Mapped[str | None] = mapped_column(String, nullable=True)
+    payout_details: Mapped[dict | None] = mapped_column(JSONB, server_default="{}", default=dict, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     negotiable: Mapped[bool] = mapped_column(Boolean, server_default="false", default=False)
     negotiable_type: Mapped[str] = mapped_column(String, server_default="none", default="none")

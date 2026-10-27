@@ -89,6 +89,7 @@ async def ensure_schema_updated():
         ("offers.negotiable", "ALTER TABLE offers ADD COLUMN IF NOT EXISTS negotiable BOOLEAN DEFAULT FALSE;"),
         ("offers.negotiable_type", "ALTER TABLE offers ADD COLUMN IF NOT EXISTS negotiable_type VARCHAR DEFAULT 'none';"),
         ("offers.status_changed_at", "ALTER TABLE offers ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ DEFAULT now();"),
+        ("offers.payout_details", "ALTER TABLE offers ADD COLUMN IF NOT EXISTS payout_details JSONB DEFAULT '{}'::jsonb;"),
         ("deals.expires_at", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;"),
         ("deals.seller_card_msg_id", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS seller_card_msg_id BIGINT;"),
         ("deals.buyer_card_msg_id", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS buyer_card_msg_id BIGINT;"),

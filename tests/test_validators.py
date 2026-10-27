@@ -155,6 +155,144 @@ class TestValidators(unittest.TestCase):
         self.assertIn("أحمد محمود حسن", norm)
 
 
+class TestOfferWizardPureFunctions(unittest.TestCase):
+    def test_wizard_step_push_and_pop(self):
+        from bot.utils.offer_wizard import push_wizard_step, pop_wizard_step
+
+        history = []
+        history = push_wizard_step(history, "type", {"offer_type": "sell"})
+        history = push_wizard_step(history, "rate", {"rate": "15000"})
+        self.assertEqual(len(history), 2)
+
+        prev, new_hist = pop_wizard_step(history)
+        self.assertIsNotNone(prev)
+        self.assertEqual(prev["step"], "rate")
+        self.assertEqual(prev["data"]["rate"], "15000")
+        self.assertEqual(len(new_hist), 1)
+
+        prev2, new_hist2 = pop_wizard_step(new_hist)
+        self.assertEqual(prev2["step"], "type")
+        self.assertEqual(len(new_hist2), 0)
+
+        empty_prev, empty_hist = pop_wizard_step([])
+        self.assertIsNone(empty_prev)
+        self.assertEqual(empty_hist, [])
+
+    def test_extract_primary_payout_info(self):
+        from bot.utils.offer_wizard import extract_primary_payout_info
+
+        # Buy offer returns BEP-20 address
+        buy_data = {
+            "offer_type": "buy",
+            "payout_details": {
+                "usdt_bep20_address": "0x55d398326f99059fF775485246999027B3197955"
+            }
+        }
+        self.assertEqual(
+            extract_primary_payout_info(buy_data),
+            "0x55d398326f99059fF775485246999027B3197955"
+        )
+
+        # Sell offer returns first matching payment method account
+        sell_data = {
+            "offer_type": "sell",
+            "payment_methods": ["سيريتيل كاش", "شام كاش ليرة"],
+            "payout_details": {
+                "سيريتيل كاش": "سيريتيل كاش: 0932063758",
+                "شام كاش ليرة": "شام كاش: 82b2a4fafc335c4f39c58910248c63d1"
+            }
+        }
+        self.assertEqual(
+            extract_primary_payout_info(sell_data),
+            "سيريتيل كاش: 0932063758"
+        )
+
+    def test_is_wizard_data_complete(self):
+        from bot.utils.offer_wizard import is_wizard_data_complete
+
+        # Complete valid sell offer
+        valid_sell = {
+            "offer_type": "sell",
+            "rate": "15000",
+            "min_limit": "50",
+            "max_limit": "200",
+            "payment_methods": ["سيريتيل كاش"],
+            "payout_details": {
+                "سيريتيل كاش": "0932063758"
+            },
+            "duration_hours": 4.0
+        }
+        ok, err = is_wizard_data_complete(valid_sell)
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
+
+        # Incomplete or invalid: max < min
+        invalid_limits = dict(valid_sell, min_limit="300", max_limit="100")
+        ok, err = is_wizard_data_complete(invalid_limits)
+        self.assertFalse(ok)
+        self.assertIn("الحد الأقصى", err)
+
+        # Incomplete: missing payout details for sell
+        missing_payout = dict(valid_sell, payout_details={})
+        ok, err = is_wizard_data_complete(missing_payout)
+        self.assertFalse(ok)
+        self.assertIn("بيانات حساب الاستلام", err)
+
+        # Sham Cash USD rejection
+        with_sham_usd = dict(valid_sell, payment_methods=["شام كاش دولار"])
+        ok, err = is_wizard_data_complete(with_sham_usd)
+        self.assertFalse(ok)
+        self.assertIn("شام كاش دولار", err)
+
+        # Valid buy offer
+        valid_buy = {
+            "offer_type": "buy",
+            "rate": "14800",
+            "min_limit": "20",
+            "max_limit": "500",
+            "payment_methods": ["سيريتيل كاش"],
+            "payout_details": {
+                "usdt_bep20_address": "0x55d398326f99059fF775485246999027B3197955"
+            },
+            "duration_hours": 3.0
+        }
+        ok, err = is_wizard_data_complete(valid_buy)
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
+
+        # Invalid BEP-20 address in buy offer
+        invalid_wallet_buy = dict(valid_buy, payout_details={"usdt_bep20_address": "0xinvalid"})
+        ok, err = is_wizard_data_complete(invalid_wallet_buy)
+        self.assertFalse(ok)
+        self.assertIn("محفظة", err)
+
+    def test_format_wizard_summary(self):
+        from bot.utils.offer_wizard import format_wizard_summary
+
+        data = {
+            "offer_type": "sell",
+            "rate": "15200",
+            "min_limit": "50",
+            "max_limit": "500",
+            "payment_methods": ["سيريتيل كاش"],
+            "payout_details": {
+                "سيريتيل كاش": "سيريتيل كاش: 0932063758"
+            },
+            "negotiable": True,
+            "negotiable_type": "amount",
+            "duration_hours": 4.0
+        }
+        summary = format_wizard_summary(data, bot_name="TestBot")
+        self.assertIn("ملخص ومراجعة العرض النهائي", summary)
+        self.assertIn("15,200", summary)
+        self.assertIn("50", summary)
+        self.assertIn("500", summary)
+        self.assertIn("0932063758", summary)
+        self.assertIn("متاح على الكمية", summary)
+        self.assertIn("عمولة المنصة", summary)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
