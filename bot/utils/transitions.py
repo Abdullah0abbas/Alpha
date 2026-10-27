@@ -161,13 +161,21 @@ def can_cancel_deal(
     user_id: int,
     seller_id: int,
     buyer_id: int,
+    offer_owner_id: int,
     admin_ids: list[int] | set[int]
 ) -> Tuple[bool, str]:
     """Pure validator for deal cancellation authorization and status."""
-    if user_id not in (seller_id, buyer_id) and user_id not in admin_ids:
+    is_admin = user_id in admin_ids
+    if user_id not in (seller_id, buyer_id) and not is_admin:
         return False, "غير مصرح: هذه ليست صفقتك."
+
+    if not is_admin and user_id == offer_owner_id:
+        if deal_status in ("CREATED", "AWAITING_USDT_DEPOSIT"):
+            return False, "لا يمكنك إلغاء الصفقة بعد موافقتك عليها. إن لم يتم الإيداع خلال المهلة تنتهي الصفقة تلقائياً."
+
     if deal_status not in ("PENDING_OWNER_APPROVAL", "CREATED", "AWAITING_USDT_DEPOSIT"):
         return False, "لا يمكن إلغاء الصفقة في هذه المرحلة دون مراجعة الإدارة."
+
     return True, ""
 
 

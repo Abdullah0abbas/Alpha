@@ -400,11 +400,17 @@ async def ask_cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
         await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
         return
 
+    # Fetch offer creator for B restrictions
+    offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+    offer = offer_res.scalar_one_or_none()
+    offer_owner_id = offer.user_id if offer else -1
+
     allowed, err_msg = can_cancel_deal(
         deal_status=deal.status,
         user_id=callback.from_user.id,
         seller_id=deal.seller_id,
         buyer_id=deal.buyer_id,
+        offer_owner_id=offer_owner_id,
         admin_ids=settings.ADMIN_IDS
     )
     if not allowed:
@@ -493,11 +499,17 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
         await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
         return
 
+    # Fetch offer creator for B restrictions
+    offer_result = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+    offer = offer_result.scalar_one_or_none()
+    offer_owner_id = offer.user_id if offer else -1
+
     allowed, err_msg = can_cancel_deal(
         deal_status=deal.status,
         user_id=callback.from_user.id,
         seller_id=deal.seller_id,
         buyer_id=deal.buyer_id,
+        offer_owner_id=offer_owner_id,
         admin_ids=settings.ADMIN_IDS
     )
     if not allowed:
@@ -1283,11 +1295,27 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
 
     photo = message.photo[-1]
     photo_file_id = photo.file_id
+    ref = f"PHOTO_{photo_file_id}"
+
+    # Check for existing proof to avoid UniqueViolation/MissingGreenlet
+    existing_proof_res = await db_session.execute(
+        select(PaymentProof).where(PaymentProof.transaction_reference == ref)
+    )
+    if existing_proof_res.scalar_one_or_none():
+        await message.answer(
+            "⚠️ **هذه الصورة استُخدمت سابقاً!**\n\n"
+            "يرجى إرسال لقطة شاشة جديدة لإشعار التحويل الخاص بهذه العملية.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+            ]),
+            parse_mode="Markdown"
+        )
+        return
 
     try:
         proof = PaymentProof(
             deal_id=deal.id,
-            transaction_reference=f"PHOTO_{photo_file_id}",
+            transaction_reference=ref,
             amount=deal.amount_syp,
             submitted_by=message.from_user.id
         )
@@ -1295,7 +1323,7 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         await db_session.commit()
     except Exception as e:
         logger.warning(f"PaymentProof creation log: {e}")
-        await db_session.rollback()
+        # rollback() removed to avoid MissingGreenlet
 
     existing_buyer_addr = (deal.buyer_payout_address or "").strip()
     is_existing_valid, normalized_existing, _ = validate_bep20_address(existing_buyer_addr) if (existing_buyer_addr and existing_buyer_addr not in ["PENDING", "غير محدد", "N/A"]) else (False, "", "")

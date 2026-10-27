@@ -136,12 +136,16 @@ def get_deal_action_keyboard(
             ])
 
     elif status == "CREATED":
-        if is_seller:
+        if is_seller and not is_offer_owner:
             buttons.append([
                 InlineKeyboardButton(text="🔐 إيداع USDT", callback_data=f"man_aw_dep_{deal.id}")
             ])
             buttons.append([
                 InlineKeyboardButton(text="❌ إلغاء الصفقة", callback_data=f"ask_cancel_{deal.id}")
+            ])
+        elif is_seller and is_offer_owner:
+            buttons.append([
+                InlineKeyboardButton(text="🔐 إيداع USDT", callback_data=f"man_aw_dep_{deal.id}")
             ])
         elif is_buyer:
             buttons.append([
@@ -149,12 +153,16 @@ def get_deal_action_keyboard(
             ])
 
     elif status == "AWAITING_USDT_DEPOSIT":
-        if is_seller:
+        if is_seller and not is_offer_owner:
             buttons.append([
                 InlineKeyboardButton(text="✅ تأكيد إيداع USDT", callback_data=f"man_dep_{deal.id}")
             ])
             buttons.append([
                 InlineKeyboardButton(text="❌ إلغاء الصفقة", callback_data=f"ask_cancel_{deal.id}")
+            ])
+        elif is_seller and is_offer_owner:
+            buttons.append([
+                InlineKeyboardButton(text="✅ تأكيد إيداع USDT", callback_data=f"man_dep_{deal.id}")
             ])
         elif is_buyer:
             buttons.append([
@@ -254,8 +262,9 @@ def render_deal_card(
     syp_str = format_syp(deal.amount_syp)
 
     # Effective rate
+    # Effective rate
     if deal.amount_usdt and deal.amount_usdt > 0:
-        rate = (deal.amount_syp / deal.amount_usdt).quantize(Decimal("1"))
+        rate = deal.amount_syp / deal.amount_usdt
         rate_str = format_syp(rate)
     else:
         rate_str = "غير محدد"

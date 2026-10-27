@@ -29,6 +29,7 @@ from bot.utils.support_texts import (
     split_faq_items
 )
 from bot.utils.branding import BOT_NAME
+from bot.utils.fees import format_fee_rule_line
 
 base_router = Router()
 
@@ -116,7 +117,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                     f"• حدود الكمية:  من `{min_str}` إلى `{max_str}` USDT\n"
                     f"• وسائل الدفع المتاحة:  {methods_str}\n"
                     f"• إمكانية التفاوض:  {neg_str}\n"
-                    f"• عمولة المنصة:  ⚡ 0.1% لكل طرف (مجاناً حتى 25 USDT)\n"
+                    f"• {format_fee_rule_line()}\n"
                     f"━━━━━━━━━━━━━━━\n\n"
                     f"اختر الإجراء المطلوب للمتابعة:",
                     reply_markup=kb,
@@ -294,7 +295,7 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
     text_lines = [
         f"🔍 **{header}**\n",
         f"📄 صفحة `{page + 1}` من `{total_pages}` (إجمالي العروض: `{total_count}`)\n",
-        f"⚡ **عمولة المنصة:** 0.1% لكل طرف (مجاناً حتى 25 USDT)\n",
+        f"{format_fee_rule_line()}\n",
         f"━━━━━━━━━━━━━━━\n"
     ]
 

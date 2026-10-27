@@ -88,6 +88,7 @@ CREATED
 - **Rule 2 (USDT Deposit Timeout):** If the seller fails to deposit USDT within 15 minutes of approval, the deal is cancelled. The offer is reverted to `active` status in the market. Admins receive an alert with party IDs.
 - **Rule 3 (SYP Payment Soft Timeout):** If the buyer takes more than 30 minutes to send SYP, the deal remains active (reserved), but the buyer is warned to contact support (`@AlphaSupport`) before proceeding with the transfer.
 - **Rule 4 (Approval Timeout):** If the offer owner fails to approve/reject a deal request within 30 minutes, the deal is cancelled AND the offer is **deleted** for non-responsiveness.
+- **Cancellation Restriction:** The offer owner cannot cancel the deal once approved (in `CREATED` or `AWAITING_USDT_DEPOSIT` states). If no deposit is made, the deal expires automatically.
 
 ### 4.1 Dispute handling: Reporting Non-Receipt (v3.4)
 The term "فتح نزاع" is replaced with **"⚠️ عدم الاستلام"**. When a seller reports non-receipt:
@@ -305,12 +306,13 @@ The system enforces two independent protection layers against spam and automated
 | Unilateral post-custody cancellation | State-machine invariant — post-`USDT_DEPOSITED` requires admin intervention |
 | Address reuse | Per-deal unique derivation (Section 3.3, 5.1) |
 
-### 9.1 Proportional Dual Fee Model (0.1% per party = 0.2% total)
-The old flat fee model ($1.0 USDT or $0.5+$0.5) is replaced with a proportional fee model:
-- **Fee Rate:** `0.1%` (`0.001 * amount_usdt`) per counterparty = `0.2%` (`0.002 * amount_usdt`) total platform fee on completed deals.
-- **Seller Portion:** Seller deposits `amount_usdt * 1.001` into escrow.
-- **Buyer Portion:** Buyer receives net `amount_usdt * 0.999` upon release.
-- **Benchmark Example:** On a 1,000 USDT trade, Seller deposits 1,001 USDT, Buyer receives 999 USDT, and Net Platform Profit (`fee_usdt`) = 2 USDT.
+### 9.1 Proportional Dual Fee Model
+The proportional fee model ensures fairness across transaction sizes:
+- **Free Tier:** Transactions ≤ **25 USDT** incur **zero** platform fees for both parties.
+- **Standard Fee:** Transactions > **25 USDT** incur a fee of **0.1%** (`1/1000`) per counterparty.
+- **Seller Portion:** Seller deposits `amount_usdt + fee` into escrow.
+- **Buyer Portion:** Buyer receives net `amount_usdt - fee` upon release.
+- **Calculation Rule:** `fee = amount_usdt * 0.001` (quantized to 6 decimals).
 
 ### 9.2 Accepted Risk Note — SYP Payment Confirmation
 Confirmed by mutual acknowledgment. Re-introducing reference validation remains possible via `payment_proofs` without DB migration.

@@ -9,6 +9,9 @@ from bot.services.channel import update_channel_offer_message
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+from bot.utils.formatters import format_usdt, format_syp
+from config.settings import settings
+
 from bot.services.backup_service import perform_and_send_backup
 
 logger = logging.getLogger(__name__)

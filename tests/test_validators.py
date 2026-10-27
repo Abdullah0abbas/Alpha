@@ -18,12 +18,12 @@ class TestValidators(unittest.TestCase):
         self.assertEqual(err, "")
 
     def test_3_invalid_checksum(self):
-        # Mixed capitalisation gets automatically normalized to EIP-55 checksum
+        # Mixed capitalisation with invalid checksum should be rejected
         addr = "0x55D398326f99059fF775485246999027B3197955"
         ok, norm, err = validate_bep20_address(addr)
-        self.assertTrue(ok)
-        self.assertEqual(norm, "0x55d398326f99059fF775485246999027B3197955")
-        self.assertEqual(err, "")
+        self.assertFalse(ok)
+        self.assertEqual(norm, "")
+        self.assertIn("checksum", err)
 
     def test_4_short_length(self):
         addr = "0x55d398326f99059ff"

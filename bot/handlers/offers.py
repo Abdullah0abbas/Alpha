@@ -36,6 +36,7 @@ from bot.utils.offer_wizard import (
     format_wizard_summary,
     FEE_RULE_LINE
 )
+from bot.utils.fees import format_fee_rule_line, format_fee_rule_html
 from bot.utils.branding import BOT_NAME, CHANNEL_NAME
 
 logger = logging.getLogger(__name__)
@@ -317,7 +318,7 @@ async def process_offer_type(callback: CallbackQuery, state: FSMContext):
 # STEP 2: EXCHANGE RATE & CONFIRMATION
 # ==============================================================================
 
-@offers_router.callback_query(F.data == "wiz_back_rate")
+@offers_router.callback_query(OfferCreateFSM.waiting_for_rate, F.data == "wiz_back_rate")
 async def back_to_offer_type(callback: CallbackQuery, state: FSMContext):
     """Navigate back from Rate input to Offer Type."""
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -436,7 +437,7 @@ async def confirm_rate_and_advance(callback: CallbackQuery, state: FSMContext):
 # STEP 3: MIN LIMIT & CONFIRMATION
 # ==============================================================================
 
-@offers_router.callback_query(F.data == "wiz_back_min")
+@offers_router.callback_query(OfferCreateFSM.waiting_for_min_limit, F.data == "wiz_back_min")
 async def back_to_rate(callback: CallbackQuery, state: FSMContext):
     """Navigate back from Min Limit to Rate input."""
     data = await state.get_data()
@@ -555,7 +556,7 @@ async def confirm_min_limit_and_advance(callback: CallbackQuery, state: FSMConte
 # STEP 4: MAX LIMIT & CONFIRMATION
 # ==============================================================================
 
-@offers_router.callback_query(F.data == "wiz_back_max")
+@offers_router.callback_query(OfferCreateFSM.waiting_for_max_limit, F.data == "wiz_back_max")
 async def back_to_min_limit(callback: CallbackQuery, state: FSMContext):
     """Navigate back from Max Limit to Min Limit input."""
     await callback.message.edit_text(
@@ -678,33 +679,10 @@ async def confirm_max_limit_and_advance(callback: CallbackQuery, state: FSMConte
 # STEP 5: PAYMENT METHODS MULTI-SELECT
 # ==============================================================================
 
-@offers_router.callback_query(F.data == "wiz_back_methods")
+@offers_router.callback_query(OfferCreateFSM.waiting_for_methods, F.data == "wiz_back_methods")
 async def back_to_max_limit(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Payment Methods to Max Limit confirmation."""
-    data = await state.get_data()
-    max_val = data.get("max_limit")
-    min_val = data.get("min_limit")
-    if max_val and min_val:
-        max_str = format_usdt(Decimal(str(max_val)))
-        min_str = format_usdt(Decimal(str(min_val)))
-        kb = get_confirm_step_kb(
-            confirm_cb="wiz_confirm_max",
-            edit_cb="wiz_edit_max",
-            back_cb="wiz_back_max"
-        )
-        await callback.message.edit_text(
-            "📦 **تأكيد نطاق الكمية المعروضة**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            f"• الحد الأدنى: `{min_str} USDT`\n"
-            f"• الحد الأقصى: `{max_str} USDT`\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "هل ترغب باعتماد نطاق الكميات والمتابعة؟",
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
-        await state.set_state(OfferCreateFSM.confirm_max_limit)
-    else:
-        await edit_max_limit_input(callback, state)
+    """Navigate back from Payment Methods directly to Max Limit input."""
+    await edit_max_limit_input(callback, state)
     await callback.answer()
 
 
@@ -1536,7 +1514,7 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
             f"• <b>سعر الصرف:</b> 💵 <code>{rate_str} SYP</code>\n"
             f"• <b>حدود الكمية:</b> 📦 <code>{min_str}</code> — <code>{max_str}</code> USDT\n"
             f"• <b>وسائل الدفع:</b> 💳 {methods_str}{neg_line}\n"
-            f"• <b>العمولة:</b> ⚡ 0.1% لكل طرف (مجاناً حتى 25 USDT)\n"
+            f"• <b>العمولة:</b> {format_fee_rule_html()}\n"
             f"• <b>المهلة المتاحة:</b> ⏱️ {duration_str}\n"
             f"━━━━━━━━━━━━━━━"
         )

@@ -9,7 +9,7 @@ from typing import Tuple, Optional
 from decimal import Decimal, InvalidOperation
 from bot.utils.fees import format_fee_rule_line
 
-FEE_RULE_LINE = f"⚡ **عمولة المنصة:** {format_fee_rule_line().replace('⚡ العمولة: ', '')}"
+FEE_RULE_LINE = f"{format_fee_rule_line()}"
 
 PAYMENT_METHOD_ICONS = {
     "شام كاش ليرة": "💳",

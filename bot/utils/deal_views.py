@@ -87,7 +87,7 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
 
     # Calculate effective exchange rate
     if deal.amount_usdt and deal.amount_usdt > 0:
-        rate = (deal.amount_syp / deal.amount_usdt).quantize(Decimal("1"))
+        rate = deal.amount_syp / deal.amount_usdt
         rate_str = format_syp(rate)
     else:
         rate_str = "غير محدد"

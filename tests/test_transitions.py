@@ -143,12 +143,13 @@ class TestTransitions(unittest.TestCase):
 
     def test_can_cancel_deal(self):
         admin_ids = [8888]
-        # Creator canceling when PENDING_OWNER_APPROVAL
+        # Taker canceling when PENDING_OWNER_APPROVAL (maker is 1001, taker is 2002)
         allowed, _ = can_cancel_deal(
             deal_status="PENDING_OWNER_APPROVAL",
-            user_id=1001,
+            user_id=2002,
             seller_id=1001,
             buyer_id=2002,
+            offer_owner_id=1001,
             admin_ids=admin_ids,
         )
         self.assertTrue(allowed)
@@ -159,10 +160,34 @@ class TestTransitions(unittest.TestCase):
             user_id=9999,
             seller_id=1001,
             buyer_id=2002,
+            offer_owner_id=1001,
             admin_ids=admin_ids,
         )
         self.assertFalse(allowed)
         self.assertIn("غير مصرح", msg)
+
+        # Offer owner (maker 1001) attempting to cancel in CREATED / AWAITING_USDT_DEPOSIT is rejected
+        allowed, msg = can_cancel_deal(
+            deal_status="AWAITING_USDT_DEPOSIT",
+            user_id=1001,
+            seller_id=1001,
+            buyer_id=2002,
+            offer_owner_id=1001,
+            admin_ids=admin_ids,
+        )
+        self.assertFalse(allowed)
+        self.assertIn("موافقتك", msg)
+
+        # Taker (2002) allowed to cancel in AWAITING_USDT_DEPOSIT
+        allowed, _ = can_cancel_deal(
+            deal_status="AWAITING_USDT_DEPOSIT",
+            user_id=2002,
+            seller_id=1001,
+            buyer_id=2002,
+            offer_owner_id=1001,
+            admin_ids=admin_ids,
+        )
+        self.assertTrue(allowed)
 
         # Admin canceling when CREATED
         allowed, _ = can_cancel_deal(
@@ -170,6 +195,7 @@ class TestTransitions(unittest.TestCase):
             user_id=8888,
             seller_id=1001,
             buyer_id=2002,
+            offer_owner_id=1001,
             admin_ids=admin_ids,
         )
         self.assertTrue(allowed)
@@ -177,9 +203,10 @@ class TestTransitions(unittest.TestCase):
         # Cannot cancel once USDT deposited
         allowed, msg = can_cancel_deal(
             deal_status="USDT_DEPOSITED",
-            user_id=1001,
+            user_id=2002,
             seller_id=1001,
             buyer_id=2002,
+            offer_owner_id=1001,
             admin_ids=admin_ids,
         )
         self.assertFalse(allowed)

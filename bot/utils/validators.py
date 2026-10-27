@@ -129,9 +129,25 @@ def validate_bep20_address(raw: str | None) -> Tuple[bool, str, str]:
     if cleaned_lower in BLACKLISTED_ADDRESSES:
         return False, "", "هذا العنوان محظور (عنوان حرق أو عنوان صفري غير صالح للاستلام)."
 
-    normalized = _to_checksum_address(cleaned_lower)
+    # EIP-55 Validation
+    is_all_lower = (cleaned == cleaned.lower())
+    is_all_upper = (cleaned[2:] == cleaned[2:].upper())
 
-    return True, normalized, ""
+    if is_all_lower or is_all_upper:
+        # Accept and normalize
+        normalized = _to_checksum_address(cleaned_lower)
+        return True, normalized, ""
+
+    # Mixed case: must match checksum exactly
+    if not _is_checksum_address(cleaned):
+        return (
+            False,
+            "",
+            "⚠️ **خطأ في التحقق من العنوان!**\n\n"
+            "العنوان يحتوي أحرفاً كبيرة وصغيرة غير مطابقة لـ EIP-55 checksum. يرجى التأكد من نسخه بدقة دون تعديل."
+        )
+
+    return True, cleaned, ""
 
 
 SHAM_CASH_HEX_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
