@@ -69,15 +69,22 @@ async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
         elif offer.status in ["expired", "expired_grace"]:
             status_header = f"\u200f⏱️ <b>{CHANNEL_NAME} | عرض #{offer.id} [منتهي الصلاحية]</b>"
             action_section = "⌛ <b>الحالة:</b> انتهت مهلة وصلاحية العرض."
-        elif offer.status == "cancelled":
-            status_header = f"\u200f❌ <b>{CHANNEL_NAME} | عرض #{offer.id} [ملغي]</b>"
-            action_section = "🚫 <b>الحالة:</b> تم إلغاء العرض من قبل صاحبه."
+        elif offer.status in ["cancelled", "deleted"]:
+            status_header = f"\u200f🗑️ <b>{CHANNEL_NAME} | عرض #{offer.id} [تم الحذف]</b>"
+            action_section = "🚫 <b>الحالة:</b> تم حذف العرض من القناة والسوق."
         else:
             status_header = f"\u200fℹ️ <b>{CHANNEL_NAME} | عرض #{offer.id}</b>"
             action_section = f"📊 <b>الحالة:</b> {offer.status}"
             
         channel_text = f"{status_header}\n\n{details_text}\n\n{action_section}"
     
+    if offer.status == "deleted":
+        try:
+            await bot.delete_message(chat_id=settings.CHANNEL_ID, message_id=offer.channel_message_id)
+            return
+        except Exception as delete_err:
+            logger.warning(f"Failed to delete channel message for offer {offer.id}, falling back to edit: {delete_err}")
+
     try:
         await bot.edit_message_text(
             chat_id=settings.CHANNEL_ID,

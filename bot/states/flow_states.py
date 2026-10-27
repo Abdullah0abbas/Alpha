@@ -33,6 +33,7 @@ class NegotiationFSM(StatesGroup):
 class DealPaymentFSM(StatesGroup):
     waiting_for_seller_account = State()
     waiting_for_buyer_wallet = State()
+    waiting_for_syp_proof_photo = State()
 
 class FeedbackFSM(StatesGroup):
     waiting_for_feedback_text = State()

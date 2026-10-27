@@ -1,18 +1,20 @@
-# Project Specification: P2P USDT/SYP Escrow Bot
+# Project Specification: Alpha Bot (USDT/SYP Escrow)
 
-**Version:** 3.3
+**Version:** 3.4
 **Document Type:** Technical Architecture & Implementation Reference
-**Purpose:** This document is the authoritative technical reference for this project. It must be provided as context at the start of any development session (human or AI-assisted). All architectural decisions are final unless explicitly revised in Section 17 (Change Log).
+**Purpose:** This document is the authoritative technical reference for Alpha Bot. It must be provided as context at the start of any development session. All architectural decisions are final unless explicitly revised in Section 17 (Change Log).
 
 ---
 
 ## 1. Project Overview
 
 ### 1.1 Purpose
-An automated escrow system operating via a Telegram bot, facilitating peer-to-peer exchange of USDT (BEP20) for Syrian Pounds (SYP) through local payment rails (Sham Cash SYP, Sham Cash USD, Syriatel Cash, Al-Haram Bank Transfer, Al-Fouad Bank Transfer). The system acts as a trusted intermediary that holds USDT custody during the transaction lifecycle to protect both counterparties from default.
+An automated escrow system operating via a Telegram bot (Alpha Bot), facilitating professional peer-to-peer exchange of USDT (BEP20) for Syrian Pounds (New SYP) through local payment rails (Sham Cash SYP, Syriatel Cash, Al-Haram Bank Transfer, Al-Fouad Bank Transfer). The system acts as a trusted intermediary that holds USDT custody during the transaction lifecycle.
 
-### 1.2 Core Design Principle
-**Per-deal address isolation.** Every transaction is assigned a unique, independently-derived blockchain deposit address. No transaction shares a deposit address with another. This eliminates race conditions and ambiguity in deposit attribution that would otherwise arise from a shared-address model.
+### 1.2 Core Design Principle: Efficiency & Professionalism
+- **Per-deal address isolation**: Unique blockchain deposit address per transaction.
+- **New Syrian Lira Scale**: The system operates on the New Syrian Lira scale (1 Old Lira = 100 New Lira). Users enter rates like 145 instead of 14,500.
+- **Professional Microcopy**: Strict adherence to formal, professional Arabic. No informal Syrian Lira references or wordy clichés.
 
 ### 1.3 Scope of This Document
 This document covers system architecture, data model, security requirements, and operational requirements. It does not cover UI copy, marketing, or legal/regulatory compliance — those are handled separately and are prerequisites to production deployment, not engineering concerns.
@@ -62,52 +64,41 @@ Both Bot Service and Chain Watcher read/write to the same PostgreSQL instance. N
 
 ---
 
-## 4. Transaction State Machine
+## 4. Transaction State Machine (v3.4)
 
 ```
-[Offer created by maker — see Section 4.4 for offer-level expiry & orphan safety net]
+[Offer created by maker — Duration expiry leads to immediate deletion]
   ↓ (taker presses "start deal" and submits amount)
-PENDING_OWNER_APPROVAL   [v2.6 / v3.3]
-  ↓ (owner or admin approves)
+PENDING_OWNER_APPROVAL
+  ↓ (owner or admin approves within 30 mins)
+  → EXPIRED: Rule 4 — Unresponsive maker for 30 mins -> Deal cancelled AND Offer deleted
 CREATED
-  → AWAITING_USDT_DEPOSIT
+  → AWAITING_USDT_DEPOSIT (15-min window)
+    → EXPIRED: Rule 2 — No deposit for 15 mins -> Deal cancelled AND Offer reverts to ACTIVE
   → USDT_DEPOSITED
-  → AWAITING_SYP_PAYMENT
-  → SYP_PAYMENT_SENT
-  → ADMIN_APPROVAL   [v3.3: atomic transition from SYP_PAYMENT_SENT upon seller SYP receipt confirmation]
+  → AWAITING_SYP_PAYMENT (30-min soft window)
+    → Warning: Rule 3 — If > 30 mins, buyer must contact support before paying. Deal remains ACTIVE.
+    → SYP_PAYMENT_SENT (Mandatory photo proof submission by buyer)
+  → ADMIN_APPROVAL (Atomic transition post-seller receipt confirmation)
   → COMPLETED
-
-Branch states (reachable from any state at or after USDT_DEPOSITED):
-  → DISPUTED   → resolved by admin → COMPLETED | CANCELLED
-  → CANCELLED  → admin-mediated post-deposit, or explicit owner/admin rejection pre-deposit
-  → EXPIRED    → automatic 15-minute deposit window expiry, or 30-minute owner approval timeout
-
-Branch from PENDING_OWNER_APPROVAL only:
-  → CANCELLED (owner/admin explicitly declines)
-  → EXPIRED   (30-minute owner no-response timeout)
-  (In both cases, offer reverts to "active", deal record is retained for audit)
 ```
 
-### 4.0 Owner Approval Gate & Admin Intervention (v2.6 / v3.3)
+### 4.0 Owner Approval & Mandatory State Outcomes (v3.4)
+- **Rule 1 (Offer Expiry):** When an active offer's duration expires without active applicants, it is **deleted immediately** from the channel and database.
+- **Rule 2 (USDT Deposit Timeout):** If the seller fails to deposit USDT within 15 minutes of approval, the deal is cancelled. The offer is reverted to `active` status in the market. Admins receive an alert with party IDs.
+- **Rule 3 (SYP Payment Soft Timeout):** If the buyer takes more than 30 minutes to send SYP, the deal remains active (reserved), but the buyer is warned to contact support (`@AlphaSupport`) before proceeding with the transfer.
+- **Rule 4 (Approval Timeout):** If the offer owner fails to approve/reject a deal request within 30 minutes, the deal is cancelled AND the offer is **deleted** for non-responsiveness.
 
-Before a deal is allowed to proceed, the **offer owner** (maker) must approve the specific deal request. This state, `PENDING_OWNER_APPROVAL`, sits between the taker submitting their requested USDT amount and the deal entering `CREATED`.
+### 4.1 Dispute handling: Reporting Non-Receipt (v3.4)
+The term "فتح نزاع" is replaced with **"⚠️ عدم الاستلام"**. When a seller reports non-receipt:
+1. Deal status becomes `DISPUTED`.
+2. Both parties receive a formal notification to contact technical support: `@AlphaSupport`.
+3. Admins are notified for manual verification of the transfer proof.
 
-**Sequence & Privacy-by-Design:**
-1. Taker presses "start deal," and enters requested `amount_usdt` ONLY.
-2. The system creates the deal record with status `PENDING_OWNER_APPROVAL`, setting `buyer_payout_address = "PENDING"` and `seller_payment_info = {"info": "PENDING"}` in DB. The offer's status immediately flips to `"reserved"` (preventing concurrent requests on the same offer).
-3. A request is sent to the offer owner containing: requested amount, calculated SYP total, and taker's `users.completed_deals_count`. **No personal information about the taker is shown** — no username, no wallet address, no payment info, no Telegram ID. Two action buttons: ✅ Approve (`appr_deal_`) / ❌ Reject (`rejc_deal_`).
-4. **Operational Admin Intervention:** Accounts in `settings.ADMIN_IDS` possess operational authority to execute approval/rejection (`appr_deal_` / `rejc_deal_`) or negotiation actions (`neg_m_acc_`, `neg_m_rej_`, `neg_m_cnt_`, `neg_t_acc_`, `neg_t_rej_`) on behalf of stalled parties when required. Payment actions (`man_dep_`, `man_syp_`, `man_conf_`) remain strictly for actual deal counterparties, and final release (`man_rel_`) remains strictly for admins.
-5. **Owner/Admin approves** → deal transitions to `CREATED`, then immediately to `AWAITING_USDT_DEPOSIT` (starting the 15-minute deposit window — Section 4.2).
-6. **Owner/Admin rejects (explicit)** → deal status becomes `CANCELLED`, offer reverts to `"active"`, taker is notified, and the deal record is retained in DB for accounting audit.
-7. **Owner does not respond within 30 minutes** → deal status becomes `EXPIRED`, offer reverts to `"active"`, taker is notified, and deal record is retained in DB.
-
-### 4.1 Cancellation Policy
-Any cancellation occurring at or after `USDT_DEPOSITED` **must** route through admin intervention. No unilateral, automatic cancellation is permitted once funds are in escrow custody. This is a hard invariant, not a configurable option.
-
-### 4.2 Deposit Window Expiry Policy (revised in v2.6 / v3.3)
+### 4.2 Deposit Window Expiry Policy (revised in v2.6 / v3.4)
 Deals in `CREATED` or `AWAITING_USDT_DEPOSIT` (before funds enter escrow) expire automatically **15 minutes** after entering `AWAITING_USDT_DEPOSIT` if no on-chain deposit is detected. This matches the validity window of the temporary deposit address.
 
-**Late deposit handling:** Expiry stops the deal from progressing automatically, but the deposit address remains monitored for at least 24 hours. If a deposit arrives post-expiry, Chain Watcher flags it for manual admin intervention (reactivating deal or arranging refund).
+**Late deposit handling:** Expiry stops the deal from progressing automatically, but the deposit address remains monitored for at least 24 hours. If a deposit arrives post-expiry, Chain Watcher flags it for manual admin intervention.
 
 ### 4.2.1 Overall Deal Timing Ceiling
 Independent of the 15-minute deposit window, a deal has an overall soft ceiling of **1 hour** from creation. It is non-enforcing (does not auto-cancel) and serves as an operational signal for admin review.
@@ -406,7 +397,7 @@ Accessible to `ADMIN_IDS` via `/admin`:
 1. **Profile Card & 5.0 Star Reputation:** Trader badge, completed deal count, and `reputation_score` on a 5.0 star scale (default 5.0).
 2. **Saved Rails Confirmation Gate:** Confirmation gate for saved BEP-20 wallet (`users.saved_usdt_address`) and local payment accounts (`users.saved_payment_info`).
 3. **Golden Points Loyalty Program:** Operational flag `REWARDS_ENABLED` (default `false`). Points for deals (+10) and referrals (+25). Tiered claims (500/1500/3000 pts).
-4. **5 Approved Local Payment Methods:** `شام كاش ليرة`, `شام كاش دولار`, `سيريتيل كاش`, `حوالة بنكية (الهرم)`, `حوالة بنكية (الفؤاد)`.
+4. **Approved Local Payment Methods:** `شام كاش ليرة`, `سيريتيل كاش`, `حوالة بنكية (الهرم)`, `حوالة بنكية (الفؤاد)`.
 
 ---
 
@@ -424,18 +415,5 @@ To keep scope bounded, the following are intentionally excluded from MVP:
 
 | Date | Change |
 |---|---|
-| v1.0 | Initial architecture draft |
-| v2.0 | Restructured to formal specification format; added schema-level constraints, fraud mitigation table, explicit non-goals, and open-decisions tracking |
-| v2.1 | Added Section 8 (Performance & Responsiveness Requirements) |
-| v2.2 | Removed mandatory unique transaction-reference verification for SYP payments |
-| v2.3 | Resolved expiry timeout (15m) and gas station pattern |
-| v2.4 | Added Section 10.1 — Release Pipeline design |
-| v2.5 | Added Section 4.3 — Admin notification requirements |
-| v2.6 | Major State Machine revision: `PENDING_OWNER_APPROVAL`, 15-min deposit window, offer-level expiry |
-| v2.7 | Added Negotiation System |
-| v2.8 | Added Admin Panel |
-| v2.9 | Added System Resilience & Production Hardening |
-| v3.0 | Added User Profile & Golden Points Loyalty System |
-| v3.1 | BEP-20 network standardization and Saved Rails Confirmation Gate |
-| v3.2 | Added Rate Limiting Policy and PostgreSQL SEQUENCE for deposit index |
-| v3.3 | **Official Technical Update v3.3:**<br>• Adopted Proportional Dual Fee Model (0.1% per counterparty = 0.2% total platform fee; Seller deposits 1.001x, Buyer receives 0.999x; benchmark 1,000 USDT deal yields 2 USDT profit). Updated `deals.fee_usdt` default and profit stats.<br>• Removed separate manual `SYP_PAYMENT_CONFIRMED` state; seller SYP confirmation atomically transitions deal directly to `ADMIN_APPROVAL`.<br>• Documented operational admin intervention rights for deal approval/rejection (`appr_deal_`/`rejc_deal_`) and negotiation actions (`neg_m_*`, `neg_t_*`).<br>• Standardized 5.0 Star Rating scale for `users.reputation_score` (default 5.0).<br>• Strengthened Rate Limiting (§6.1): entry point pre-check + mandatory atomic re-check under `SELECT ... FOR UPDATE` lock; 5 active operations ceiling includes deals + open negotiations for both parties.<br>• Offer duration options updated: short minutes (15, 30, 45m) or full hours (1, 2, 3, 4h).<br>• Documented Privacy-by-Design payment flow: deals created with `"PENDING"` place-holders; seller account collected post-`USDT_DEPOSITED`, buyer BEP-20 wallet collected in `AWAITING_SYP_PAYMENT`.<br>• Standardized enum statuses: `offers.status` (7 values), `offers.negotiable_type` (`none`\|`amount`\|`rate`\|`both`), `negotiations.status` (5 uppercase values). Documented `PENDING_OWNER_APPROVAL` rejection/timeout outcomes as `CANCELLED`/`EXPIRED` with retained deal audit records.<br>• Added missing DB tables (`negotiations`, `system_settings`, `audit_logs`), sequence (`deposit_index_seq`), missing columns, and constraints (`chk_deals_different_parties`, `uq_open_deal_per_offer`, `uq_open_negotiation_per_offer`).<br>• Documented Orphan Offers Safety Net (10-minute timeout for `reserved`/`negotiating` without live deal/negotiation), Unified Deal Card, 5 local payment methods, full admin command suite, and `REWARDS_ENABLED` flag. Removed duplicate non-goals section and cleaned internal cross-references. |
+| v1.0 - v3.3 | See previous version history. |
+| v3.4 | **Official Technical Update v3.4:**<br>• Renamed to **Alpha Bot**.<br>• Adopted **New Syrian Lira Scale** (1:100 conversion).<br>• Implemented **Mandatory SYP Photo Proof**: Buyer must upload a screenshot/photo of the transfer to advance to `SYP_PAYMENT_SENT`.<br>• Refined **Timeout Rules**:<br>  - Offer duration expiry -> Immediate deletion.<br>  - Deal approval timeout (30m) -> Deal cancel + Offer deletion.<br>  - USDT deposit timeout (15m) -> Deal cancel + Offer revert to active + Admin alert.<br>  - SYP payment timeout (30m) -> Soft warning to contact support before paying.<br>• Replaced "Dispute" button text with **"⚠️ عدم الاستلام"** (Non-Receipt) and unified support routing to `@AlphaSupport`.<br>• Enforced professional, formal Arabic terminology throughout. |

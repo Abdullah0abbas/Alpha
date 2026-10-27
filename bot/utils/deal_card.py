@@ -35,25 +35,25 @@ def step_of(status: str) -> Tuple[int, str, str]:
     7 primary steps + terminal statuses (0).
     """
     if status == "PENDING_OWNER_APPROVAL":
-        return 1, "[ 🟩 ⬜ ⬜ ⬜ ⬜ ⬜ ⬜ ]", "موافقة صاحب العرض"
+        return 1, "[ 🟩 ⬜ ⬜ ⬜ ⬜ ⬜ ⬜ ]", "موافقة صانع العرض"
     elif status in ("CREATED", "AWAITING_USDT_DEPOSIT"):
-        return 2, "[ 🟩 🟩 ⬜ ⬜ ⬜ ⬜ ⬜ ]", "إيداع رصيد الضمان"
+        return 2, "[ 🟩 🟩 ⬜ ⬜ ⬜ ⬜ ⬜ ]", "إيداع USDT"
     elif status == "USDT_DEPOSITED":
-        return 3, "[ 🟩 🟩 🟩 ⬜ ⬜ ⬜ ⬜ ]", "بيانات استلام الليرة"
+        return 3, "[ 🟩 🟩 🟩 ⬜ ⬜ ⬜ ⬜ ]", "حساب الاستلام"
     elif status == "AWAITING_SYP_PAYMENT":
-        return 4, "[ 🟩 🟩 🟩 🟩 ⬜ ⬜ ⬜ ]", "تحويل الليرة السورية"
+        return 4, "[ 🟩 🟩 🟩 🟩 ⬜ ⬜ ⬜ ]", "تحويل المبلغ بالليرة السورية"
     elif status == "SYP_PAYMENT_SENT":
-        return 5, "[ 🟩 🟩 🟩 🟩 🟩 ⬜ ⬜ ]", "تأكيد استلام الليرة"
+        return 5, "[ 🟩 🟩 🟩 🟩 🟩 ⬜ ⬜ ]", "تأكيد الاستلام بالليرة السورية"
     elif status in ("SYP_PAYMENT_CONFIRMED", "ADMIN_APPROVAL"):
-        return 6, "[ 🟩 🟩 🟩 🟩 🟩 🟩 ⬜ ]", "مراجعة واعتماد الإدارة"
+        return 6, "[ 🟩 🟩 🟩 🟩 🟩 🟩 ⬜ ]", "تدقيق واعتماد الإدارة"
     elif status in ("RELEASING", "COMPLETED"):
-        return 7, "[ 🟩 🟩 🟩 🟩 🟩 🟩 🟩 ]", "إطلاق الرصيد والاكتمال"
+        return 7, "[ 🟩 🟩 🟩 🟩 🟩 🟩 🟩 ]", "تحرير الرصيد"
     elif status == "CANCELLED":
         return 0, "[ ❌ ❌ ❌ ❌ ❌ ❌ ❌ ]", "ملغاة"
     elif status == "EXPIRED":
-        return 0, "[ ⌛ ⌛ ⌛ ⌛ ⌛ ⌛ ⌛ ]", "منتهية الصلاحية"
+        return 0, "[ ⌛ ⌛ ⌛ ⌛ ⌛ ⌛ ⌛ ]", "منتهية"
     elif status == "DISPUTED":
-        return 0, "[ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ]", "نزاع مفتوح"
+        return 0, "[ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ]", "أُبلغ بعدم الاستلام (متابعة الدعم الفني)"
     return 0, "[ ⬜ ⬜ ⬜ ⬜ ⬜ ⬜ ⬜ ]", status
 
 
@@ -64,45 +64,45 @@ def turn_of(status: str, viewer_role: str, is_offer_owner: bool = False) -> Tupl
     """
     if status == "PENDING_OWNER_APPROVAL":
         if is_offer_owner:
-            return True, "الموافقة على طلب الصفقة أو رفضه"
-        return False, "بانتظار موافقة صاحب العرض"
+            return True, "الموافقة على طلب الصفقة"
+        return False, "بانتظار موافقة صانع العرض"
 
     if status in ("CREATED", "AWAITING_USDT_DEPOSIT"):
         if viewer_role == "seller":
-            return True, "تحويل رصيد الضمان إلى المحفظة المخصصة"
-        return False, "بانتظار قيام البائع بإيداع رصيد الضمان"
+            return True, "تحويل USDT إلى محفظة الإيداع"
+        return False, "بانتظار إيداع USDT من البائع"
 
     if status == "USDT_DEPOSITED":
         if viewer_role == "seller":
-            return True, "تحديد وسيلة وحساب استلام الليرة السورية"
-        return False, "بانتظار تزويد البائع لبيانات حسابه"
+            return True, "تأكيد حساب الاستلام بالليرة السورية"
+        return False, "بانتظار تأكيد حساب البائع"
 
     if status == "AWAITING_SYP_PAYMENT":
         if viewer_role == "buyer":
-            return True, "تحويل المبلغ لحساب البائع ثم تأكيد التحويل"
-        return False, "بانتظار قيام المشتري بتحويل المبلغ بالليرة"
+            return True, "تحويل المبلغ وإرفاق إشعار الدفع"
+        return False, "بانتظار تحويل المبلغ بالليرة السورية"
 
     if status == "SYP_PAYMENT_SENT":
         if viewer_role == "seller":
-            return True, "التحقق من حسابك وتأكيد استلام الليرة"
-        return False, "بانتظار مراجعة البائع وتأكيده لاستلام المبلغ"
+            return True, "التحقق وتأكيد استلام المبلغ بالليرة السورية"
+        return False, "بانتظار تأكيد البائع للدفعة"
 
     if status in ("SYP_PAYMENT_CONFIRMED", "ADMIN_APPROVAL"):
         if viewer_role == "admin":
-            return True, "مراجعة الصفقة واعتماد إطلاق الضمان"
-        return False, "بانتظار تدقيق واعتماد الإدارة لإطلاق الضمان"
+            return True, "اعتماد تحرير USDT للمشتري"
+        return False, "بانتظار اعتماد الإدارة وتحرير الرصيد"
 
     if status in ("RELEASING", "COMPLETED"):
-        return False, "اكتملت الصفقة بنجاح وتم إطلاق الرصيد"
+        return False, "اكتملت الصفقة وتحرّر الرصيد بنجاح"
 
     if status == "CANCELLED":
         return False, "تم إلغاء الصفقة"
 
     if status == "EXPIRED":
-        return False, "انتهت مهلة الصفقة تلقائياً"
+        return False, "انتهت مهلة الصفقة"
 
     if status == "DISPUTED":
-        return False, "الصفقة قيد فض النزاع من الإدارة"
+        return False, "أُبلغ بعدم استلام المبلغ — التواصل مع الدعم الفني"
 
     return False, "الصفقة قيد المتابعة"
 
@@ -138,7 +138,7 @@ def get_deal_action_keyboard(
     elif status == "CREATED":
         if is_seller:
             buttons.append([
-                InlineKeyboardButton(text="🔐 بدء إيداع الضمان", callback_data=f"man_aw_dep_{deal.id}")
+                InlineKeyboardButton(text="🔐 إيداع USDT", callback_data=f"man_aw_dep_{deal.id}")
             ])
             buttons.append([
                 InlineKeyboardButton(text="❌ إلغاء الصفقة", callback_data=f"ask_cancel_{deal.id}")
@@ -151,7 +151,7 @@ def get_deal_action_keyboard(
     elif status == "AWAITING_USDT_DEPOSIT":
         if is_seller:
             buttons.append([
-                InlineKeyboardButton(text="✅ تأكيد إيداع الضمان", callback_data=f"man_dep_{deal.id}")
+                InlineKeyboardButton(text="✅ تأكيد إيداع USDT", callback_data=f"man_dep_{deal.id}")
             ])
             buttons.append([
                 InlineKeyboardButton(text="❌ إلغاء الصفقة", callback_data=f"ask_cancel_{deal.id}")
@@ -171,23 +171,26 @@ def get_deal_action_keyboard(
 
             if not seller_info_val or seller_info_val in ["PENDING", "غير محدد", "N/A"]:
                 buttons.append([
-                    InlineKeyboardButton(text="💳 تحديد حساب استلام الليرة", callback_data=f"set_seller_info_{deal.id}")
+                    InlineKeyboardButton(text="💳 حساب استلام المبلغ بالليرة السورية", callback_data=f"set_seller_info_{deal.id}")
                 ])
             else:
                 buttons.append([
-                    InlineKeyboardButton(text="⏳ متابعة مرحلة الدفع", callback_data=f"man_aw_syp_{deal.id}")
+                    InlineKeyboardButton(text="▶️ متابعة الدفع", callback_data=f"man_aw_syp_{deal.id}")
                 ])
 
     elif status == "AWAITING_SYP_PAYMENT":
         if is_buyer:
             buttons.append([
-                InlineKeyboardButton(text="✅ تأكيد تحويل الليرة", callback_data=f"man_syp_{deal.id}")
+                InlineKeyboardButton(text="📸 تأكيد تحويل المبلغ بالليرة السورية", callback_data=f"man_syp_{deal.id}")
             ])
 
     elif status == "SYP_PAYMENT_SENT":
         if is_seller:
             buttons.append([
-                InlineKeyboardButton(text="✅ تأكيد استلام الليرة", callback_data=f"ask_conf_{deal.id}")
+                InlineKeyboardButton(text="✅ تأكيد استلام المبلغ بالليرة السورية", callback_data=f"ask_conf_{deal.id}")
+            ])
+            buttons.append([
+                InlineKeyboardButton(text="⚠️ عدم الاستلام", callback_data=f"dispute_deal_{deal.id}")
             ])
 
     elif status == "SYP_PAYMENT_CONFIRMED":
@@ -199,8 +202,18 @@ def get_deal_action_keyboard(
     elif status == "ADMIN_APPROVAL":
         if is_admin:
             buttons.append([
-                InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}"),
-                InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")
+                InlineKeyboardButton(text="🚀 اعتماد وتحرير الرصيد", callback_data=f"ask_rel_{deal.id}"),
+                InlineKeyboardButton(text="🔍 تفاصيل الصفقة", callback_data=f"adm_inspect_deal_{deal.id}")
+            ])
+
+    elif status == "DISPUTED":
+        support_handle = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip('@')
+        buttons.append([
+            InlineKeyboardButton(text="👨‍💻 التواصل مع الدعم الفني", url=f"https://t.me/{support_handle}")
+        ])
+        if is_admin:
+            buttons.append([
+                InlineKeyboardButton(text="🔍 تفاصيل الصفقة", callback_data=f"adm_inspect_deal_{deal.id}")
             ])
 
     if not buttons:
@@ -248,7 +261,7 @@ def render_deal_card(
         rate_str = "غير محدد"
 
     lines = [
-        f"🤝 **بطاقة صفقة الضمان #{deal.id}**",
+        f"📊 **بطاقة الصفقة #{deal.id}**",
         "━━━━━━━━━━━━━━━",
     ]
 

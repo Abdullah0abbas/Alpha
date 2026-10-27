@@ -105,9 +105,13 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                 offer_id_val = deal.offer_id
                 buyer_id_val = deal.buyer_id
                 seller_id_val = deal.seller_id
+                amount_usdt_val = deal.amount_usdt
+                amount_syp_val = deal.amount_syp
 
-                revert_offer_to_active = False
-                reverted_offer = None
+                prev_status = deal.status
+                deal.status = "CANCELLED"
+
+                target_offer = None
                 maker_id_val = None
 
                 if offer_id_val:
@@ -116,42 +120,45 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                     )
                     offer = offer_res.scalar_one_or_none()
                     if offer:
+                        target_offer = offer
                         maker_id_val = offer.user_id
-                        if offer.status == "reserved":
-                            offer.status = "active"
-                            offer.status_changed_at = now
-                            revert_offer_to_active = True
-                            reverted_offer = offer
 
-                # Do not set status to EXPIRED until offer lock is acquired
-                prev_status = deal.status
-                deal.status = "EXPIRED"
+                        if prev_status == "PENDING_OWNER_APPROVAL":
+                            # Rule 4: Offer creator unresponsive for 30 mins -> Delete offer permanently from channel & DB
+                            offer.status = "deleted"
+                            offer.status_changed_at = now
+                        elif prev_status in ("AWAITING_USDT_DEPOSIT", "CREATED"):
+                            # Rule 2: USDT Deposit 15-min timeout -> Cancel deal & Revert offer to active in channel
+                            if offer.status == "reserved":
+                                offer.status = "active"
+                                offer.status_changed_at = now
 
                 resolved_maker_id, resolved_taker_id = resolve_deal_parties(maker_id_val, seller_id_val, buyer_id_val)
 
                 await item_session.commit()
                 expired_deals_count += 1
-                logger.info(f"Deal #{deal_id_val} ({prev_status}) expired at {now.isoformat()}")
+                logger.info(f"Deal #{deal_id_val} ({prev_status}) cancelled due to timeout at {now.isoformat()}")
 
                 # Post-commit notifications
                 try:
                     await push_deal_card(deal_id_val, bot, notify_handoff=False)
                 except Exception as e:
-                    logger.warning(f"Failed to push deal card on expiration for deal #{deal_id_val}: {e}")
+                    logger.warning(f"Failed to push deal card on cancellation for deal #{deal_id_val}: {e}")
 
-                if revert_offer_to_active and reverted_offer:
+                if target_offer:
                     try:
-                        await update_channel_offer_message(bot, reverted_offer)
+                        await update_channel_offer_message(bot, target_offer)
                     except Exception as e:
                         logger.warning(f"Failed to update channel message for offer #{offer_id_val}: {e}")
 
                 if prev_status == "PENDING_OWNER_APPROVAL":
+                    # Rule 4: Taker & Maker notifications for 30-min approval timeout
                     if resolved_taker_id:
                         try:
                             await bot.send_message(
                                 resolved_taker_id,
-                                f"⌛ **انتهت مهلة الانتظار للصفقة رقم #{deal_id_val}**\n\n"
-                                f"تم إلغاء الطلب تلقائياً لعدم استجابة صاحب العرض خلال مهلة الـ 30 دقيقة.\n"
+                                f"⌛ **تنبيه إلغاء الطلب — صفقة #{deal_id_val}**\n\n"
+                                f"تم إلغاء طلب الصفقة وحذف العرض من القناة والسوق نهائياً لعدم استجابة صاحب العرض خلال مهلة الـ 30 دقيقة.\n"
                                 f"يمكنك تصفح العروض الأخرى المتاحة عبر /offers.",
                                 parse_mode="Markdown"
                             )
@@ -162,17 +169,18 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                         try:
                             await bot.send_message(
                                 resolved_maker_id,
-                                f"⌛ **انتهت مهلة الموافقة على طلب الصفقة رقم #{deal_id_val}**\n\n"
-                                f"تم إلغاء طلب الصفقة لعدم الاستجابة خلال 30 دقيقة.\n"
-                                f"تمت إعادة عرضك #{offer_id_val} كعرض نشط ومتاح في السوق.",
+                                f"🗑️ **تم حذف عرضك رقم #{offer_id_val} وإلغاء الطلب نهائياً**\n\n"
+                                f"انقضت مهلة الـ 30 دقيقة دون اتخاذ قرار (موافقة أو رفض) على طلب الصفقة رقم #{deal_id_val}.\n"
+                                f"تم إلغاء الطلب وحذف عرضك من القناة ومن السوق نهائياً لعدم الاستجابة.",
                                 parse_mode="Markdown"
                             )
                         except Exception as e:
                             logger.warning(f"Failed to notify maker {resolved_maker_id} of approval timeout: {e}")
                 else:
+                    # Rule 2: 15-min USDT Deposit timeout notifications
                     deposit_text = (
-                        f"⌛ **انتهت مهلة الإيداع للصفقة رقم #{deal_id_val}**\n\n"
-                        f"تم إلغاء الصفقة تلقائياً لعدم استلام إيداع الـ USDT في محفظة الضمان خلال مهلة الـ 15 دقيقة.\n"
+                        f"⌛ **انتهت مهلة الإيداع — صفقة #{deal_id_val}**\n\n"
+                        f"تم إلغاء الصفقة تلقائياً لعدم إيداع الـ USDT في محفظة الوساطة خلال مهلة الـ 15 دقيقة.\n"
                         f"تمت إعادة العرض إلى قائمة العروض النشطة في السوق."
                     )
                     if buyer_id_val:
@@ -185,11 +193,28 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                             await bot.send_message(seller_id_val, deposit_text, parse_mode="Markdown")
                         except Exception as e:
                             logger.warning(f"Failed to notify seller {seller_id_val} of deposit timeout: {e}")
+
+                    # Admin alert detailing both counterparties & deal ID
+                    admin_alert_text = (
+                        f"🚨 **تنبيه إلغاء صفقة — انقضاء مهلة إيداع USDT (15 دقيقة)**\n\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"• **رقم الصفقة:** #{deal_id_val}\n"
+                        f"• **البائع:** `{seller_id_val}`\n"
+                        f"• **المشتري:** `{buyer_id_val}`\n"
+                        f"• **المبلغ:** `{format_usdt(amount_usdt_val)}` USDT ⇄ `{format_syp(amount_syp_val)}` SYP\n"
+                        f"━━━━━━━━━━━━━━━\n"
+                        f"تم إلغاء الصفقة تلقائياً لعدم إيداع USDT خلال 15 دقيقة، وتفريغ العرض وإعادته متاحاً في القناة."
+                    )
+                    for admin_id in settings.ADMIN_IDS:
+                        try:
+                            await bot.send_message(admin_id, admin_alert_text, parse_mode="Markdown")
+                        except Exception as e:
+                            logger.warning(f"Failed to notify admin {admin_id} of deposit timeout on deal #{deal_id_val}: {e}")
         except Exception as item_err:
             logger.error(f"Error expiring deal #{deal_id}: {item_err}", exc_info=True)
 
     # ----------------------------------------------------
-    # Branch 2: Active Offers entering 30-min grace period (Max 100 per cycle)
+    # Branch 2: Active Offers Duration Expiry -> Immediate Permanent Deletion
     # ----------------------------------------------------
     grace_candidate_ids = []
     try:
@@ -202,7 +227,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
             offer_grace_res = await read_session.execute(offer_grace_stmt)
             grace_candidate_ids = list(offer_grace_res.scalars().all())
     except Exception as e:
-        logger.error(f"Error querying candidate grace offer IDs: {e}", exc_info=True)
+        logger.error(f"Error querying candidate active offer IDs: {e}", exc_info=True)
 
     for offer_id in grace_candidate_ids:
         try:
@@ -214,50 +239,40 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                 if not offer:
                     continue
 
-                if not can_enter_grace_period(offer.status, offer.expires_at, now):
+                if offer.status != "active" or not offer.expires_at or offer.expires_at > now:
                     continue
 
-                offer.status = "expired_grace"
+                # Rule 1: Delete offer immediately when duration expires without applicants
+                offer.status = "deleted"
                 offer.status_changed_at = now
-                offer.expires_at = now + timedelta(minutes=30)
                 offer_id_val = offer.id
                 user_id_val = offer.user_id
 
                 await item_session.commit()
                 grace_offers_count += 1
-                logger.info(f"Offer #{offer_id_val} entered grace period until {offer.expires_at.isoformat()}")
+                logger.info(f"Offer #{offer_id_val} deleted automatically as duration expired at {now.isoformat()}")
 
                 try:
                     await update_channel_offer_message(bot, offer)
                 except Exception as e:
-                    logger.warning(f"Failed to update channel message for grace offer #{offer_id_val}: {e}")
+                    logger.warning(f"Failed to update channel message for deleted offer #{offer_id_val}: {e}")
 
-                grace_kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text="⏰ تمديد المدة", callback_data=f"ext_off_{offer_id_val}"),
-                        InlineKeyboardButton(text="🗑 حذف العرض", callback_data=f"del_off_{offer_id_val}")
-                    ]
-                ])
-                grace_text = (
-                    f"⏳ **تنبيه: انتهت صلاحية عرضك رقم #{offer_id_val}!**\n"
+                deleted_text = (
+                    f"🗑️ **تم حذف عرضك رقم #{offer_id_val} تلقائياً**\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"انتهت المدة المحددة لعرضك في السوق، وقد دخل العرض الآن في **فترة سماح مدتها 30 دقيقة**.\n\n"
-                    f"خلال هذه الفترة تم إخفاء العرض مؤقتاً من السوق لحين اتخاذك قراراً:\n"
-                    f"• يمكنك **تمديد المدة** لإعادة تفعيله فوراً في السوق.\n"
-                    f"• أو يمكنك **حذف العرض** لإنهاء وجوده نهائياً.\n\n"
-                    f"⚠️ *إذا لم تتخذ أي إجراء خلال 30 دقيقة، سيتم إغلاق العرض تلقائياً كعرض منتهي.*"
+                    f"انتهت المدة المحددة لعرضك في السوق دون أن يتقدم أحد عليه، وتم حذفه من القناة ومن السوق نهائياً.\n"
+                    f"يمكنك إنشاء عرض جديد في أي وقت عبر البوت."
                 )
                 try:
                     await bot.send_message(
                         user_id_val,
-                        grace_text,
-                        reply_markup=grace_kb,
+                        deleted_text,
                         parse_mode="Markdown"
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to notify user {user_id_val} of offer #{offer_id_val} grace period: {e}")
+                    logger.warning(f"Failed to notify user {user_id_val} of deleted offer #{offer_id_val}: {e}")
         except Exception as item_err:
-            logger.error(f"Error transitioning offer #{offer_id} to grace: {item_err}", exc_info=True)
+            logger.error(f"Error deleting offer #{offer_id}: {item_err}", exc_info=True)
 
     # ----------------------------------------------------
     # Branch 3: Expired Grace Period -> Final Expired Archive (Max 100 per cycle)

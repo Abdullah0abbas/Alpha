@@ -344,29 +344,37 @@ async def back_to_offer_type(callback: CallbackQuery, state: FSMContext):
 
 @offers_router.message(OfferCreateFSM.waiting_for_rate)
 async def process_offer_rate(message: Message, state: FSMContext):
-    """Receive and validate exchange rate, then show confirmation screen."""
+    """Receive and validate exchange rate, then proceed directly to min limit or summary."""
     try:
         rate = clean_numeric_input(message.text)
         if not rate or rate <= 0:
             raise ValueError()
 
-        await state.update_data(candidate_rate=str(rate))
-        rate_str = format_syp(rate)
-        kb = get_confirm_step_kb(
-            confirm_cb="wiz_confirm_rate",
-            edit_cb="wiz_edit_rate",
-            back_cb="wiz_back_rate"
+        rate_val = str(rate)
+        data = await state.get_data()
+        history = push_wizard_step(data.get("step_history", []), "rate", {"rate": rate_val})
+
+        await state.update_data(
+            rate=rate_val,
+            candidate_rate=rate_val,
+            step_history=history
         )
+
+        if data.get("return_to_summary"):
+            await state.update_data(return_to_summary=False)
+            await _show_wizard_summary(message, state)
+            return
+
+        rate_str = format_syp(rate)
         await message.answer(
-            "💵 **تأكيد سعر الصرف**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            f"• سعر الصرف المقترح: `{rate_str} SYP` لكل 1 USDT\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "هل ترغب باعتماد هذا السعر والمتابعة؟",
-            reply_markup=kb,
+            f"📝 **إنشاء عرض** | السعر المعتمد: 💵 `{rate_str} SYP`\n\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
+            f"━━━━━━━━━━━━━━━",
+            reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
             parse_mode="Markdown"
         )
-        await state.set_state(OfferCreateFSM.confirm_rate)
+        await state.set_state(OfferCreateFSM.waiting_for_min_limit)
     except Exception:
         await message.answer(
             "⚠️ **سعر الصرف غير صالح!**\n\n"
@@ -417,7 +425,7 @@ async def confirm_rate_and_advance(callback: CallbackQuery, state: FSMContext):
         f"━━━━━━━━━━━━━━━\n"
         f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
         f"━━━━━━━━━━━━━━━",
-        reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
+        reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
         parse_mode="Markdown"
     )
     await state.set_state(OfferCreateFSM.waiting_for_min_limit)
@@ -430,56 +438,59 @@ async def confirm_rate_and_advance(callback: CallbackQuery, state: FSMContext):
 
 @offers_router.callback_query(F.data == "wiz_back_min")
 async def back_to_rate(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Min Limit to Rate confirmation."""
+    """Navigate back from Min Limit to Rate input."""
     data = await state.get_data()
-    rate_val = data.get("rate") or data.get("candidate_rate")
-    if rate_val:
-        rate_str = format_syp(Decimal(str(rate_val)))
-        kb = get_confirm_step_kb(
-            confirm_cb="wiz_confirm_rate",
-            edit_cb="wiz_edit_rate",
-            back_cb="wiz_back_rate"
-        )
-        await callback.message.edit_text(
-            "💵 **تأكيد سعر الصرف**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            f"• سعر الصرف: `{rate_str} SYP` لكل 1 USDT\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "هل ترغب باعتماد هذا السعر والمتابعة؟",
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
-        await state.set_state(OfferCreateFSM.confirm_rate)
-    else:
-        await edit_rate_input(callback, state)
+    offer_type_ar = "🔴 بيع USDT" if data.get("offer_type") == "sell" else "🟢 شراء USDT"
+    await callback.message.edit_text(
+        f"📝 **إنشاء عرض جديد — {offer_type_ar}**\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"💵 أدخل سعر الصرف بالليرة السورية مقابل 1 USDT:\n"
+        f"━━━━━━━━━━━━━━━",
+        reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
+        parse_mode="Markdown"
+    )
+    await state.set_state(OfferCreateFSM.waiting_for_rate)
     await callback.answer()
 
 
 @offers_router.message(OfferCreateFSM.waiting_for_min_limit)
 async def process_min_limit(message: Message, state: FSMContext):
-    """Receive and validate min limit, then show confirmation screen."""
+    """Receive and validate min limit, then proceed directly to max limit or summary."""
     try:
         min_limit = clean_numeric_input(message.text)
         if not min_limit or min_limit <= 0:
             raise ValueError()
 
-        await state.update_data(candidate_min_limit=str(min_limit))
-        min_str = format_usdt(min_limit)
-        kb = get_confirm_step_kb(
-            confirm_cb="wiz_confirm_min",
-            edit_cb="wiz_edit_min",
-            back_cb="wiz_back_min"
+        min_val = str(min_limit)
+        data = await state.get_data()
+        history = push_wizard_step(data.get("step_history", []), "min_limit", {"min_limit": min_val})
+
+        await state.update_data(
+            min_limit=min_val,
+            candidate_min_limit=min_val,
+            step_history=history
         )
+
+        if data.get("return_to_summary"):
+            max_val = data.get("max_limit")
+            if max_val and Decimal(str(max_val)) < Decimal(str(min_val)):
+                await state.update_data(return_to_summary=False)
+            else:
+                await state.update_data(return_to_summary=False)
+                await _show_wizard_summary(message, state)
+                return
+
+        min_str = format_usdt(min_limit)
         await message.answer(
-            "📦 **تأكيد الحد الأدنى للكمية**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            f"• الحد الأدنى للصفقة: `{min_str} USDT`\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "هل ترغب باعتماد هذا الحد والمتابعة؟",
-            reply_markup=kb,
+            f"📝 **إنشاء عرض** | الحد الأدنى: 📦 `{min_str} USDT`\n\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة:\n"
+            f"*(يجب أن يكون أكبر من أو يساوي `{min_str}` USDT)*\n"
+            f"━━━━━━━━━━━━━━━",
+            reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
             parse_mode="Markdown"
         )
-        await state.set_state(OfferCreateFSM.confirm_min_limit)
+        await state.set_state(OfferCreateFSM.waiting_for_max_limit)
     except Exception:
         await message.answer(
             "⚠️ **قيمة غير صالحة!**\n\n"
@@ -517,7 +528,6 @@ async def confirm_min_limit_and_advance(callback: CallbackQuery, state: FSMConte
     )
 
     if data.get("return_to_summary"):
-        # If max limit already exists and is now invalid, force max limit update
         max_val = data.get("max_limit")
         if max_val and Decimal(str(max_val)) < Decimal(str(min_val)):
             await state.update_data(return_to_summary=False)
@@ -534,7 +544,7 @@ async def confirm_min_limit_and_advance(callback: CallbackQuery, state: FSMConte
         f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة:\n"
         f"*(يجب أن يكون أكبر من أو يساوي `{min_str}` USDT)*\n"
         f"━━━━━━━━━━━━━━━",
-        reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
+        reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
         parse_mode="Markdown"
     )
     await state.set_state(OfferCreateFSM.waiting_for_max_limit)
@@ -547,34 +557,22 @@ async def confirm_min_limit_and_advance(callback: CallbackQuery, state: FSMConte
 
 @offers_router.callback_query(F.data == "wiz_back_max")
 async def back_to_min_limit(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Max Limit to Min Limit confirmation."""
-    data = await state.get_data()
-    min_val = data.get("min_limit") or data.get("candidate_min_limit")
-    if min_val:
-        min_str = format_usdt(Decimal(str(min_val)))
-        kb = get_confirm_step_kb(
-            confirm_cb="wiz_confirm_min",
-            edit_cb="wiz_edit_min",
-            back_cb="wiz_back_min"
-        )
-        await callback.message.edit_text(
-            "📦 **تأكيد الحد الأدنى للكمية**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            f"• الحد الأدنى للصفقة: `{min_str} USDT`\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "هل ترغب باعتماد هذا الحد والمتابعة؟",
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
-        await state.set_state(OfferCreateFSM.confirm_min_limit)
-    else:
-        await edit_min_limit_input(callback, state)
+    """Navigate back from Max Limit to Min Limit input."""
+    await callback.message.edit_text(
+        "📝 **إنشاء عرض**\n\n"
+        "━━━━━━━━━━━━━━━\n"
+        "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
+        "━━━━━━━━━━━━━━━",
+        reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
+        parse_mode="Markdown"
+    )
+    await state.set_state(OfferCreateFSM.waiting_for_min_limit)
     await callback.answer()
 
 
 @offers_router.message(OfferCreateFSM.waiting_for_max_limit)
 async def process_max_limit(message: Message, state: FSMContext):
-    """Receive and validate max limit, then show confirmation screen."""
+    """Receive and validate max limit, then proceed directly to payment methods or summary."""
     try:
         max_limit = clean_numeric_input(message.text)
         if not max_limit or max_limit <= 0:
@@ -588,37 +586,43 @@ async def process_max_limit(message: Message, state: FSMContext):
                 f"⚠️ **الحد الأقصى غير متطابق!**\n\n"
                 f"يجب أن يكون أكبر من أو يساوي الحد الأدنى (`{format_usdt(min_limit)}` USDT).\n"
                 f"يرجى إعادة إدخال الحد الأقصى:",
-                reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
+                reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
                 parse_mode="Markdown"
             )
             return
 
-        await state.update_data(candidate_max_limit=str(max_limit))
-        max_str = format_usdt(max_limit)
-        min_str = format_usdt(min_limit)
-        kb = get_confirm_step_kb(
-            confirm_cb="wiz_confirm_max",
-            edit_cb="wiz_edit_max",
-            back_cb="wiz_back_max"
+        max_val = str(max_limit)
+        history = push_wizard_step(data.get("step_history", []), "max_limit", {"max_limit": max_val})
+
+        await state.update_data(
+            max_limit=max_val,
+            candidate_max_limit=max_val,
+            step_history=history
         )
+
+        if data.get("return_to_summary"):
+            await state.update_data(return_to_summary=False)
+            await _show_wizard_summary(message, state)
+            return
+
+        selected = data.get("payment_methods", [])
         await message.answer(
-            "📦 **تأكيد نطاق الكمية المعروضة**\n\n"
+            "💳 **وسائل الدفع المقبولة**\n\n"
             "━━━━━━━━━━━━━━━\n"
-            f"• الحد الأدنى: `{min_str} USDT`\n"
-            f"• الحد الأقصى: `{max_str} USDT`\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "هل ترغب باعتماد نطاق الكميات والمتابعة؟",
-            reply_markup=kb,
+            "اضغط على وسائل الدفع المقبولة لديك لتحديدها (يمكنك اختيار أكثر من وسيلة)، ثم اضغط على زر التأكيد:\n"
+            "━━━━━━━━━━━━━━━",
+            reply_markup=get_payment_methods_kb(selected),
             parse_mode="Markdown"
         )
-        await state.set_state(OfferCreateFSM.confirm_max_limit)
+        await state.set_state(OfferCreateFSM.waiting_for_methods)
     except Exception:
         await message.answer(
             "⚠️ **قيمة غير صالحة!**\n\n"
             "يرجى إدخال رقم صحيح وموجب للحد الأقصى بوحدة USDT:",
-            reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
+            reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
             parse_mode="Markdown"
         )
+
 
 
 @offers_router.callback_query(OfferCreateFSM.confirm_max_limit, F.data == "wiz_edit_max")

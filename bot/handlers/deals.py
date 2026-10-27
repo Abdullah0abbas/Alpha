@@ -11,7 +11,7 @@ from sqlalchemy.future import select
 from sqlalchemy import or_, func, text, update
 from sqlalchemy.exc import IntegrityError
 
-from db.models import Deal, Offer, User
+from db.models import Deal, Offer, User, PaymentProof
 from bot.states.flow_states import DealCreateFSM, DealPaymentFSM
 from bot.services.audit_service import record_audit, add_audit
 from config.settings import settings
@@ -171,7 +171,7 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
         return
 
     rate = Decimal(data['rate'])
-    amount_syp = (amount_usdt * rate).quantize(Decimal("1"))
+    amount_syp = (amount_usdt * rate).quantize(Decimal("0.01"))
     data['amount_usdt'] = str(amount_usdt)
     data['amount_syp'] = str(amount_syp)
     await state.update_data(amount_usdt=str(amount_usdt), amount_syp=str(amount_syp))
@@ -597,12 +597,40 @@ async def apply_seller_payment_info(
     await push_deal_card(deal.id, bot)
 
 
+async def forward_proof_photo_to_seller(deal: Deal, photo_file_id: str, bot: Bot):
+    syp_str = format_syp(deal.amount_syp)
+    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ تأكيد استلام المبلغ بالليرة السورية", callback_data=f"ask_conf_{deal.id}")],
+        [InlineKeyboardButton(text="⚠️ عدم الاستلام", callback_data=f"dispute_deal_{deal.id}")]
+    ])
+    caption = (
+        f"💸 **إشعار تحويل المبلغ بالليرة السورية — صفقة #{deal.id}**\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"• دورك: 🔴 بائع USDT\n"
+        f"• المبلغ المتوقع استلامه: 💰 `{syp_str}` SYP\n"
+        f"• المرفق: لقطة شاشة لإشعار الدفع المرفق من المشتري.\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"يرجى التحقق من وصول المبلغ لحسابك، ثم الضغط على زر التأكيد أدناه:"
+    )
+    try:
+        await bot.send_photo(
+            chat_id=deal.seller_id,
+            photo=photo_file_id,
+            caption=caption,
+            reply_markup=seller_kb,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send proof photo to seller {deal.seller_id}: {e}")
+
+
 async def apply_buyer_payout_wallet(
     deal: Deal,
     wallet_address: str,
     bot: Bot,
     db_session: AsyncSession,
-    event: Union[CallbackQuery, Message]
+    event: Union[CallbackQuery, Message],
+    photo_file_id: str | None = None
 ) -> None:
     if deal.status not in ("AWAITING_SYP_PAYMENT", "ADMIN_APPROVAL"):
         raise ValueError(f"Invalid deal status for buyer payout wallet: {deal.status}")
@@ -619,16 +647,19 @@ async def apply_buyer_payout_wallet(
 
         if isinstance(event, CallbackQuery):
             try:
-                await event.answer("✅ تم تأكيد التحويل بنجاح.")
+                await event.answer("✅ تم تأكيد إرسال الدفعة وإشعار التحويل بنجاح.")
             except Exception:
                 pass
         elif isinstance(event, Message):
             try:
-                await event.answer("✅ تم تأكيد التحويل بنجاح.")
+                await event.answer("✅ تم تأكيد إرسال الدفعة وإشعار التحويل بنجاح.")
             except Exception:
                 pass
 
         await push_deal_card(deal.id, bot)
+
+        if photo_file_id:
+            await forward_proof_photo_to_seller(deal, photo_file_id, bot)
 
     elif deal.status == "ADMIN_APPROVAL":
         await db_session.commit()
@@ -699,16 +730,16 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
     fee_note = f" (شاملة عمولة البائع: `{format_usdt(seller_fee)}` USDT)" if seller_fee > 0 else ""
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تأكيد إيداع الضمان", callback_data=f"man_dep_{deal.id}")]
+        [InlineKeyboardButton(text="✅ تأكيد إيداع USDT", callback_data=f"man_dep_{deal.id}")]
     ])
     escaped_deposit = escape_markdown(deal.deposit_address)
     await callback.message.edit_text(
-        f"🔐 **صفقة #{deal.id} — بانتظار إيداع الضمان**\n\n"
+        f"🔐 **صفقة #{deal.id} — بانتظار إيداع USDT**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"• دورك: 🔴 بائع USDT\n"
         f"• المبلغ المطلوب إيداعه: 💰 `{total_deposit_str} USDT`{fee_note} ⇄ `{syp_str} SYP`\n"
         f"• المهلة المتاحة للإيداع: ⏱️ 15 دقيقة\n\n"
-        f"🔑 **عنوان محفظة الضمان للإيداع:**\n"
+        f"🔑 **عنوان محفظة الإيداع:**\n"
         f"`{escaped_deposit}`\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"قم بتحويل `{total_deposit_str} USDT` ثم اضغط على زر تأكيد الإيداع:",
@@ -725,7 +756,7 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
                 f"━━━━━━━━━━━━━━━\n"
                 f"• دورك: 🟢 مشتري USDT\n"
                 f"• القيمة: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n\n"
-                f"بدأ البائع مهلة إيداع الضمان (15 دقيقة). سيتم إشعارك فور تأكيد استلام الرصيد."
+                f"بدأ البائع مهلة إيداع USDT (15 دقيقة). سيتم إشعارك فور تأكيد وصول الرصيد."
             ),
             parse_mode="Markdown"
         )
@@ -758,18 +789,33 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
         await callback.bot.send_message(
             chat_id=deal.buyer_id,
             text=(
-                f"🔒 **تحديث صفقة #{deal.id} — تم تأمين وحجز الضمان**\n\n"
+                f"🔒 **تحديث صفقة #{deal.id} — تم استلام USDT**\n\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"• دورك: 🟢 مشتري USDT\n"
-                f"• رصيد الضمان المحجوز: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
+                f"• الرصيد المحتجز: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
                 f"━━━━━━━━━━━━━━━\n\n"
-                f"تم تأكيد إيداع وحجز رصيد الضمان في محفظة ضمان {BOT_NAME}.\n"
-                f"يقوم البائع الآن بإدخال بيانات حسابه المالي لتتمكن من التحويل له."
+                f"تم تأكيد استلام USDT بنجاح في محفظة الوساطة لـ {BOT_NAME}.\n"
+                f"يقوم البائع الآن بتأكيد حساب الاستلام لتتمكن من التحويل له."
             ),
             parse_mode="Markdown"
         )
     except Exception as e:
         logger.warning(f"Failed to notify buyer {deal.buyer_id}: {e}")
+
+    # Section 16: Check if seller payment info is ALREADY populated (e.g. from Sell Offer creation)
+    seller_info_val = ""
+    if isinstance(deal.seller_payment_info, dict):
+        seller_info_val = str(deal.seller_payment_info.get("info") or "").strip()
+    elif isinstance(deal.seller_payment_info, str):
+        seller_info_val = deal.seller_payment_info.strip()
+
+    if seller_info_val and seller_info_val not in ["PENDING", "غير محدد", "N/A"]:
+        # Seller payment details already attached! Auto-advance to AWAITING_SYP_PAYMENT seamlessly
+        deal.status = "AWAITING_SYP_PAYMENT"
+        await db_session.commit()
+        await callback.answer("تم تأكيد إيداع الضمان واعتماد بيانات الحساب تلقائياً ✅")
+        await push_deal_card(deal.id, callback.bot)
+        return
 
     # Section 16 (item 2.1): Check if seller has saved payment info in profile
     user_res = await db_session.execute(select(User).where(User.telegram_id == deal.seller_id))
@@ -796,18 +842,39 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
         await callback.answer()
         return
 
-    # Show payment method selection keyboard for seller
-    await callback.message.edit_text(
-        f"🔒 **صفقة #{deal.id} — تم تأكيد وحجز الضمان بنجاح**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🔴 بائع USDT\n"
-        f"• رصيد الضمان المحجوز: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"اختر وسيلة الدفع التي ترغب باستلام الليرة السورية عبرها:",
-        reply_markup=get_deal_payment_methods_kb(deal.id),
-        parse_mode="Markdown"
-    )
+    # Determine target payment method locked in the offer
+    target_pm = "شام كاش ليرة"
+    if isinstance(deal.seller_payment_info, dict) and deal.seller_payment_info.get("method") and deal.seller_payment_info.get("method") not in ["غير محدد", "PENDING"]:
+        target_pm = deal.seller_payment_info.get("method")
+    else:
+        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+        offer_obj = offer_res.scalar_one_or_none()
+        if offer_obj and offer_obj.payment_methods and len(offer_obj.payment_methods) > 0:
+            target_pm = offer_obj.payment_methods[0]
+
+    pm_key_map = {
+        "شام كاش ليرة": "sham_lira",
+        "سيريتيل كاش": "syriatel",
+        "حوالة بنكية (الهرم)": "haram",
+        "حوالة بنكية (الفؤاد)": "fouad"
+    }
+    pm_key = pm_key_map.get(target_pm, "sham_lira")
+    pm_info = DEAL_PM_PROMPTS.get(pm_key, DEAL_PM_PROMPTS["sham_lira"])
+
+    await state.set_state(DealPaymentFSM.waiting_for_seller_account)
+    await state.update_data(deal_id=deal.id, selected_pm=target_pm)
+
+    prompt_text = pm_info["prompt"].format(deal_id=deal.id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+    ])
+    try:
+        await callback.message.edit_text(prompt_text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(prompt_text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
+
+
 
 
 def get_deal_payment_methods_kb(deal_id: int) -> InlineKeyboardMarkup:
@@ -1008,22 +1075,39 @@ async def cq_manual_set_seller_info(callback: CallbackQuery, state: FSMContext, 
         await callback.answer(err_msg, show_alert=True)
         return
 
-    # Release row lock before Telegram calls without expiring attributes
-    await db_session.commit()
+    target_pm = "شام كاش ليرة"
+    if isinstance(deal.seller_payment_info, dict) and deal.seller_payment_info.get("method") and deal.seller_payment_info.get("method") not in ["غير محدد", "PENDING"]:
+        target_pm = deal.seller_payment_info.get("method")
+    else:
+        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+        offer_obj = offer_res.scalar_one_or_none()
+        if offer_obj and offer_obj.payment_methods and len(offer_obj.payment_methods) > 0:
+            target_pm = offer_obj.payment_methods[0]
 
-    text = (
-        f"💳 **صفقة #{deal.id} — اختيار وسيلة استلام الليرة (SYP)**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"اختر وسيلة الدفع التي ترغب باعتمادها لهذه الصفقة:"
-    )
-    kb = get_deal_payment_methods_kb(deal.id)
+    pm_key_map = {
+        "شام كاش ليرة": "sham_lira",
+        "سيريتيل كاش": "syriatel",
+        "حوالة بنكية (الهرم)": "haram",
+        "حوالة بنكية (الفؤاد)": "fouad"
+    }
+    pm_key = pm_key_map.get(target_pm, "sham_lira")
+    pm_info = DEAL_PM_PROMPTS.get(pm_key, DEAL_PM_PROMPTS["sham_lira"])
+
+    await state.set_state(DealPaymentFSM.waiting_for_seller_account)
+    await state.update_data(deal_id=deal.id, selected_pm=target_pm)
+
+    prompt_text = pm_info["prompt"].format(deal_id=deal.id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+    ])
     try:
-        sent_msg = await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        sent_msg = await callback.message.edit_text(prompt_text, reply_markup=kb, parse_mode="Markdown")
         await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
     except Exception:
-        sent_msg = await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        sent_msg = await callback.message.answer(prompt_text, reply_markup=kb, parse_mode="Markdown")
         await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
     await callback.answer()
+
 
 
 @deals_router.message(DealPaymentFSM.waiting_for_seller_account)
@@ -1155,56 +1239,122 @@ async def manual_syp_sent(callback: CallbackQuery, state: FSMContext, db_session
         await callback.answer(err_msg, show_alert=True)
         return
 
-    usdt_str = format_usdt(deal.amount_usdt)
-    syp_str = format_syp(deal.amount_syp)
-
-    # Section 16 (item 2.1): Check if buyer has saved BEP-20 wallet address in profile
-    user_res = await db_session.execute(select(User).where(User.telegram_id == deal.buyer_id))
-    buyer_user = user_res.scalar_one_or_none()
-    saved_wallet = buyer_user.saved_usdt_address.strip() if (buyer_user and buyer_user.saved_usdt_address) else None
-
-    is_saved_valid, normalized_saved, _ = validate_bep20_address(saved_wallet) if saved_wallet else (False, "", "")
-
-    # Release row lock before Telegram calls without expiring attributes
-    await db_session.commit()
-
-    if is_saved_valid:
-        # Show explicit Confirmation Gate
-        gate_text = (
-            f"💸 **صفقة #{deal.id} — تأكيد تحويل الليرة وعنوان محفظة USDT**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"• القيمة: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
-            f"• عنوان المحفظة المحفوظ بملفك الشخصي (BEP-20):\n"
-            f"`{escape_markdown(normalized_saved)}`\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"⚠️ **تنبيه:** تأكد أن هذا العنوان يدعم شبكة BNB Smart Chain (BEP20).\n\n"
-            f"هل ترغب في استخدام هذا العنوان المحفوظ لتلقي الرصيد، أم إدخال عنوان محفظة جديد لهذه الصفقة؟"
-        )
-        gate_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ استخدام هذه البيانات", callback_data=f"use_saved_buyer_wallet_{deal.id}")],
-            [InlineKeyboardButton(text="✏️ إدخال بيانات جديدة لهذه الصفقة", callback_data=f"manual_set_buyer_wallet_{deal.id}")],
-            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-        ])
-        await callback.message.edit_text(gate_text, reply_markup=gate_kb, parse_mode="Markdown")
-        await callback.answer()
-        return
-
-    # Fallback to direct input via FSM if no saved wallet
-    await state.set_state(DealPaymentFSM.waiting_for_buyer_wallet)
+    await state.set_state(DealPaymentFSM.waiting_for_syp_proof_photo)
     await state.update_data(deal_id=deal.id)
 
+    syp_str = format_syp(deal.amount_syp)
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+    ])
+
     await callback.message.edit_text(
-        f"📥 **صفقة #{deal.id} — محفظة استلام USDT**\n\n"
+        f"📸 **تأكيد تحويل المبلغ بالليرة السورية — صفقة #{deal.id}**\n\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"تم تسجيل تحويل الليرة بنجاح.\n\n"
-        f"أدخل عنوان محفظتك الخاصة (BEP-20 / BNB Smart Chain) لتلقي رصيد `{usdt_str} USDT` عليها فور اعتماد الإدارة:\n"
-        f"━━━━━━━━━━━━━━━",
+        f"• المبلغ المطلوب تحويله: 💰 `{syp_str}` SYP\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"يرجى إرسال لقطة شاشة (إشعار الدفع) لإثبات عملية التحويل المالي:",
+        reply_markup=cancel_kb,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@deals_router.message(DealPaymentFSM.waiting_for_syp_proof_photo, F.photo)
+async def process_syp_proof_photo(message: Message, state: FSMContext, db_session: AsyncSession):
+    data = await state.get_data()
+    deal_id = data.get('deal_id')
+    if not deal_id:
+        await message.answer("حدث خطأ في استعادة بيانات الجلسة.")
+        await state.clear()
+        return
+
+    valid, deal, err_code, err_msg = await acquire_deal_lock(
+        deal_id=deal_id,
+        user_id=message.from_user.id,
+        expected_statuses="AWAITING_SYP_PAYMENT",
+        allowed_roles="buyer",
+        db_session=db_session
+    )
+    if not valid:
+        await db_session.commit()
+        await message.answer(err_msg)
+        await state.clear()
+        return
+
+    photo = message.photo[-1]
+    photo_file_id = photo.file_id
+
+    try:
+        proof = PaymentProof(
+            deal_id=deal.id,
+            transaction_reference=f"PHOTO_{photo_file_id}",
+            amount=deal.amount_syp,
+            submitted_by=message.from_user.id
+        )
+        db_session.add(proof)
+        await db_session.commit()
+    except Exception as e:
+        logger.warning(f"PaymentProof creation log: {e}")
+        await db_session.rollback()
+
+    existing_buyer_addr = (deal.buyer_payout_address or "").strip()
+    is_existing_valid, normalized_existing, _ = validate_bep20_address(existing_buyer_addr) if (existing_buyer_addr and existing_buyer_addr not in ["PENDING", "غير محدد", "N/A"]) else (False, "", "")
+
+    await state.clear()
+
+    if is_existing_valid:
+        await apply_buyer_payout_wallet(
+            deal=deal,
+            wallet_address=normalized_existing,
+            bot=message.bot,
+            db_session=db_session,
+            event=message,
+            photo_file_id=photo_file_id
+        )
+    else:
+        user_res = await db_session.execute(select(User).where(User.telegram_id == deal.buyer_id))
+        buyer_user = user_res.scalar_one_or_none()
+        saved_wallet = buyer_user.saved_usdt_address.strip() if (buyer_user and buyer_user.saved_usdt_address) else None
+        is_saved_valid, normalized_saved, _ = validate_bep20_address(saved_wallet) if saved_wallet else (False, "", "")
+
+        if is_saved_valid:
+            await apply_buyer_payout_wallet(
+                deal=deal,
+                wallet_address=normalized_saved,
+                bot=message.bot,
+                db_session=db_session,
+                event=message,
+                photo_file_id=photo_file_id
+            )
+        else:
+            deal.status = "SYP_PAYMENT_SENT"
+            await db_session.commit()
+            await push_deal_card(deal.id, message.bot)
+
+            await forward_proof_photo_to_seller(deal, photo_file_id, message.bot)
+
+            await state.set_state(DealPaymentFSM.waiting_for_buyer_wallet)
+            await state.update_data(deal_id=deal.id)
+            await message.answer(
+                f"✅ **تم تسجيل إشعار التحويل بنجاح**\n\n"
+                f"أدخل عنوان محفظتك الخاصة (BEP-20 / BNB Smart Chain) لتلقي الرصيد عليها فور اعتماد الإدارة:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+                ]),
+                parse_mode="Markdown"
+            )
+
+
+@deals_router.message(DealPaymentFSM.waiting_for_syp_proof_photo)
+async def process_syp_proof_photo_invalid(message: Message):
+    await message.answer(
+        "⚠️ **يرجى إرسال لقطة شاشة (صورة إشعار الدفع) حصراً!**\n\n"
+        "قم بإرفاق صورة الإشعار للمتابعة وإرسالها للبائع:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
         ]),
         parse_mode="Markdown"
     )
-    await callback.answer()
 
 
 @deals_router.callback_query(F.data.startswith("set_buyer_payout_"))
@@ -1621,6 +1771,88 @@ async def manual_syp_confirmed(callback: CallbackQuery, db_session: AsyncSession
 
     await _dispatch_admin_approval(deal, callback.bot, db_session, origin_callback=callback)
     await callback.answer()
+
+
+@deals_router.callback_query(F.data.startswith("dispute_deal_"))
+async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncSession):
+    deal_id = int(callback.data.split("_")[-1])
+    valid, deal, err_code, err_msg = await acquire_deal_lock(
+        deal_id=deal_id,
+        user_id=callback.from_user.id,
+        expected_statuses=["AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT"],
+        allowed_roles="seller",
+        db_session=db_session
+    )
+    if not valid:
+        await callback.answer(err_msg, show_alert=True)
+        return
+
+    deal.status = "DISPUTED"
+    add_audit(
+        session=db_session,
+        action="REPORT_NON_RECEIPT",
+        target_type="deal",
+        target_id=deal.id,
+        actor_id=callback.from_user.id,
+        actor_type="USER",
+        details={"reported_by": callback.from_user.id}
+    )
+    await db_session.commit()
+
+    support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip('@')
+    support_link = f"https://t.me/{support_username}"
+
+    notice_text = (
+        f"⚠️ **صفقة #{deal.id} — عدم استلام المبلغ بالليرة السورية**\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"أبلغ البائع بعدم استلام الدفعة المالية بالليرة السورية حتى الآن.\n\n"
+        f"يرجى التواصل الفوري مع فريق الدعم الفني لمراجعة إشعار التحويل والتحقق منه:\n"
+        f"👨‍💻 **فريق الدعم الفني:** @{support_username}"
+    )
+
+    support_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👨‍💻 التواصل مع الدعم الفني", url=support_link)]
+    ])
+
+    try:
+        await callback.message.edit_text(notice_text, reply_markup=support_kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(notice_text, reply_markup=support_kb, parse_mode="Markdown")
+
+    try:
+        await callback.bot.send_message(
+            chat_id=deal.buyer_id,
+            text=notice_text,
+            reply_markup=support_kb,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send non-receipt notice to buyer {deal.buyer_id}: {e}")
+
+    admin_notice = (
+        f"🚨 **إبلاغ عدم استلام — صفقة #{deal.id}**\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"• البائع: `{deal.seller_id}`\n"
+        f"• المشتري: `{deal.buyer_id}`\n"
+        f"• المبلغ: `{format_usdt(deal.amount_usdt)}` USDT ⇄ `{format_syp(deal.amount_syp)}` SYP\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"قام البائع بالإبلاغ عن عدم استلام المبلغ بالليرة السورية."
+    )
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")]
+    ])
+    for admin_id in settings.ADMIN_IDS:
+        try:
+            await callback.bot.send_message(chat_id=admin_id, text=admin_notice, reply_markup=admin_kb, parse_mode="Markdown")
+        except Exception as e:
+            logger.warning(f"Failed to notify admin {admin_id} for dispute on deal #{deal.id}: {e}")
+
+    try:
+        await push_deal_card(deal.id, callback.bot, notify_handoff=False)
+    except Exception as e:
+        logger.warning(f"Failed to push deal card on dispute for deal #{deal.id}: {e}")
+
+    await callback.answer("تم تسجيل إبلاغك بعدم استلام المبلغ وتحويل الحالة إلى الدعم الفني.")
 
 
 @deals_router.callback_query(F.data.startswith("man_adm_appr_"))

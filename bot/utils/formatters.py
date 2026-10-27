@@ -108,10 +108,11 @@ def clean_numeric_input(raw_text: str | None) -> Decimal | None:
         return None
 
 def format_syp(amount) -> str:
-    """Format SYP amount with required thousand separators and no decimals."""
+    """Format SYP amount cleanly with up to 2 decimals if needed and thousand separators for New Syrian Lira scale."""
     try:
-        val = int(round(Decimal(str(amount))))
-        return f"{val:,}"
+        val = Decimal(str(amount))
+        formatted = f"{val:,.2f}".rstrip('0').rstrip('.')
+        return formatted if formatted else "0"
     except Exception:
         return str(amount)
 
