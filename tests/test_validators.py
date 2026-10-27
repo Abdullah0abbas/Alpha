@@ -85,7 +85,7 @@ class TestValidators(unittest.TestCase):
 
     def test_sham_cash_validator(self):
         from bot.utils.validators import validate_sham_cash_address
-        valid_addr = "82b2a4fafc335c4f39c58910248c63d1"
+        valid_addr = "11112222333344445555666677778888"
         ok, norm, err = validate_sham_cash_address(valid_addr)
         self.assertTrue(ok)
         self.assertEqual(norm, valid_addr)
@@ -98,59 +98,59 @@ class TestValidators(unittest.TestCase):
 
         # Invalid lengths and characters
         self.assertFalse(validate_sham_cash_address("82b2a4fafc")[0])
-        self.assertFalse(validate_sham_cash_address("82b2a4fafc335c4f39c58910248c63d1extra")[0])
+        self.assertFalse(validate_sham_cash_address("11112222333344445555666677778888extra")[0])
         self.assertFalse(validate_sham_cash_address("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")[0])
         self.assertFalse(validate_sham_cash_address("")[0])
 
     def test_syriatel_cash_validator(self):
         from bot.utils.validators import validate_syriatel_cash_number
-        phone = "0932063758"
+        phone = "0911111111"
         ok, norm, err = validate_syriatel_cash_number(phone)
         self.assertTrue(ok)
         self.assertEqual(norm, phone)
 
         # With international prefixes and spaces
-        ok, norm, _ = validate_syriatel_cash_number("+963 932 063 758")
+        ok, norm, _ = validate_syriatel_cash_number("+963 911 111 111")
         self.assertTrue(ok)
         self.assertEqual(norm, phone)
 
-        ok, norm, _ = validate_syriatel_cash_number("00963932063758")
+        ok, norm, _ = validate_syriatel_cash_number("00963911111111")
         self.assertTrue(ok)
         self.assertEqual(norm, phone)
 
         # Invalid
-        self.assertFalse(validate_syriatel_cash_number("0932063")[0])
-        self.assertFalse(validate_syriatel_cash_number("0832063758")[0])
-        self.assertFalse(validate_syriatel_cash_number("093206375899")[0])
+        self.assertFalse(validate_syriatel_cash_number("0911111")[0])
+        self.assertFalse(validate_syriatel_cash_number("0811111111")[0])
+        self.assertFalse(validate_syriatel_cash_number("091111111199")[0])
 
     def test_bank_transfer_validator(self):
         from bot.utils.validators import validate_bank_transfer_info
-        raw = "محمد أحمد العلي - 0932063758"
+        raw = "محمد أحمد العلي - 0911111111"
         ok, norm, err = validate_bank_transfer_info(raw)
         self.assertTrue(ok)
         self.assertIn("محمد أحمد العلي", norm)
-        self.assertIn("0932063758", norm)
+        self.assertIn("0911111111", norm)
 
         # Missing phone
         self.assertFalse(validate_bank_transfer_info("محمد أحمد العلي")[0])
         # Missing triple name (only 1 or 2 names)
-        self.assertFalse(validate_bank_transfer_info("محمد 0932063758")[0])
-        self.assertFalse(validate_bank_transfer_info("محمد أحمد 0932063758")[0])
+        self.assertFalse(validate_bank_transfer_info("محمد 0911111111")[0])
+        self.assertFalse(validate_bank_transfer_info("محمد أحمد 0911111111")[0])
 
     def test_unified_payment_method_info(self):
         from bot.utils.validators import validate_payment_method_info
         # Sham cash
-        ok, norm, _ = validate_payment_method_info("شام كاش ليرة", "82b2a4fafc335c4f39c58910248c63d1")
+        ok, norm, _ = validate_payment_method_info("شام كاش ليرة", "11112222333344445555666677778888")
         self.assertTrue(ok)
-        self.assertIn("82b2a4fafc335c4f39c58910248c63d1", norm)
+        self.assertIn("11112222333344445555666677778888", norm)
 
         # Syriatel cash
-        ok, norm, _ = validate_payment_method_info("سيريتيل كاش", "0932063758")
+        ok, norm, _ = validate_payment_method_info("سيريتيل كاش", "0911111111")
         self.assertTrue(ok)
-        self.assertIn("0932063758", norm)
+        self.assertIn("0911111111", norm)
 
         # Bank transfer
-        ok, norm, _ = validate_payment_method_info("حوالة بنكية (الهرم)", "أحمد محمود حسن 0932063758")
+        ok, norm, _ = validate_payment_method_info("حوالة بنكية (الهرم)", "أحمد محمود حسن 0911111111")
         self.assertTrue(ok)
         self.assertIn("أحمد محمود حسن", norm)
 
@@ -198,13 +198,13 @@ class TestOfferWizardPureFunctions(unittest.TestCase):
             "offer_type": "sell",
             "payment_methods": ["سيريتيل كاش", "شام كاش ليرة"],
             "payout_details": {
-                "سيريتيل كاش": "سيريتيل كاش: 0932063758",
-                "شام كاش ليرة": "شام كاش: 82b2a4fafc335c4f39c58910248c63d1"
+                "سيريتيل كاش": "سيريتيل كاش: 0911111111",
+                "شام كاش ليرة": "شام كاش: 11112222333344445555666677778888"
             }
         }
         self.assertEqual(
             extract_primary_payout_info(sell_data),
-            "سيريتيل كاش: 0932063758"
+            "سيريتيل كاش: 0911111111"
         )
 
     def test_is_wizard_data_complete(self):
@@ -218,7 +218,7 @@ class TestOfferWizardPureFunctions(unittest.TestCase):
             "max_limit": "200",
             "payment_methods": ["سيريتيل كاش"],
             "payout_details": {
-                "سيريتيل كاش": "0932063758"
+                "سيريتيل كاش": "0911111111"
             },
             "duration_hours": 4.0
         }
@@ -276,23 +276,24 @@ class TestOfferWizardPureFunctions(unittest.TestCase):
             "max_limit": "500",
             "payment_methods": ["سيريتيل كاش"],
             "payout_details": {
-                "سيريتيل كاش": "سيريتيل كاش: 0932063758"
+                "سيريتيل كاش": "سيريتيل كاش: 0911111111"
             },
             "negotiable": True,
             "negotiable_type": "amount",
             "duration_hours": 4.0
         }
         summary = format_wizard_summary(data, bot_name="TestBot")
-        self.assertIn("ملخص ومراجعة العرض النهائي", summary)
+        self.assertIn("المراجعة النهائية وتأكيد نشر العرض", summary)
         self.assertIn("15,200", summary)
         self.assertIn("50", summary)
         self.assertIn("500", summary)
-        self.assertIn("0932063758", summary)
+        self.assertIn("0911111111", summary)
         self.assertIn("متاح على الكمية", summary)
         self.assertIn("عمولة المنصة", summary)
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

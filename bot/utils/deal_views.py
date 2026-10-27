@@ -121,7 +121,7 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
     if current_status in ("ADMIN_APPROVAL", "SYP_PAYMENT_CONFIRMED"):
         verification_lines = (
             f"**سجل التحقق:**\n\n"
-            f"• إيداع الضمان: مؤكد ومحجوز ✅\n"
+            f"• إيداع الضمان: مسجل ومأكد يدوياً من البائع (وضع المحاكاة) ⏳\n"
             f"• تحويل الليرة: مؤكد استلامه من البائع ✅\n"
             f"• عنوان المستلم: مسجل ومتحقق منه ✅\n\n\n"
             f"الصفقة جاهزة للاعتماد النهائي وإطلاق الرصيد:"
@@ -129,11 +129,12 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
     elif current_status == "COMPLETED":
         verification_lines = (
             f"**سجل التحقق:**\n\n"
-            f"• إيداع الضمان: مكتمل وتم إطلاقه ✅\n"
+            f"• إيداع الضمان: مكتمل برمجياً (وضع المحاكاة) ✅\n"
             f"• تحويل الليرة: مؤكد ومكتمل ✅\n"
-            f"• عنوان المستلم: تم تحويل الرصيد إليه ✅\n\n\n"
+            f"• عنوان المستلم: تم اعتماد إطلاق الرصيد إليه برمجياً ✅\n\n\n"
             f"الصفقة مكتملة ومغلقة بنجاح."
         )
+
     elif current_status in ("PENDING_OWNER_APPROVAL", "CREATED", "AWAITING_USDT_DEPOSIT"):
         payout_status = "مسجل ومتحقق منه ✅" if (deal.buyer_payout_address and deal.buyer_payout_address != "PENDING") else "غير مسجل بعد ⏳"
         verification_lines = (

@@ -761,6 +761,32 @@ async def confirm_payment_methods(callback: CallbackQuery, state: FSMContext, db
 # STEP 6: PAYOUT DETAILS COLLECTION & CONFIRMATION
 # ==============================================================================
 
+def _extract_saved_payment_info(user_obj: User | None, cur_method: str) -> str | None:
+    """Helper to extract saved payment method info from User.saved_payment_info whether dict, JSON, or string."""
+    if not user_obj or not user_obj.saved_payment_info:
+        return None
+    raw = user_obj.saved_payment_info
+    if isinstance(raw, dict):
+        val = raw.get(cur_method)
+        if val:
+            return str(val)
+    elif isinstance(raw, str):
+        raw_str = raw.strip()
+        try:
+            parsed = json.loads(raw_str)
+            if isinstance(parsed, dict) and parsed.get(cur_method):
+                return str(parsed[cur_method])
+        except Exception:
+            pass
+        # Check if the plain string is valid for this method or contains the method name
+        is_val, norm_info, _ = validate_payment_method_info(cur_method, raw_str)
+        if is_val:
+            return norm_info
+        if cur_method in raw_str:
+            return raw_str
+    return None
+
+
 async def _show_payout_prompt(message: Message, state: FSMContext, db_session: AsyncSession, user_id: int):
     """Render prompt for payout details according to offer type and remaining methods."""
     data = await state.get_data()
@@ -773,7 +799,7 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
     if offer_type == "buy":
         # USDT BEP-20 wallet address collection
         buttons = []
-        saved_addr = getattr(user, "usdt_bep20_address", None) if user else None
+        saved_addr = user.saved_usdt_address if (user and user.saved_usdt_address) else None
         if saved_addr:
             short_addr = f"{saved_addr[:6]}...{saved_addr[-4:]}"
             buttons.append([InlineKeyboardButton(text=f"⚡ استخدام عنوان المحفظة المحفوظ ({short_addr})", callback_data="wiz_use_saved_bep20")])
@@ -788,7 +814,7 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
             "💼 **عنوان محفظة استلام USDT**\n\n"
             "━━━━━━━━━━━━━━━\n"
             "⚠️ **تنبيه شبكة الاستلام:** يجب أن يكون العنوان على شبكة **BNB Smart Chain (BEP-20)** حصراً.\n"
-            "إرسال عنوان من شبكة أخرى قد يؤدي إلى فقدان أموالك نهائياً.\n"
+            "إرسال عنوان من شبكة أخرى قد تؤدي إلى فقدان أموالك نهائياً.\n"
             "━━━━━━━━━━━━━━━\n\n"
             "أدخل عنوان محفظتك لاستلام أرباحك عند اكتمال الصفقات:"
         )
@@ -812,17 +838,7 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         buttons = []
 
         # Check for saved info matching this method
-        saved_info_str = None
-        if user and user.saved_payment_info:
-            if isinstance(user.saved_payment_info, dict):
-                saved_info_str = user.saved_payment_info.get(cur_method)
-            elif isinstance(user.saved_payment_info, str):
-                try:
-                    parsed = json.loads(user.saved_payment_info)
-                    if isinstance(parsed, dict):
-                        saved_info_str = parsed.get(cur_method)
-                except Exception:
-                    pass
+        saved_info_str = _extract_saved_payment_info(user, cur_method)
 
         if saved_info_str:
             buttons.append([InlineKeyboardButton(text=f"⚡ استخدام الحساب المحفوظ لـ {cur_method}", callback_data=f"wiz_use_saved_pm_{idx}")])
@@ -854,11 +870,11 @@ async def use_saved_bep20_address(callback: CallbackQuery, state: FSMContext, db
     """Use user's saved BEP20 address."""
     user_res = await db_session.execute(select(User).where(User.telegram_id == callback.from_user.id))
     user = user_res.scalar_one_or_none()
-    if not user or not user.usdt_bep20_address:
+    if not user or not user.saved_usdt_address:
         await callback.answer("لا يوجد عنوان محفوظ في ملفك الشخصي.", show_alert=True)
         return
 
-    is_valid, norm_addr, _ = validate_bep20_address(user.usdt_bep20_address)
+    is_valid, norm_addr, _ = validate_bep20_address(user.saved_usdt_address)
     if not is_valid:
         await callback.answer("العنوان المحفوظ غير صالح.", show_alert=True)
         return
@@ -886,16 +902,7 @@ async def use_saved_payment_method_info(callback: CallbackQuery, state: FSMConte
         return
 
     cur_method = methods[idx]
-    saved_val = None
-    if isinstance(user.saved_payment_info, dict):
-        saved_val = user.saved_payment_info.get(cur_method)
-    elif isinstance(user.saved_payment_info, str):
-        try:
-            parsed = json.loads(user.saved_payment_info)
-            if isinstance(parsed, dict):
-                saved_val = parsed.get(cur_method)
-        except Exception:
-            pass
+    saved_val = _extract_saved_payment_info(user, cur_method)
 
     if not saved_val:
         await callback.answer("لا توجد بيانات محفوظة لهذه الوسيلة.", show_alert=True)
@@ -919,6 +926,7 @@ async def use_saved_payment_method_info(callback: CallbackQuery, state: FSMConte
     else:
         await _show_payout_prompt(callback.message, state, db_session, user_id=callback.from_user.id)
     await callback.answer("تم اعتماد الحساب.")
+
 
 
 @offers_router.message(OfferCreateFSM.waiting_for_payout_details)
@@ -1403,9 +1411,16 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
     user_id = callback.from_user.id
     data = await state.get_data()
 
+    # Double click gate
+    if data.get("is_publishing"):
+        await callback.answer("جاري معالجة طلب نشر العرض...", show_alert=True)
+        return
+    await state.update_data(is_publishing=True)
+
     # 1. Wizard completeness check
     is_complete, err_msg = is_wizard_data_complete(data)
     if not is_complete:
+        await state.update_data(is_publishing=False)
         await callback.answer(f"⚠️ {err_msg}", show_alert=True)
         return
 
@@ -1419,31 +1434,24 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         )
         active_offers_count = count_res.scalar() or 0
         if active_offers_count >= 5:
-            await callback.message.edit_text(
-                "⚠️ **تجاوزت الحد الأقصى للعروض النشطة!**\n\n"
-                "━━━━━━━━━━━━━━━\n"
-                "الحد الأقصى المسموح به هو **5 عروض نشطة** في نفس الوقت.\n"
-                "يرجى حذف أو إنهاء أحد عروضك السابقة أولاً قبل إنشاء عرض جديد.",
-                parse_mode="Markdown"
+            await state.update_data(is_publishing=False)
+            await callback.answer(
+                "⚠️ تجاوزت الحد الأقصى المسموح به (5 عروض نشطة). يرجى إلغاء أو إكمال أحد عروضك الحالية أولاً.",
+                show_alert=True
             )
-            await state.clear()
-            await callback.answer()
             return
 
         # 3. Section 6.1.2: Rolling window rate limit (max 3 offers per 10 mins)
         is_allowed, retry_after = check_and_record_rate_limit(user_id, "create_offer")
         if not is_allowed:
             minutes = (retry_after + 59) // 60
-            await callback.message.edit_text(
-                f"⚠️ **تجاوزت الحد الزمني لإنشاء العروض!**\n\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"الحد الأقصى المسموح به هو **3 عمليات إنشاء عروض لكل 10 دقائق**.\n"
-                f"يرجى الانتظار حوالي **{minutes} دقيقة** والمحاولة مجدداً.",
-                parse_mode="Markdown"
+            await state.update_data(is_publishing=False)
+            await callback.answer(
+                f"⚠️ تجاوزت حد إنشاء العروض. يرجى الانتظار حوالي {minutes} دقيقة والمحاولة مجدداً.",
+                show_alert=True
             )
-            await state.clear()
-            await callback.answer()
             return
+
 
     # 4. Extract data and prepare timestamps
     now = datetime.now(timezone.utc)

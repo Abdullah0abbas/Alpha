@@ -4,6 +4,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.models import Offer
 from config.settings import settings
 from bot.utils.branding import CHANNEL_NAME
+from bot.utils.fees import format_fee_rule_line
 from bot.utils.formatters import (
     format_payment_methods,
     format_syp,
@@ -24,6 +25,7 @@ async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
     rate_str = format_syp(offer.rate)
     min_str = format_usdt(offer.min_limit)
     max_str = format_usdt(offer.max_limit)
+    fee_line = format_fee_rule_line()
     
     if offer.status == "active":
         status_header = f"\u200f📢 <b>{CHANNEL_NAME} | عرض تداول #{offer.id} — {offer_type_ar}</b>"
@@ -32,7 +34,7 @@ async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
             f"• <b>سعر الصرف:</b> 💵 <code>{rate_str} SYP</code>\n"
             f"• <b>حدود الكمية:</b> 📦 <code>{min_str}</code> — <code>{max_str}</code> USDT\n"
             f"• <b>وسائل الدفع:</b> 💳 {methods_str}\n"
-            f"• <b>العمولة:</b> ⚡ 0.1% لكل طرف (مجاناً حتى 25 USDT)\n"
+            f"• <b>العمولة:</b> {fee_line}\n"
             f"━━━━━━━━━━━━━━━"
         )
         deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offer_{offer.id}"

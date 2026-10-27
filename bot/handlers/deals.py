@@ -261,6 +261,15 @@ async def _finalize_deal_creation(
     approval_expires_at = now + timedelta(minutes=30)
     fee_breakdown = calculate_deal_fee(amount_usdt)
 
+    if offer.offer_type == 'sell':
+        pm = offer.payment_methods[0] if (offer.payment_methods and len(offer.payment_methods) > 0) else "غير محدد"
+        final_seller_payment_info = {"method": pm, "info": seller_payment_info.get("info", "PENDING") if isinstance(seller_payment_info, dict) else "PENDING"}
+    else:
+        if isinstance(seller_payment_info, dict):
+            final_seller_payment_info = {"method": seller_payment_info.get("method", "غير محدد"), "info": seller_payment_info.get("info", "PENDING")}
+        else:
+            final_seller_payment_info = {"method": "غير محدد", "info": "PENDING"}
+
     new_deal = Deal(
         offer_id=offer.id,
         seller_id=seller_id,
@@ -273,7 +282,7 @@ async def _finalize_deal_creation(
         deposit_address=mock_deposit_address,
         deposit_index=mock_deposit_index,
         buyer_payout_address=buyer_payout_address,
-        seller_payment_info=seller_payment_info,
+        seller_payment_info=final_seller_payment_info,
         status="PENDING_OWNER_APPROVAL",
         expires_at=approval_expires_at
     )
@@ -559,13 +568,16 @@ async def apply_seller_payment_info(
     info_text: str,
     bot: Bot,
     db_session: AsyncSession,
-    event: Union[CallbackQuery, Message]
+    event: Union[CallbackQuery, Message],
+    selected_pm: str | None = None
 ) -> None:
     if deal.status != "USDT_DEPOSITED":
         raise ValueError(f"Invalid deal status for seller payment info: {deal.status}")
 
-    # TODO: بند منفصل — تحقق صيغة عنوان BEP20 (0x + 40 hex) وEIP-55 checksum قبل الحفظ.
-    deal.seller_payment_info = {"info": info_text}
+    existing_method = deal.seller_payment_info.get("method") if isinstance(deal.seller_payment_info, dict) else None
+    method_val = selected_pm or existing_method or "غير محدد"
+
+    deal.seller_payment_info = {"method": method_val, "info": info_text}
     deal.status = "AWAITING_SYP_PAYMENT"
     await db_session.commit()
 
@@ -678,6 +690,12 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
     
     usdt_str = format_usdt(deal.amount_usdt)
     syp_str = format_syp(deal.amount_syp)
+    seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
+    total_deposit_usdt = deal.amount_usdt + seller_fee
+    total_deposit_str = format_usdt(total_deposit_usdt)
+
+    fee_note = f" (شاملة عمولة البائع: `{format_usdt(seller_fee)}` USDT)" if seller_fee > 0 else ""
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ تأكيد إيداع الضمان", callback_data=f"man_dep_{deal.id}")]
     ])
@@ -686,12 +704,12 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
         f"🔐 **صفقة #{deal.id} — بانتظار إيداع الضمان**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"• دورك: 🔴 بائع USDT\n"
-        f"• القيمة المطلوبة: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
+        f"• المبلغ المطلوب إيداعه: 💰 `{total_deposit_str} USDT`{fee_note} ⇄ `{syp_str} SYP`\n"
         f"• المهلة المتاحة للإيداع: ⏱️ 15 دقيقة\n\n"
         f"🔑 **عنوان محفظة الضمان للإيداع:**\n"
         f"`{escaped_deposit}`\n"
         f"━━━━━━━━━━━━━━━\n\n"
-        f"قم بتحويل `{usdt_str} USDT` ثم اضغط على زر تأكيد الإيداع:",
+        f"قم بتحويل `{total_deposit_str} USDT` ثم اضغط على زر تأكيد الإيداع:",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -1052,7 +1070,8 @@ async def process_set_seller_info(message: Message, state: FSMContext, db_sessio
         info_text=formatted_info,
         bot=message.bot,
         db_session=db_session,
-        event=message
+        event=message,
+        selected_pm=selected_pm
     )
 
 
@@ -1779,6 +1798,9 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
     if offer and offer.status == "reserved":
         offer.status = "completed"
 
+    seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
+    buyer_fee = getattr(deal, "buyer_fee_usdt", None) or Decimal("0")
+
     add_audit(
         session=db_session,
         action="RELEASE_ESCROW",
@@ -1790,6 +1812,8 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
             "amount_usdt": str(deal.amount_usdt),
             "amount_syp": str(deal.amount_syp),
             "fee_usdt": str(deal.fee_usdt),
+            "seller_fee_usdt": str(seller_fee),
+            "buyer_fee_usdt": str(buyer_fee),
             "seller_id": deal.seller_id,
             "buyer_id": deal.buyer_id,
             "buyer_payout_address": deal.buyer_payout_address
@@ -1806,11 +1830,15 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
         
     usdt_str = format_usdt(deal.amount_usdt)
     syp_str = format_syp(deal.amount_syp)
+    net_buyer_usdt = deal.amount_usdt - buyer_fee
+    net_buyer_usdt_str = format_usdt(net_buyer_usdt)
+
     try:
         await callback.message.edit_text(
             f"🎉 **صفقة #{deal.id} — تم الاعتماد والإطلاق بنجاح** ✅\n\n"
             f"━━━━━━━━━━━━━━━\n"
             f"• القيمة المطلقة: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
+            f"• صافي المشتري المحول: 💰 `{net_buyer_usdt_str} USDT`\n"
             f"• محفظة المستلم: 📥 `{deal.buyer_payout_address}`\n"
             f"• معتمد التنفيذ: 👮 `{callback.from_user.id}`\n"
             f"• الحالة النهائية: 🏁 مكتملة بنجاح\n"
@@ -1833,7 +1861,7 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
             text=(
                 f"🎉 **صفقة #{deal.id} — اكتملت الصفقة بنجاح** ✅\n\n"
                 f"━━━━━━━━━━━━━━━\n"
-                f"• القيمة المستلمة: 💰 `{usdt_str} USDT`\n"
+                f"• القيمة الصافية المستلمة: 💰 `{net_buyer_usdt_str} USDT`\n"
                 f"• محفظة الاستلام: 📥 `{deal.buyer_payout_address}`\n"
                 f"━━━━━━━━━━━━━━━\n\n"
                 f"تمت موافقة الإدارة وإطلاق رصيد الضمان بنجاح إلى محفظتك.\n"

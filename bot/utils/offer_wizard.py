@@ -4,11 +4,9 @@ Strictly zero dependencies on aiogram or sqlalchemy.
 Provides navigation history management, completeness validation,
 primary payout info extraction, and summary presentation formatting.
 """
-from decimal import Decimal, InvalidOperation
-from typing import Any, Tuple
-import re
+from bot.utils.fees import format_fee_rule_line
 
-FEE_RULE_LINE = "⚡ **عمولة المنصة:** 0.1% لكل طرف (مجاناً حتى 25 USDT)"
+FEE_RULE_LINE = f"⚡ **عمولة المنصة:** {format_fee_rule_line().replace('⚡ العمولة: ', '')}"
 
 PAYMENT_METHOD_ICONS = {
     "شام كاش ليرة": "💳",
