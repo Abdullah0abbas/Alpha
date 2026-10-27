@@ -172,6 +172,8 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
 
     rate = Decimal(data['rate'])
     amount_syp = (amount_usdt * rate).quantize(Decimal("1"))
+    data['amount_usdt'] = str(amount_usdt)
+    data['amount_syp'] = str(amount_syp)
     await state.update_data(amount_usdt=str(amount_usdt), amount_syp=str(amount_syp))
 
     offer_type = data['offer_type']
@@ -221,8 +223,8 @@ async def _finalize_deal_creation(
     seller_payment_info: dict
 ):
     offer_id = data['offer_id']
-    amount_usdt = Decimal(data['amount_usdt'])
-    amount_syp = Decimal(data['amount_syp'])
+    amount_usdt = Decimal(str(data.get('amount_usdt', '0')))
+    amount_syp = Decimal(str(data.get('amount_syp', '0')))
 
     now = datetime.now(timezone.utc)
 
