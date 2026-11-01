@@ -213,7 +213,7 @@ class TestDealCardPureFunctions(unittest.TestCase):
         )
 
         buyer_text, buyer_kb = render_deal_card(deal, viewer_id=2002)
-        self.assertIn("بطاقة صفقة الضمان #99", buyer_text)
+        self.assertIn("بطاقة الصفقة #99", buyer_text)
         self.assertIn("100", buyer_text)
         self.assertIn("1,500,000", buyer_text)
         self.assertIn("الخطوة 4 من 7", buyer_text)
@@ -223,8 +223,8 @@ class TestDealCardPureFunctions(unittest.TestCase):
         self.assertIn("man_syp_99", callbacks)
 
         seller_text, seller_kb = render_deal_card(deal, viewer_id=1001)
-        self.assertIn("بطاقة صفقة الضمان #99", seller_text)
-        self.assertIn("بانتظار قيام المشتري بتحويل المبلغ بالليرة", seller_text)
+        self.assertIn("بطاقة الصفقة #99", seller_text)
+        self.assertIn("تحويل المبلغ بالليرة السورية", seller_text)
         self.assertIsNone(seller_kb)
 
     def test_fee_model_and_card_rendering(self):

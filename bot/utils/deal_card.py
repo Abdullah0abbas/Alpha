@@ -270,32 +270,31 @@ def render_deal_card(
         rate_str = "غير محدد"
 
     lines = [
-        f"📊 **بطاقة الصفقة #{deal.id}**",
-        "━━━━━━━━━━━━━━━",
+        f"📊 **بطاقة الصفقة #{deal.id}**\n",
     ]
 
     if step_num > 0:
-        lines.append(f"📍 **المرحلة:** {progress_bar} (الخطوة {step_num} من 7)")
-        lines.append(f"📌 **المرحلة الحالية:** {step_name}")
+        lines.append(f"📍 **المرحلة :** {progress_bar} (الخطوة {step_num} من 7)")
+        lines.append(f"📌 **المرحلة الحالية :** {step_name}")
     else:
-        lines.append(f"📍 **الحالة النهائية:** {progress_bar} {step_name}")
+        lines.append(f"📍 **الحالة النهائية :** {progress_bar} {step_name}")
 
     # Turn notification indicator
     if is_turn:
-        lines.append(f"🎯 **دورك الآن:** {turn_desc}")
+        lines.append(f"🎯 **دورك الآن :** {turn_desc}")
     else:
-        lines.append(f"⏳ **الوضع:** {turn_desc}")
+        lines.append(f"⏳ **الوضع :** {turn_desc}")
 
     # Expiry remaining time if active
     if deal.expires_at and deal.status in ("PENDING_OWNER_APPROVAL", "AWAITING_USDT_DEPOSIT", "CREATED"):
         remaining_str = humanize_time_remaining(deal.expires_at)
-        lines.append(f"⏱️ **المهلة المتبقية:** {remaining_str}")
+        lines.append(f"⏱️ **المهلة المتبقية :** {remaining_str}")
 
-    lines.append("━━━━━━━━━━━━━━━")
-    lines.append(f"👤 **دورك بالصفقة:** {role_label}")
-    lines.append(f"💰 **الكمية:** `{usdt_str}` USDT")
-    lines.append(f"💵 **الإجمالي:** `{syp_str}` SYP")
-    lines.append(f"📊 **سعر الصرف:** `{rate_str}` SYP")
+    lines.append("\n💰 **البيانات المالية :**")
+    lines.append(f"👤 **دورك بالصفقة :** {role_label}")
+    lines.append(f"📦 **الكمية :** `{usdt_str}` USDT")
+    lines.append(f"💵 **الإجمالي :** `{syp_str}` ل.س")
+    lines.append(f"📊 **سعر الصرف :** `{rate_str}` ل.س")
 
     # Commission details
     seller_fee = getattr(deal, "seller_fee_usdt", None)
@@ -309,20 +308,20 @@ def render_deal_card(
     if is_buyer:
         net_buyer_str = format_usdt(deal.amount_usdt - buyer_fee)
         if buyer_fee > Decimal("0"):
-            lines.append(f"📥 **صافي استلامك المتوقع:** `{net_buyer_str}` USDT (عمولة `{format_usdt(buyer_fee)}` USDT)")
+            lines.append(f"📥 **صافي استلامك المتوقع :** `{net_buyer_str}` USDT (عمولة `{format_usdt(buyer_fee)}` USDT)")
         else:
-            lines.append(f"📥 **صافي استلامك المتوقع:** `{net_buyer_str}` USDT (عمولة مجانية)")
+            lines.append(f"📥 **صافي استلامك المتوقع :** `{net_buyer_str}` USDT (عمولة مجانية)")
 
     # Specific phase context
     if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and is_seller:
         total_dep = deal.amount_usdt + seller_fee
         total_dep_str = format_usdt(total_dep)
-        lines.append("━━━━━━━━━━━━━━━")
+        lines.append("\n🔐 **بيانات الإيداع :**")
         if seller_fee > Decimal("0"):
-            lines.append(f"💳 **المطلوب إيداعه:** `{total_dep_str}` USDT (تشمل عمولة `{format_usdt(seller_fee)}` USDT)")
+            lines.append(f"💳 **المطلوب إيداعه :** `{total_dep_str}` USDT (تشمل عمولة `{format_usdt(seller_fee)}` USDT)")
         else:
-            lines.append(f"💳 **المطلوب إيداعه:** `{total_dep_str}` USDT (العمولة مجانية)")
-        lines.append(f"📥 **محفظة الإيداع:** `{deal.deposit_address}`")
+            lines.append(f"💳 **المطلوب إيداعه :** `{total_dep_str}` USDT (العمولة مجانية)")
+        lines.append(f"📥 **محفظة الإيداع :**\n`{deal.deposit_address}`")
 
     elif deal.status in ("AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT", "SYP_PAYMENT_CONFIRMED", "ADMIN_APPROVAL"):
         seller_method = "غير محدد"
@@ -335,14 +334,14 @@ def render_deal_card(
         elif deal.seller_payment_info:
             seller_info_str = str(deal.seller_payment_info)
 
-        lines.append("━━━━━━━━━━━━━━━")
-        lines.append(f"🏦 **وسيلة الدفع:** {seller_method}")
-        lines.append(f"📋 **حساب استلام البائع:** `{escape_markdown(seller_info_str)}`")
+        lines.append("\n💳 **بيانات استلام الدفعة :**")
+        lines.append(f"🏦 **وسيلة الدفع :** {seller_method}")
+        lines.append(f"📋 **حساب استلام البائع :** `{escape_markdown(seller_info_str)}`")
 
     if deal.status in ("ADMIN_APPROVAL", "COMPLETED") and deal.buyer_payout_address:
-        lines.append(f"📥 **محفظة استلام المشتري:** `{deal.buyer_payout_address}`")
+        lines.append(f"📥 **محفظة استلام المشتري (BEP-20) :**\n`{deal.buyer_payout_address}`")
 
-    lines.append("━━━━━━━━━━━━━━━")
+    lines.append("")
 
     # Final guidance message
     if deal.status == "COMPLETED":
@@ -396,6 +395,11 @@ async def push_deal_card(
                 parties.append(("seller", deal.seller_id, deal.seller_card_msg_id))
 
             for role, user_id, current_msg_id in parties:
+                if role == "seller" and deal.status == "SYP_PAYMENT_SENT":
+                    # The seller receives a single dedicated photo message with payment proof and confirmation buttons.
+                    # Skip sending or editing text deal card to avoid duplicate messages.
+                    continue
+
                 is_offer_owner = (maker_id is not None and user_id == maker_id)
                 card_text, kb = render_deal_card(deal, user_id, is_offer_owner=is_offer_owner)
                 is_my_turn, _ = turn_of(deal.status, role, is_offer_owner=is_offer_owner)
@@ -434,9 +438,13 @@ async def push_deal_card(
                         err_desc = str(e).lower()
                         if "message is not modified" in err_desc:
                             pass
-                        elif "message to edit not found" in err_desc or "cant be edited" in err_desc:
+                        elif "message to edit not found" in err_desc or "cant be edited" in err_desc or "there is no text in the message to edit" in err_desc:
                             # Send replacement message
                             try:
+                                try:
+                                    await bot.delete_message(chat_id=user_id, message_id=current_msg_id)
+                                except Exception:
+                                    pass
                                 sent_msg = await bot.send_message(
                                     chat_id=user_id,
                                     text=card_text,

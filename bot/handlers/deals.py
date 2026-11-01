@@ -119,16 +119,14 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
     ])
     
     await callback.message.answer(
-        f"🤝 **بدء تنفيذ صفقة — عرض #{offer.id}**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📊 **بيانات العرض الأساسية:**\n"
-        f"• النوع: {offer_type_ar}\n"
-        f"• سعر الصرف: 💵 `{rate_str} SYP`\n"
-        f"• حدود الكمية: 📦 `{min_str}` إلى `{max_str}` USDT\n"
-        f"• وسائل الدفع المتاحة: 💳 {methods_str}\n"
-        f"• دورك في المعاملة: **{taker_role_ar}**\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"⌨️ يرجى إدخال كمية USDT المطلوبة للتداول:",
+        f"🤝 **صفقة جديدة — عرض #{offer.id}**\n\n"
+        f"📋 **بيانات المعاملة :**\n"
+        f"▫️ المعاملة : {offer_type_ar}\n"
+        f"▫️ دورك بالصفقة : **{taker_role_ar}**\n"
+        f"💵 سعر الصرف : `{rate_str}` ل.س\n"
+        f"💰 الحدود المتاحة : من `{min_str}` إلى `{max_str}` USDT\n"
+        f"💳 طرق الدفع : {methods_str}\n\n"
+        f"💬 **يرجى إدخال كمية USDT المطلوبة للتداول :**",
         reply_markup=cancel_kb,
         parse_mode="Markdown"
     )
@@ -193,10 +191,9 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
         await state.set_state(DealCreateFSM.waiting_for_payment_method)
         prompt_msg = (
             f"💳 **اختيار وسيلة الدفع بالليرة السورية**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"• الكمية المطلوبة: 💰 `{format_usdt(amount_usdt)} USDT` ⇄ 💵 `{format_syp(amount_syp)} SYP`\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"يدعم هذا العرض عدة وسائل دفع. يرجى اختيار الوسيلة التي تناسبك لإتمام المعاملة:"
+            f"💰 **الكمية المطلوبة :** `{format_usdt(amount_usdt)}` USDT\n"
+            f"💵 **المبلغ المقابل :** `{format_syp(amount_syp)}` ل.س\n\n"
+            f"يدعم هذا العرض عدة وسائل دفع. يرجى اختيار الوسيلة التي تناسبك لإتمام المعاملة من الأزرار أدناه:"
         )
         await message.answer(prompt_msg, reply_markup=kb, parse_mode="Markdown")
         return
@@ -299,7 +296,14 @@ async def _finalize_deal_creation(
     seller_payment_info: dict
 ):
     offer_id = data['offer_id']
-    amount_usdt = Decimal(str(data.get('amount_usdt', '0')))
+    amount_usdt_val = data.get('amount_usdt')
+    if not amount_usdt_val:
+        fresh_data = await state.get_data()
+        amount_usdt_val = fresh_data.get('amount_usdt') or '0'
+        data['amount_usdt'] = amount_usdt_val
+        data['amount_syp'] = fresh_data.get('amount_syp') or '0'
+
+    amount_usdt = Decimal(str(amount_usdt_val))
     amount_syp = Decimal(str(data.get('amount_syp', '0')))
 
     now = datetime.now(timezone.utc)
@@ -692,29 +696,58 @@ async def apply_seller_payment_info(
     await push_deal_card(deal.id, bot)
 
 
-async def forward_proof_photo_to_seller(deal: Deal, photo_file_id: str, bot: Bot):
+async def forward_proof_photo_to_seller(deal: Deal, photo_file_id: str, bot: Bot, db_session: AsyncSession | None = None):
+    # 1. Clean up any previous card message sent to the seller so there is strictly ONE message
+    if deal.seller_card_msg_id:
+        try:
+            await bot.delete_message(chat_id=deal.seller_id, message_id=deal.seller_card_msg_id)
+        except Exception:
+            pass
+
     syp_str = format_syp(deal.amount_syp)
+    usdt_str = format_usdt(deal.amount_usdt)
+
+    seller_info_val = ""
+    seller_method = ""
+    if isinstance(deal.seller_payment_info, dict):
+        seller_method = str(deal.seller_payment_info.get("method") or "")
+        seller_info_val = str(deal.seller_payment_info.get("info") or "")
+    elif isinstance(deal.seller_payment_info, str):
+        seller_info_val = deal.seller_payment_info
+
+    payment_info_str = f"{seller_method}: `{escape_markdown(seller_info_val)}`" if (seller_method and seller_method not in ["غير محدد", "PENDING"]) else f"`{escape_markdown(seller_info_val)}`"
+
     seller_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ تأكيد استلام المبلغ بالليرة السورية", callback_data=f"ask_conf_{deal.id}")],
-        [InlineKeyboardButton(text="⚠️ عدم الاستلام", callback_data=f"dispute_deal_{deal.id}")]
+        [InlineKeyboardButton(text="⚠️ عدم الاستلام (اعتراض)", callback_data=f"dispute_deal_{deal.id}")]
     ])
     caption = (
-        f"💸 **إشعار تحويل المبلغ بالليرة السورية — صفقة #{deal.id}**\n\n"
+        f"💸 **صفقة #{deal.id} — إشعار تحويل المبلغ بالليرة السورية**\n\n"
+        f"المرحلة: [ 🟩 🟩 🟩 🟩 🟩 ⬜ ⬜ ] تأكيد الاستلام بالليرة السورية\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🔴 بائع USDT\n"
-        f"• المبلغ المتوقع استلامه: 💰 `{syp_str}` SYP\n"
-        f"• المرفق: لقطة شاشة لإشعار الدفع المرفق من المشتري.\n"
+        f"• دورك: 🔴 **بائع USDT**\n"
+        f"• المبلغ المطلوب استلامه: 💰 `{syp_str} SYP`\n"
+        f"• رصيد الضمان المحجوز: 🔒 `{usdt_str} USDT`\n"
+        f"• حساب الاستلام: 💳 {payment_info_str}\n"
         f"━━━━━━━━━━━━━━━\n\n"
-        f"يرجى التحقق من وصول المبلغ لحسابك، ثم الضغط على زر التأكيد أدناه:"
+        f"📸 **المرفق:** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
+        f"⚠️ **تنبيه:** يرجى فتح تطبيقك والتحقق من وصول كامل المبلغ الفعلي لحسابك قبل التأكيد.\n"
+        f"بمجرد التأكيد، ستُحال الصفقة للإدارة لإطلاق رصيد الضمان للمشتري فوراً."
     )
     try:
-        await bot.send_photo(
+        sent_msg = await bot.send_photo(
             chat_id=deal.seller_id,
             photo=photo_file_id,
             caption=caption,
             reply_markup=seller_kb,
             parse_mode="Markdown"
         )
+        deal.seller_card_msg_id = sent_msg.message_id
+        if db_session:
+            await db_session.execute(
+                update(Deal).where(Deal.id == deal.id).values(seller_card_msg_id=sent_msg.message_id)
+            )
+            await db_session.commit()
     except Exception as e:
         logger.warning(f"Failed to send proof photo to seller {deal.seller_id}: {e}")
 
@@ -751,10 +784,11 @@ async def apply_buyer_payout_wallet(
             except Exception:
                 pass
 
-        await push_deal_card(deal.id, bot)
+        # Push deal card ONLY to buyer to avoid sending duplicate text card to seller:
+        await push_deal_card(deal.id, bot, specific_user_id=deal.buyer_id)
 
         if photo_file_id:
-            await forward_proof_photo_to_seller(deal, photo_file_id, bot)
+            await forward_proof_photo_to_seller(deal, photo_file_id, bot, db_session)
 
     elif deal.status == "ADMIN_APPROVAL":
         await db_session.commit()
@@ -829,15 +863,13 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
     ])
     escaped_deposit = escape_markdown(deal.deposit_address)
     await callback.message.edit_text(
-        f"🔐 **صفقة #{deal.id} — بانتظار إيداع USDT**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🔴 بائع USDT\n"
-        f"• المبلغ المطلوب إيداعه: 💰 `{total_deposit_str} USDT`{fee_note} ⇄ `{syp_str} SYP`\n"
-        f"• المهلة المتاحة للإيداع: ⏱️ 15 دقيقة\n\n"
-        f"🔑 **عنوان محفظة الإيداع:**\n"
-        f"`{escaped_deposit}`\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"قم بتحويل `{total_deposit_str} USDT` ثم اضغط على زر تأكيد الإيداع:",
+        f"🔐 **صفقة #{deal.id} — مطلوب إيداع الضمان**\n\n"
+        f"💰 **المبلغ المطلوب تحويله :** `{total_deposit_str}` USDT{fee_note}\n"
+        f"💵 **المقابل بالليرة السورية :** `{syp_str}` ل.س\n"
+        f"⌛ **المهلة المتاحة للإيداع :** 15 دقيقة\n\n"
+        f"📥 **محفظة الإيداع (BEP-20) :**\n"
+        f"`{escaped_deposit}`\n\n"
+        f"⚠️ يرجى التحويل بدقة على العنوان المذكور أعلاه، ثم النقر على زر تأكيد الإيداع أدناه:",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -848,9 +880,8 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
             chat_id=deal.buyer_id,
             text=(
                 f"ℹ️ **تحديث صفقة #{deal.id}**\n\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"• دورك: 🟢 مشتري USDT\n"
-                f"• القيمة: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n\n"
+                f"👤 **دورك :** 🟢 مشتري USDT\n"
+                f"💰 **القيمة :** `{usdt_str}` USDT مقابل `{syp_str}` ل.س\n\n"
                 f"بدأ البائع مهلة إيداع USDT (15 دقيقة). سيتم إشعارك فور تأكيد وصول الرصيد."
             ),
             parse_mode="Markdown"
@@ -1285,33 +1316,27 @@ async def manual_await_syp(callback: CallbackQuery, state: FSMContext, db_sessio
 
     # 1. Update Seller's UI
     await callback.message.edit_text(
-        f"⏳ **صفقة #{deal.id} — بانتظار تحويل الدفعة المحلية (SYP)**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🔴 بائع USDT\n"
-        f"• المبلغ المتوقع: 💰 `{usdt_str} USDT` ⇄ `{syp_str} SYP`\n"
-        f"• حساب الاستلام المعتمد: 💳 `{payment_info_str}`\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"تم إشعار المشتري بالتحويل. سيصلك إشعار فور تأكيد الدفع من قِبله.",
+        f"⏳ **صفقة #{deal.id} — بانتظار تحويل الدفعة بالليرة**\n\n"
+        f"💰 **المبلغ المتوقع :** `{usdt_str}` USDT مقابل `{syp_str}` ل.س\n"
+        f"💳 **حساب الاستلام المعتمد :** `{payment_info_str}`\n\n"
+        f"تم إشعار المشتري بالتحويل، وسيصلك إشعار فور تأكيد الدفع من قِبله.",
         parse_mode="Markdown"
     )
 
     # 2. Send prompt with Action button directly to the BUYER
     buyer_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تأكيد تحويل الليرة", callback_data=f"man_syp_{deal.id}")]
+        [InlineKeyboardButton(text="📸 تأكيد تحويل المبلغ وإرفاق الإشعار", callback_data=f"man_syp_{deal.id}")]
     ])
     try:
         await callback.bot.send_message(
             chat_id=deal.buyer_id,
             text=(
-                f"💸 **صفقة #{deal.id} — مطلوب تحويل الدفعة المحلية (SYP)**\n\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"• دورك: 🟢 مشتري USDT\n"
-                f"• المبلغ المطلوب تحويله: 💰 `{syp_str} SYP`\n"
-                f"• رصيد الضمان المحجوز: 🔒 `{usdt_str} USDT`\n\n"
-                f"💳 **حساب استلام البائع:**\n"
-                f"`{payment_info_str}`\n"
-                f"━━━━━━━━━━━━━━━\n\n"
-                f"قم بتحويل المبلغ للبائع ثم اضغط على زر التأكيد أدناه:",
+                f"💸 **صفقة #{deal.id} — مطلوب تحويل المبلغ بالليرة**\n\n"
+                f"💰 **المبلغ المطلوب تحويله :** `{syp_str}` ل.س\n"
+                f"🔒 **رصيد الضمان المحجوز :** `{usdt_str}` USDT\n\n"
+                f"💳 **حساب استلام البائع :**\n"
+                f"`{payment_info_str}`\n\n"
+                f"⚠️ يرجى التحويل بدقة على الحساب المذكور أعلاه، ثم النقر على زر التأكيد وإرفاق إشعار الدفع:",
             ),
             reply_markup=buyer_kb,
             parse_mode="Markdown"
@@ -1343,11 +1368,9 @@ async def manual_syp_sent(callback: CallbackQuery, state: FSMContext, db_session
     ])
 
     await callback.message.edit_text(
-        f"📸 **تأكيد تحويل المبلغ بالليرة السورية — صفقة #{deal.id}**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• المبلغ المطلوب تحويله: 💰 `{syp_str}` SYP\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"يرجى إرسال لقطة شاشة (إشعار الدفع) لإثبات عملية التحويل المالي:",
+        f"📸 **إرفاق إشعار التحويل — صفقة #{deal.id}**\n\n"
+        f"💰 **المبلغ المطلوب تحويله :** `{syp_str}` ل.س\n\n"
+        f"يرجى إرسال لقطة شاشة واضحة (إشعار الدفع) لإثبات عملية التحويل المالي:",
         reply_markup=cancel_kb,
         parse_mode="Markdown"
     )
@@ -1440,15 +1463,17 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         else:
             deal.status = "SYP_PAYMENT_SENT"
             await db_session.commit()
-            await push_deal_card(deal.id, message.bot)
+            # Push deal card ONLY to buyer:
+            await push_deal_card(deal.id, message.bot, specific_user_id=deal.buyer_id)
 
-            await forward_proof_photo_to_seller(deal, photo_file_id, message.bot)
+            await forward_proof_photo_to_seller(deal, photo_file_id, message.bot, db_session)
 
             await state.set_state(DealPaymentFSM.waiting_for_buyer_wallet)
             await state.update_data(deal_id=deal.id)
             await message.answer(
                 f"✅ **تم تسجيل إشعار التحويل بنجاح**\n\n"
-                f"أدخل عنوان محفظتك الخاصة (BEP-20 / BNB Smart Chain) لتلقي الرصيد عليها فور اعتماد الإدارة:",
+                f"💵 **أرسل عنوان محفظتك USDT (BEP-20) فقط :**\n"
+                f"من دون أي نصوص أو كلمات إضافية، لتلقي الرصيد عليها فور اعتماد الإدارة 🚀",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
                 ]),
@@ -1731,7 +1756,10 @@ async def ask_confirm_syp(callback: CallbackQuery, db_session: AsyncSession):
         [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_seller_deal_{deal.id}")]
     ])
     try:
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        if callback.message.photo:
+            await callback.message.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown")
+        else:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except Exception:
         await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
@@ -1747,11 +1775,45 @@ async def cq_back_seller_deal(callback: CallbackQuery, db_session: AsyncSession)
         return
     await db_session.commit()
 
-    card_text, kb = render_deal_card(deal, callback.from_user.id)
-    try:
-        await callback.message.edit_text(card_text, reply_markup=kb, parse_mode="Markdown")
-    except Exception:
-        await callback.message.answer(card_text, reply_markup=kb, parse_mode="Markdown")
+    if deal.status == "SYP_PAYMENT_SENT" and callback.message.photo:
+        syp_str = format_syp(deal.amount_syp)
+        usdt_str = format_usdt(deal.amount_usdt)
+        seller_info_val = ""
+        seller_method = ""
+        if isinstance(deal.seller_payment_info, dict):
+            seller_method = str(deal.seller_payment_info.get("method") or "")
+            seller_info_val = str(deal.seller_payment_info.get("info") or "")
+        elif isinstance(deal.seller_payment_info, str):
+            seller_info_val = deal.seller_payment_info
+        payment_info_str = f"{seller_method}: `{escape_markdown(seller_info_val)}`" if (seller_method and seller_method not in ["غير محدد", "PENDING"]) else f"`{escape_markdown(seller_info_val)}`"
+
+        seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ تأكيد استلام المبلغ بالليرة السورية", callback_data=f"ask_conf_{deal.id}")],
+            [InlineKeyboardButton(text="⚠️ عدم الاستلام (اعتراض)", callback_data=f"dispute_deal_{deal.id}")]
+        ])
+        caption = (
+            f"💸 **صفقة #{deal.id} — إشعار تحويل المبلغ بالليرة السورية**\n\n"
+            f"المرحلة: [ 🟩 🟩 🟩 🟩 🟩 ⬜ ⬜ ] تأكيد الاستلام بالليرة السورية\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"• دورك: 🔴 **بائع USDT**\n"
+            f"• المبلغ المطلوب استلامه: 💰 `{syp_str} SYP`\n"
+            f"• رصيد الضمان المحجوز: 🔒 `{usdt_str} USDT`\n"
+            f"• حساب الاستلام: 💳 {payment_info_str}\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"📸 **المرفق:** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
+            f"⚠️ **تنبيه:** يرجى فتح تطبيقك والتحقق من وصول كامل المبلغ الفعلي لحسابك قبل التأكيد.\n"
+            f"بمجرد التأكيد، ستُحال الصفقة للإدارة لإطلاق رصيد الضمان للمشتري فوراً."
+        )
+        try:
+            await callback.message.edit_caption(caption=caption, reply_markup=seller_kb, parse_mode="Markdown")
+        except Exception:
+            pass
+    else:
+        card_text, kb = render_deal_card(deal, callback.from_user.id)
+        try:
+            await callback.message.edit_text(card_text, reply_markup=kb, parse_mode="Markdown")
+        except Exception:
+            await callback.message.answer(card_text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
 
@@ -1781,16 +1843,26 @@ async def _dispatch_admin_approval(
                     parse_mode="Markdown"
                 )
             elif origin_callback.from_user.id == deal.seller_id:
-                await origin_callback.message.edit_text(
+                seller_text = (
                     f"✅ **صفقة #{deal.id} — تم تأكيد الاستلام وأُحيلت الصفقة تلقائياً للإدارة**\n\n"
                     f"━━━━━━━━━━━━━━━\n"
                     f"• دورك: 🔴 بائع USDT\n"
                     f"• المبلغ:  `{usdt_str}` USDT ⇄ `{syp_str}` SYP\n"
                     f"━━━━━━━━━━━━━━━\n\n"
-                    f"تم إشعار إدارة {BOT_NAME} لمراجعة الصفقة وإطلاق رصيد الضمان للمشتري.",
-                    reply_markup=None,
-                    parse_mode="Markdown"
+                    f"تم إشعار إدارة {BOT_NAME} لمراجعة الصفقة وإطلاق رصيد الضمان للمشتري."
                 )
+                if origin_callback.message.photo:
+                    await origin_callback.message.edit_caption(
+                        caption=seller_text,
+                        reply_markup=None,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await origin_callback.message.edit_text(
+                        seller_text,
+                        reply_markup=None,
+                        parse_mode="Markdown"
+                    )
             else:
                 await origin_callback.message.edit_text(
                     f"🛡️ **صفقة #{deal.id} — قيد التدقيق والاعتماد الإداري**\n\n"

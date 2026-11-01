@@ -66,10 +66,10 @@ def calculate_deal_fee(amount: Decimal | str | float | int) -> DealFeeBreakdown:
 
 def format_fee_rule_line() -> str:
     """Return standard single-line platform fee rule description for listings and cards."""
-    return f"⚡ عمولة المنصة: المبلغ ≤ {FEE_THRESHOLD_USDT} USDT ← 0 | المبلغ > {FEE_THRESHOLD_USDT} USDT ← 1/1000 لكل طرف"
+    return f"⚡ عمولة المنصة: مجاناً حتى {FEE_THRESHOLD_USDT} USDT • 0.1% لما فوق ذلك (لكل طرف)"
 
 
 def format_fee_rule_html() -> str:
     """Return HTML-safe platform fee rule description for HTML-formatted messages."""
-    return f"⚡ عمولة المنصة: المبلغ ≤ {FEE_THRESHOLD_USDT} USDT ← 0 | المبلغ &gt; {FEE_THRESHOLD_USDT} USDT ← 1/1000 لكل طرف"
+    return f"⚡ عمولة المنصة: مجاناً حتى {FEE_THRESHOLD_USDT} USDT • 0.1% لما فوق ذلك (لكل طرف)"
 

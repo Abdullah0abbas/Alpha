@@ -18,39 +18,43 @@ async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
     if not settings.CHANNEL_ID or not settings.BOT_USERNAME or not offer.channel_message_id:
         return
         
-    offer_type_ar = "🔴 بيع USDT" if offer.offer_type == 'sell' else "🟢 شراء USDT"
-    action_ar = "شراء" if offer.offer_type == 'sell' else "بيع"
+    offer_type_ar = "🔴 التاجر يريد بيع \"USDT\"" if offer.offer_type == 'sell' else "🟢 التاجر يريد شراء \"USDT\""
+    action_ar = "💸 شراء هذا العرض" if offer.offer_type == 'sell' else "💸 البيع لهذا الزبون"
     
     methods_str = format_payment_methods(offer.payment_methods)
     rate_str = format_syp(offer.rate)
     min_str = format_usdt(offer.min_limit)
     max_str = format_usdt(offer.max_limit)
     fee_line = format_fee_rule_html()
+    dur_str = f"{int(offer.duration_hours)} ساعات" if (offer.duration_hours and offer.duration_hours > 0) else "4 ساعات"
     
     if offer.status == "active":
-        status_header = f"\u200f📢 <b>{CHANNEL_NAME} | عرض تداول #{offer.id} — {offer_type_ar}</b>"
+        status_header = f"<b>{CHANNEL_NAME}</b>\n\nفرصة رقم : #{offer.id}\n{offer_type_ar}"
         details_text = (
-            f"━━━━━━━━━━━━━━━\n"
-            f"• <b>سعر الصرف:</b> 💵 <code>{rate_str} SYP</code>\n"
-            f"• <b>حدود الكمية:</b> 📦 <code>{min_str}</code> — <code>{max_str}</code> USDT\n"
-            f"• <b>وسائل الدفع:</b> 💳 {methods_str}\n"
-            f"• {fee_line}\n"
-            f"━━━━━━━━━━━━━━━"
+            f"~~~~~~~~~~~~~~~~\n"
+            f"💰 <b>الكمية :</b> من {min_str} إلى {max_str} USDT\n"
+            f"💵 <b>سعر الصرف :</b> {rate_str} ل.س\n"
+            f"💳 <b>طرق الدفع :</b> {methods_str}\n"
+            f"⌛ <b>مدة المعاملة :</b> {dur_str}\n"
+            f"~~~~~~~~~~~~~~~~\n"
+            f"{fee_line}"
         )
         deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offer_{offer.id}"
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"⚡ بدء تنفيذ العرض ({action_ar})", url=deep_link)]
+            [
+                InlineKeyboardButton(text=action_ar, url=deep_link),
+                InlineKeyboardButton(text="🔍 تصفح عروض أخرى", url=f"https://t.me/{settings.BOT_USERNAME}?start=offers")
+            ]
         ])
         channel_text = f"{status_header}\n\n{details_text}"
     else:
         # Strike through all offer details when reserved, completed, expired, or cancelled
         details_text = (
-            f"━━━━━━━━━━━━━━━\n"
-            f"<s>• النوع: {offer_type_ar}</s>\n"
-            f"<s>• السعر: 💵 {rate_str} SYP</s>\n"
-            f"<s>• الحدود: 📦 {min_str} — {max_str} USDT</s>\n"
-            f"<s>• الدفع: 💳 {methods_str}</s>\n"
-            f"━━━━━━━━━━━━━━━"
+            f"~~~~~~~~~~~~~~~~\n"
+            f"<s>💰 الكمية : من {min_str} إلى {max_str} USDT</s>\n"
+            f"<s>💵 سعر الصرف : {rate_str} ل.س</s>\n"
+            f"<s>💳 طرق الدفع : {methods_str}</s>\n"
+            f"~~~~~~~~~~~~~~~~"
         )
         deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offers"
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -58,23 +62,23 @@ async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
         ])
 
         if offer.status == "reserved":
-            status_header = f"\u200f🔒 <b>{CHANNEL_NAME} | عرض #{offer.id} [محجوز لصفقة]</b>"
-            action_section = "⏳ <b>الحالة:</b> قيد التنفيذ والتسوية."
+            status_header = f"🔒 <b>{CHANNEL_NAME} | فرصة #{offer.id} [محجوزة لصفقة]</b>"
+            action_section = "⏳ <b>الحالة :</b> قيد التنفيذ والتسوية."
         elif offer.status == "negotiating":
-            status_header = f"\u200f🤝 <b>{CHANNEL_NAME} | عرض #{offer.id} [قيد التفاوض]</b>"
-            action_section = "💬 <b>الحالة:</b> تجري مفاوضات حالياً على هذا العرض."
+            status_header = f"🤝 <b>{CHANNEL_NAME} | فرصة #{offer.id} [قيد التفاوض]</b>"
+            action_section = "💬 <b>الحالة :</b> تجري مفاوضات حالياً على هذا العرض."
         elif offer.status == "completed":
-            status_header = f"\u200f✅ <b>{CHANNEL_NAME} | عرض #{offer.id} [مكتمل ومغلق]</b>"
-            action_section = "🎉 <b>الحالة:</b> تم تنفيذ وإغلاق الصفقة بنجاح."
+            status_header = f"✅ <b>{CHANNEL_NAME} | فرصة #{offer.id} [مكتملة]</b>"
+            action_section = "🎉 <b>الحالة :</b> تم تنفيذ وإغلاق الصفقة بنجاح."
         elif offer.status in ["expired", "expired_grace"]:
-            status_header = f"\u200f⏱️ <b>{CHANNEL_NAME} | عرض #{offer.id} [منتهي الصلاحية]</b>"
-            action_section = "⌛ <b>الحالة:</b> انتهت مهلة وصلاحية العرض."
+            status_header = f"⏱️ <b>{CHANNEL_NAME} | فرصة #{offer.id} [منتهية]</b>"
+            action_section = "⌛ <b>الحالة :</b> انتهت مهلة وصلاحية العرض."
         elif offer.status in ["cancelled", "deleted"]:
-            status_header = f"\u200f🗑️ <b>{CHANNEL_NAME} | عرض #{offer.id} [تم الحذف]</b>"
-            action_section = "🚫 <b>الحالة:</b> تم حذف العرض من القناة والسوق."
+            status_header = f"🗑️ <b>{CHANNEL_NAME} | فرصة #{offer.id} [ملغاة]</b>"
+            action_section = "🚫 <b>الحالة :</b> تم حذف أو إلغاء العرض."
         else:
-            status_header = f"\u200fℹ️ <b>{CHANNEL_NAME} | عرض #{offer.id}</b>"
-            action_section = f"📊 <b>الحالة:</b> {offer.status}"
+            status_header = f"ℹ️ <b>{CHANNEL_NAME} | فرصة #{offer.id}</b>"
+            action_section = f"📊 <b>الحالة :</b> {offer.status}"
             
         channel_text = f"{status_header}\n\n{details_text}\n\n{action_section}"
     
