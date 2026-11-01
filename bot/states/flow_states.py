@@ -21,6 +21,7 @@ class OfferCreateFSM(StatesGroup):
 
 class DealCreateFSM(StatesGroup):
     waiting_for_amount = State()
+    waiting_for_payment_method = State()
     waiting_for_payout_address = State()
     waiting_for_seller_payment_info = State()
 

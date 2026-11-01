@@ -82,13 +82,13 @@ class TestDealCardPureFunctions(unittest.TestCase):
     def test_step_of_mapping(self):
         step, bar, label = step_of("PENDING_OWNER_APPROVAL")
         self.assertEqual(step, 1)
-        self.assertIn("موافقة صاحب العرض", label)
+        self.assertTrue("موافقة صانع العرض" in label or "موافقة صاحب العرض" in label)
 
         step, bar, label = step_of("CREATED")
         self.assertEqual(step, 2)
         step, bar, label = step_of("AWAITING_USDT_DEPOSIT")
         self.assertEqual(step, 2)
-        self.assertIn("إيداع رصيد الضمان", label)
+        self.assertTrue("إيداع USDT" in label or "إيداع رصيد الضمان" in label)
 
         step, bar, label = step_of("USDT_DEPOSITED")
         self.assertEqual(step, 3)

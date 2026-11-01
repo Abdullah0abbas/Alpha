@@ -372,7 +372,7 @@ async def process_offer_rate(message: Message, state: FSMContext):
             f"━━━━━━━━━━━━━━━\n"
             f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
             f"━━━━━━━━━━━━━━━",
-            reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
+            reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
             parse_mode="Markdown"
         )
         await state.set_state(OfferCreateFSM.waiting_for_min_limit)
@@ -426,7 +426,7 @@ async def confirm_rate_and_advance(callback: CallbackQuery, state: FSMContext):
         f"━━━━━━━━━━━━━━━\n"
         f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
         f"━━━━━━━━━━━━━━━",
-        reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
+        reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
         parse_mode="Markdown"
     )
     await state.set_state(OfferCreateFSM.waiting_for_min_limit)
@@ -488,7 +488,7 @@ async def process_min_limit(message: Message, state: FSMContext):
             f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة:\n"
             f"*(يجب أن يكون أكبر من أو يساوي `{min_str}` USDT)*\n"
             f"━━━━━━━━━━━━━━━",
-            reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
+            reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
             parse_mode="Markdown"
         )
         await state.set_state(OfferCreateFSM.waiting_for_max_limit)
@@ -545,7 +545,7 @@ async def confirm_min_limit_and_advance(callback: CallbackQuery, state: FSMConte
         f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة:\n"
         f"*(يجب أن يكون أكبر من أو يساوي `{min_str}` USDT)*\n"
         f"━━━━━━━━━━━━━━━",
-        reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
+        reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
         parse_mode="Markdown"
     )
     await state.set_state(OfferCreateFSM.waiting_for_max_limit)
@@ -564,7 +564,7 @@ async def back_to_min_limit(callback: CallbackQuery, state: FSMContext):
         "━━━━━━━━━━━━━━━\n"
         "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
         "━━━━━━━━━━━━━━━",
-        reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
+        reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
         parse_mode="Markdown"
     )
     await state.set_state(OfferCreateFSM.waiting_for_min_limit)
@@ -587,7 +587,7 @@ async def process_max_limit(message: Message, state: FSMContext):
                 f"⚠️ **الحد الأقصى غير متطابق!**\n\n"
                 f"يجب أن يكون أكبر من أو يساوي الحد الأدنى (`{format_usdt(min_limit)}` USDT).\n"
                 f"يرجى إعادة إدخال الحد الأقصى:",
-                reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
+                reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
                 parse_mode="Markdown"
             )
             return
@@ -620,7 +620,7 @@ async def process_max_limit(message: Message, state: FSMContext):
         await message.answer(
             "⚠️ **قيمة غير صالحة!**\n\n"
             "يرجى إدخال رقم صحيح وموجب للحد الأقصى بوحدة USDT:",
-            reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
+            reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
             parse_mode="Markdown"
         )
 
@@ -1494,7 +1494,7 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         f"• حدود الكمية: 📦 من `{min_str}` إلى `{max_str}` USDT\n"
         f"• وسائل الدفع: 💳 {methods_str}\n"
         f"• حالة التفاوض: {neg_status_ar}\n"
-        f"• العمولة: {FEE_RULE_LINE}\n"
+        f"• {FEE_RULE_LINE}\n"
         f"• مدة الصلاحية: ⏱️ {duration_str}\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"تم إدراج العرض بنجاح في سوق {BOT_NAME} وقناة {CHANNEL_NAME}.",
@@ -1514,7 +1514,7 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
             f"• <b>سعر الصرف:</b> 💵 <code>{rate_str} SYP</code>\n"
             f"• <b>حدود الكمية:</b> 📦 <code>{min_str}</code> — <code>{max_str}</code> USDT\n"
             f"• <b>وسائل الدفع:</b> 💳 {methods_str}{neg_line}\n"
-            f"• <b>العمولة:</b> {format_fee_rule_html()}\n"
+            f"• {format_fee_rule_html()}\n"
             f"• <b>المهلة المتاحة:</b> ⏱️ {duration_str}\n"
             f"━━━━━━━━━━━━━━━"
         )

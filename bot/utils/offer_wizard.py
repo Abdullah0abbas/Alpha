@@ -202,7 +202,7 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
         "",
         f"• **التفاوض:** {neg_str}",
         f"• **صلاحية العرض:** ⏱️ {dur_str}",
-        f"• **العمولة:** {FEE_RULE_LINE}",
+        f"• {FEE_RULE_LINE}",
         "━━━━━━━━━━━━━━━",
         "👇 اضغط على «تأكيد ونشر العرض» لطرحه في السوق، أو اختر أي قسم لتعديله مباشرة:"
     ]

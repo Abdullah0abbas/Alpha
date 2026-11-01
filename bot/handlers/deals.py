@@ -30,7 +30,8 @@ from bot.utils.formatters import (
     format_usdt,
     humanize_time_remaining,
     clean_numeric_input,
-    format_local_datetime
+    format_local_datetime,
+    PAYMENT_METHOD_ICONS
 )
 from bot.utils.transitions import (
     can_cancel_deal,
@@ -100,6 +101,8 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
         offer_type=offer.offer_type,
         creator_id=offer.user_id,
         payout_info=offer.payout_info,
+        payout_details=offer.payout_details or {},
+        payment_methods=list(offer.payment_methods) if offer.payment_methods else [],
         min_limit=str(offer.min_limit),
         max_limit=str(offer.max_limit)
     )
@@ -176,25 +179,98 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
     data['amount_syp'] = str(amount_syp)
     await state.update_data(amount_usdt=str(amount_usdt), amount_syp=str(amount_syp))
 
-    offer_type = data['offer_type']
-    creator_id = data['creator_id']
+    methods = data.get("payment_methods") or []
+
+    # If the offer supports more than one payment method, let the counterparty choose their preferred method
+    if len(methods) > 1:
+        buttons = []
+        for idx, m in enumerate(methods):
+            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
+            buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"deal_select_pm_{idx}")])
+        buttons.append([InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        await state.set_state(DealCreateFSM.waiting_for_payment_method)
+        prompt_msg = (
+            f"💳 **اختيار وسيلة الدفع بالليرة السورية**\n\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"• الكمية المطلوبة: 💰 `{format_usdt(amount_usdt)} USDT` ⇄ 💵 `{format_syp(amount_syp)} SYP`\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"يدعم هذا العرض عدة وسائل دفع. يرجى اختيار الوسيلة التي تناسبك لإتمام المعاملة:"
+        )
+        await message.answer(prompt_msg, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    # Single payment method or default
+    selected_pm = methods[0] if methods else "شام كاش ليرة"
+    offer_type = data.get('offer_type', 'sell')
+    creator_id = data.get('creator_id')
     taker_id = message.from_user.id
+    payout_details = data.get('payout_details') or {}
 
     if offer_type == 'buy':
         # Maker is BUYER, Taker is SELLER
         seller_id = taker_id
         buyer_id = creator_id
         buyer_payout_address = data.get('payout_info') or "PENDING"
-        seller_payment_info = {"info": "PENDING"}
+        seller_payment_info = {"method": selected_pm, "info": "PENDING"}
     else:
         # Maker is SELLER, Taker is BUYER
         seller_id = creator_id
         buyer_id = taker_id
         buyer_payout_address = "PENDING"
-        seller_payment_info = {"info": data.get('payout_info') or "PENDING"}
+        seller_account = payout_details.get(selected_pm) or data.get('payout_info') or "PENDING"
+        seller_payment_info = {"method": selected_pm, "info": seller_account}
 
     await _finalize_deal_creation(
         message=message,
+        state=state,
+        db_session=db_session,
+        data=data,
+        seller_id=seller_id,
+        buyer_id=buyer_id,
+        buyer_payout_address=buyer_payout_address,
+        seller_payment_info=seller_payment_info
+    )
+
+
+@deals_router.callback_query(DealCreateFSM.waiting_for_payment_method, F.data.startswith("deal_select_pm_"))
+async def process_deal_payment_method_choice(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
+    idx_str = callback.data.split("_")[-1]
+    data = await state.get_data()
+    methods = data.get("payment_methods", [])
+    try:
+        idx = int(idx_str)
+        selected_pm = methods[idx]
+    except (ValueError, IndexError):
+        await callback.answer("⚠️ اختيار غير صالح.", show_alert=True)
+        return
+
+    await state.update_data(selected_payment_method=selected_pm)
+    data['selected_payment_method'] = selected_pm
+
+    offer_type = data.get('offer_type', 'sell')
+    creator_id = data.get('creator_id')
+    taker_id = callback.from_user.id
+    payout_details = data.get('payout_details') or {}
+
+    if offer_type == 'buy':
+        # Maker is BUYER, Taker is SELLER
+        seller_id = taker_id
+        buyer_id = creator_id
+        buyer_payout_address = data.get('payout_info') or "PENDING"
+        seller_payment_info = {"method": selected_pm, "info": "PENDING"}
+    else:
+        # Maker is SELLER, Taker is BUYER
+        seller_id = creator_id
+        buyer_id = taker_id
+        buyer_payout_address = "PENDING"
+        seller_account = payout_details.get(selected_pm) or data.get('payout_info') or "PENDING"
+        seller_payment_info = {"method": selected_pm, "info": seller_account}
+
+    await callback.answer()
+    await _finalize_deal_creation(
+        message=callback.message,
         state=state,
         db_session=db_session,
         data=data,
@@ -263,14 +339,21 @@ async def _finalize_deal_creation(
     approval_expires_at = now + timedelta(minutes=30)
     fee_breakdown = calculate_deal_fee(amount_usdt)
 
-    if offer.offer_type == 'sell':
-        pm = offer.payment_methods[0] if (offer.payment_methods and len(offer.payment_methods) > 0) else "غير محدد"
-        final_seller_payment_info = {"method": pm, "info": seller_payment_info.get("info", "PENDING") if isinstance(seller_payment_info, dict) else "PENDING"}
+    # Determine the target payment method and seller account details
+    if isinstance(seller_payment_info, dict) and seller_payment_info.get("method") and seller_payment_info.get("method") not in ["غير محدد", "PENDING"]:
+        chosen_pm = seller_payment_info.get("method")
     else:
-        if isinstance(seller_payment_info, dict):
-            final_seller_payment_info = {"method": seller_payment_info.get("method", "غير محدد"), "info": seller_payment_info.get("info", "PENDING")}
-        else:
-            final_seller_payment_info = {"method": "غير محدد", "info": "PENDING"}
+        chosen_pm = offer.payment_methods[0] if (offer.payment_methods and len(offer.payment_methods) > 0) else "غير محدد"
+
+    info_val = seller_payment_info.get("info", "PENDING") if isinstance(seller_payment_info, dict) else "PENDING"
+
+    if offer.offer_type == 'sell' and (not info_val or info_val == "PENDING"):
+        if offer.payout_details and isinstance(offer.payout_details, dict):
+            info_val = offer.payout_details.get(chosen_pm) or offer.payout_info or "PENDING"
+        elif offer.payout_info:
+            info_val = offer.payout_info
+
+    final_seller_payment_info = {"method": chosen_pm, "info": info_val}
 
     new_deal = Deal(
         offer_id=offer.id,
