@@ -133,6 +133,34 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
     await state.set_state(DealCreateFSM.waiting_for_amount)
     await callback.answer()
 
+
+def _build_seller_pm_prompt_text(selected_pm: str, offer_id: int | None) -> str:
+    icon = PAYMENT_METHOD_ICONS.get(selected_pm, "💳")
+    offer_label = f" — عرض #{offer_id}" if offer_id else ""
+    if "شام كاش" in selected_pm:
+        details = (
+            "يرجى إرسال عنوان حساب شام كاش ليرة الخاص بك لتلقي الدفعة عليه:\n"
+            "(مكوّن من 32 خانة hex دون مسافات)"
+        )
+    elif "سيريتيل" in selected_pm or "سيريتل" in selected_pm:
+        details = (
+            "يرجى إرسال رقم سيريتيل كاش الخاص بك لتلقي الدفعة عليه:\n"
+            "(رقم سوري مكوّن من 10 أرقام يبدأ بـ 09)"
+        )
+    elif any(k in selected_pm for k in ("حوالة", "الهرم", "الفؤاد", "بنك")):
+        details = (
+            "يرجى إرسال الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:"
+        )
+    else:
+        details = f"يرجى إرسال بيانات حساب استلامك لوسيلة ({selected_pm}):"
+
+    return (
+        f"{icon} **بيانات استلام الليرة{offer_label}**\n\n"
+        f"▫️ **الوسيلة المحددة :** {selected_pm}\n\n"
+        f"💬 {details}"
+    )
+
+
 @deals_router.message(DealCreateFSM.waiting_for_amount)
 async def process_deal_amount(message: Message, state: FSMContext, db_session: AsyncSession):
     data = await state.get_data()
@@ -176,32 +204,6 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
     data['amount_usdt'] = str(amount_usdt)
     data['amount_syp'] = str(amount_syp)
     await state.update_data(amount_usdt=str(amount_usdt), amount_syp=str(amount_syp))
-
-def _build_seller_pm_prompt_text(selected_pm: str, offer_id: int | None) -> str:
-    icon = PAYMENT_METHOD_ICONS.get(selected_pm, "💳")
-    offer_label = f" — عرض #{offer_id}" if offer_id else ""
-    if "شام كاش" in selected_pm:
-        details = (
-            "يرجى إرسال عنوان حساب شام كاش ليرة الخاص بك لتلقي الدفعة عليه:\n"
-            "(مكوّن من 32 خانة hex دون مسافات)"
-        )
-    elif "سيريتيل" in selected_pm or "سيريتل" in selected_pm:
-        details = (
-            "يرجى إرسال رقم سيريتيل كاش الخاص بك لتلقي الدفعة عليه:\n"
-            "(رقم سوري مكوّن من 10 أرقام يبدأ بـ 09)"
-        )
-    elif any(k in selected_pm for k in ("حوالة", "الهرم", "الفؤاد", "بنك")):
-        details = (
-            "يرجى إرسال الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:"
-        )
-    else:
-        details = f"يرجى إرسال بيانات حساب استلامك لوسيلة ({selected_pm}):"
-
-    return (
-        f"{icon} **بيانات استلام الليرة{offer_label}**\n\n"
-        f"▫️ **الوسيلة المحددة :** {selected_pm}\n\n"
-        f"💬 {details}"
-    )
 
     methods = data.get("payment_methods") or []
     offer_type = data.get('offer_type', 'sell')
