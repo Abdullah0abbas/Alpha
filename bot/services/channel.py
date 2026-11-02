@@ -32,22 +32,17 @@ async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
     dur_str = f"{int(offer.duration_hours)} ساعات" if (offer.duration_hours and offer.duration_hours > 0) else "4 ساعات"
 
     if offer.status == "active":
-        status_header = f"📢 <b>{CHANNEL_NAME} | عرض #{offer.id} [متاح للتداول]</b>
-
-▫️ <b>النوع :</b> {offer_type_ar}"
+        status_header = (
+            f"📢 <b>{CHANNEL_NAME} | عرض #{offer.id} [متاح للتداول]</b>\n\n"
+            f"▫️ <b>النوع :</b> {offer_type_ar}"
+        )
         details_text = (
-            f"────────────────
-"
-            f"▫️ <b>سعر الصرف :</b> {rate_str} ل.س
-"
-            f"▫️ <b>حدود الكمية :</b> من {min_str} إلى {max_str} دولار
-"
-            f"▫️ <b>طرق الدفع :</b> {methods_str}
-"
-            f"▫️ <b>مدة المعاملة :</b> {dur_str}
-"
-            f"────────────────
-"
+            "────────────────\n"
+            f"▫️ <b>سعر الصرف :</b> {rate_str} ل.س\n"
+            f"▫️ <b>حدود الكمية :</b> من {min_str} إلى {max_str} دولار\n"
+            f"▫️ <b>طرق الدفع :</b> {methods_str}\n"
+            f"▫️ <b>مدة المعاملة :</b> {dur_str}\n"
+            "────────────────\n"
             f"{fee_line}"
         )
         deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offer_{offer.id}"
@@ -57,22 +52,16 @@ async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
                 InlineKeyboardButton(text="🔍 تصفح عروض أخرى", url=f"https://t.me/{settings.BOT_USERNAME}?start=offers")
             ]
         ])
-        channel_text = f"{status_header}
-{details_text}"
+        channel_text = f"{status_header}\n{details_text}"
     else:
         # Strike through all offer details when reserved, completed, expired, or cancelled
         details_text = (
-            f"────────────────
-"
-            f"<s>▫️ النوع : {offer_type_ar}</s>
-"
-            f"<s>▫️ سعر الصرف : {rate_str} ل.س</s>
-"
-            f"<s>▫️ حدود الكمية : من {min_str} إلى {max_str} دولار</s>
-"
-            f"<s>▫️ طرق الدفع : {methods_str}</s>
-"
-            f"────────────────"
+            "────────────────\n"
+            f"<s>▫️ النوع : {offer_type_ar}</s>\n"
+            f"<s>▫️ سعر الصرف : {rate_str} ل.س</s>\n"
+            f"<s>▫️ حدود الكمية : من {min_str} إلى {max_str} دولار</s>\n"
+            f"<s>▫️ طرق الدفع : {methods_str}</s>\n"
+            "────────────────"
         )
         deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offers"
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -98,11 +87,7 @@ async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
             status_header = f"ℹ️ <b>{CHANNEL_NAME} | عرض #{offer.id}</b>"
             action_section = f"📊 <b>الحالة :</b> {offer.status}"
 
-        channel_text = f"{status_header}
-
-{details_text}
-
-{action_section}"
+        channel_text = f"{status_header}\n\n{details_text}\n\n{action_section}"
 
     if offer.status == "deleted":
         try:
