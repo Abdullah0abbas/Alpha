@@ -1505,23 +1505,26 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
 
     # 6. Broadcast to Channel (Notice: No payout details in public channel!)
     if settings.CHANNEL_ID and settings.BOT_USERNAME:
-        action_ar = "شراء" if new_offer.offer_type == 'sell' else "بيع"
-        neg_line = f"\n• <b>التفاوض:</b> {neg_status_ar}" if new_offer.negotiable else ""
+        action_ar = "💸 شراء هذا العرض" if new_offer.offer_type == 'sell' else "💸 البيع لهذا الزبون"
+        neg_line = f"\n🤝 <b>التفاوض :</b> {neg_status_ar}" if new_offer.negotiable else ""
 
         channel_text = (
-            f"\u200f📢 <b>{CHANNEL_NAME} | عرض تداول #{new_offer.id} — {offer_type_ar}</b>\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"• <b>سعر الصرف:</b> 💵 <code>{rate_str} SYP</code>\n"
-            f"• <b>حدود الكمية:</b> 📦 <code>{min_str}</code> — <code>{max_str}</code> USDT\n"
-            f"• <b>وسائل الدفع:</b> 💳 {methods_str}{neg_line}\n"
-            f"• {format_fee_rule_html()}\n"
-            f"• <b>المهلة المتاحة:</b> ⏱️ {duration_str}\n"
-            f"━━━━━━━━━━━━━━━"
+            f"<b>{CHANNEL_NAME}</b>\n\nفرصة رقم : #{new_offer.id}\n{offer_type_ar}\n"
+            f"~~~~~~~~~~~~~~~~\n"
+            f"💰 <b>الكمية :</b> من {min_str} إلى {max_str} USDT\n"
+            f"💵 <b>سعر الصرف :</b> {rate_str} ل.س\n"
+            f"💳 <b>طرق الدفع :</b> {methods_str}{neg_line}\n"
+            f"⌛ <b>مدة المعاملة :</b> {duration_str}\n"
+            f"~~~~~~~~~~~~~~~~\n"
+            f"{format_fee_rule_html()}"
         )
 
         deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offer_{new_offer.id}"
         kb_chan = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"⚡ بدء تنفيذ العرض ({action_ar})", url=deep_link)]
+            [
+                InlineKeyboardButton(text=action_ar, url=deep_link),
+                InlineKeyboardButton(text="🔍 تصفح عروض أخرى", url=f"https://t.me/{settings.BOT_USERNAME}?start=offers")
+            ]
         ])
 
         try:

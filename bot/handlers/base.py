@@ -110,16 +110,14 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                 kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
                 await message.answer(
-                    f"🏷️ **تفاصيل عرض تداول #{offer.id}**\n\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"• نوع العرض: {offer_type_label}\n"
-                    f"• سعر الصرف:  `{rate_str} SYP`\n"
-                    f"• حدود الكمية:  من `{min_str}` إلى `{max_str}` USDT\n"
-                    f"• وسائل الدفع المتاحة:  {methods_str}\n"
-                    f"• إمكانية التفاوض:  {neg_str}\n"
-                    f"• {format_fee_rule_line()}\n"
-                    f"━━━━━━━━━━━━━━━\n\n"
-                    f"اختر الإجراء المطلوب للمتابعة:",
+                    f"🏷️ **تفاصيل العرض #{offer.id}**\n\n"
+                    f"▫️ المعاملة : {offer_type_label}\n"
+                    f"💵 سعر الصرف : `{rate_str}` ل.س\n"
+                    f"💰 حدود الكمية : من `{min_str}` إلى `{max_str}` USDT\n"
+                    f"💳 طرق الدفع : {methods_str}\n"
+                    f"🤝 التفاوض : {neg_str}\n\n"
+                    f"{format_fee_rule_line()}\n\n"
+                    f"اختر الإجراء المطلوب للمتابعة أدناه:",
                     reply_markup=kb,
                     parse_mode="Markdown"
                 )
@@ -311,11 +309,11 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
 
         text_lines.append(
             f"🏷️ **عرض #{off.id}** ({off_type})\n"
-            f"• سعر الصرف: 💵 `{rate_str} SYP`\n"
-            f"• حدود الكمية: 📦 من `{min_str}` إلى `{max_str}` USDT\n"
-            f"• وسائل الدفع: 💳 {methods}\n"
-            f"• التفاوض: {neg} | الصلاحية: ⏱️ {remaining}\n"
-            f"─────────────────"
+            f"💵 سعر الصرف : `{rate_str}` ل.س\n"
+            f"💰 حدود الكمية : من `{min_str}` إلى `{max_str}` USDT\n"
+            f"💳 طرق الدفع : {methods}\n"
+            f"🤝 التفاوض : {neg} • ⏱️ الصلاحية : {remaining}\n"
+            f"~~~~~~~~~~~~~~~~"
         )
 
         rows = build_offer_action_buttons(
