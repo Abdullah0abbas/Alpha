@@ -204,7 +204,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                         f"• **رقم الصفقة:** #{deal_id_val}\n"
                         f"• **البائع:** `{seller_id_val}`\n"
                         f"• **المشتري:** `{buyer_id_val}`\n"
-                        f"• **المبلغ:** `{format_usdt(amount_usdt_val)}` USDT ⇄ `{format_syp(amount_syp_val)}` SYP\n"
+                        f"▫️ **المبلغ :** `{format_usdt(amount_usdt_val)}` دولار مقابل `{format_syp(amount_syp_val)}` ل.س\n"
                         f"━━━━━━━━━━━━━━━\n"
                         f"تم إلغاء الصفقة تلقائياً لعدم إيداع USDT خلال 15 دقيقة، وتفريغ العرض وإعادته متاحاً في القناة."
                     )

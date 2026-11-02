@@ -107,8 +107,8 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
         max_limit=str(offer.max_limit)
     )
     
-    offer_type_ar = "🔴 بيع USDT (المعلن يبيع)" if offer.offer_type == 'sell' else "🟢 شراء USDT (المعلن يشتري)"
-    taker_role_ar = "🟢 مشتري USDT" if offer.offer_type == 'sell' else "🔴 بائع USDT"
+    offer_type_ar = "🔴 بيع (المعلن يبيع)" if offer.offer_type == 'sell' else "🟢 شراء (المعلن يشتري)"
+    taker_role_ar = "🟢 مشتري" if offer.offer_type == 'sell' else "🔴 بائع"
     rate_str = format_syp(offer.rate)
     min_str = format_usdt(offer.min_limit)
     max_str = format_usdt(offer.max_limit)
@@ -119,14 +119,14 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
     ])
     
     await callback.message.answer(
-        f"🤝 **صفقة جديدة — عرض #{offer.id}**\n\n"
-        f"📋 **بيانات المعاملة :**\n"
-        f"▫️ المعاملة : {offer_type_ar}\n"
-        f"▫️ دورك بالصفقة : **{taker_role_ar}**\n"
-        f"💵 سعر الصرف : `{rate_str}` ل.س\n"
-        f"💰 الحدود المتاحة : من `{min_str}` إلى `{max_str}` USDT\n"
-        f"💳 طرق الدفع : {methods_str}\n\n"
-        f"💬 **يرجى إدخال كمية USDT المطلوبة للتداول :**",
+        f"🤝 **بدء تنفيذ صفقة — عرض #{offer.id}**\n\n"
+        f"📋 **بيانات العرض الأساسية :**\n"
+        f"▫️ **النوع :** {offer_type_ar}\n"
+        f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n"
+        f"▫️ **حدود الكمية :** من {min_str} إلى {max_str} دولار\n"
+        f"▫️ **وسائل الدفع :** {methods_str}\n"
+        f"▫️ **دورك في المعاملة :** **{taker_role_ar}**\n\n"
+        f"⌨️ **يرجى إدخال كمية الدولار (USDT) المطلوبة للتداول :**",
         reply_markup=cancel_kb,
         parse_mode="Markdown"
     )
@@ -177,7 +177,35 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
     data['amount_syp'] = str(amount_syp)
     await state.update_data(amount_usdt=str(amount_usdt), amount_syp=str(amount_syp))
 
+def _build_seller_pm_prompt_text(selected_pm: str, offer_id: int | None) -> str:
+    icon = PAYMENT_METHOD_ICONS.get(selected_pm, "💳")
+    offer_label = f" — عرض #{offer_id}" if offer_id else ""
+    if "شام كاش" in selected_pm:
+        details = (
+            "يرجى إرسال عنوان حساب شام كاش ليرة الخاص بك لتلقي الدفعة عليه:\n"
+            "(مكوّن من 32 خانة hex دون مسافات)"
+        )
+    elif "سيريتيل" in selected_pm or "سيريتل" in selected_pm:
+        details = (
+            "يرجى إرسال رقم سيريتيل كاش الخاص بك لتلقي الدفعة عليه:\n"
+            "(رقم سوري مكوّن من 10 أرقام يبدأ بـ 09)"
+        )
+    elif any(k in selected_pm for k in ("حوالة", "الهرم", "الفؤاد", "بنك")):
+        details = (
+            "يرجى إرسال الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:"
+        )
+    else:
+        details = f"يرجى إرسال بيانات حساب استلامك لوسيلة ({selected_pm}):"
+
+    return (
+        f"{icon} **بيانات استلام الليرة{offer_label}**\n\n"
+        f"▫️ **الوسيلة المحددة :** {selected_pm}\n\n"
+        f"💬 {details}"
+    )
+
     methods = data.get("payment_methods") or []
+    offer_type = data.get('offer_type', 'sell')
+    offer_id = data.get('offer_id')
 
     # If the offer supports more than one payment method, let the counterparty choose their preferred method
     if len(methods) > 1:
@@ -191,7 +219,7 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
         await state.set_state(DealCreateFSM.waiting_for_payment_method)
         prompt_msg = (
             f"💳 **اختيار وسيلة الدفع بالليرة السورية**\n\n"
-            f"💰 **الكمية المطلوبة :** `{format_usdt(amount_usdt)}` USDT\n"
+            f"▫️ **الكمية المطلوبة :** `{format_usdt(amount_usdt)}` دولار\n"
             f"💵 **المبلغ المقابل :** `{format_syp(amount_syp)}` ل.س\n\n"
             f"يدعم هذا العرض عدة وسائل دفع. يرجى اختيار الوسيلة التي تناسبك لإتمام المعاملة من الأزرار أدناه:"
         )
@@ -200,17 +228,20 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
 
     # Single payment method or default
     selected_pm = methods[0] if methods else "شام كاش ليرة"
-    offer_type = data.get('offer_type', 'sell')
     creator_id = data.get('creator_id')
     taker_id = message.from_user.id
     payout_details = data.get('payout_details') or {}
 
     if offer_type == 'buy':
-        # Maker is BUYER, Taker is SELLER
-        seller_id = taker_id
-        buyer_id = creator_id
-        buyer_payout_address = data.get('payout_info') or "PENDING"
-        seller_payment_info = {"method": selected_pm, "info": "PENDING"}
+        # Maker is BUYER, Taker is SELLER -> Taker MUST provide account info for this single method!
+        await state.update_data(selected_payment_method=selected_pm)
+        await state.set_state(DealCreateFSM.waiting_for_seller_payment_info)
+        cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+        ])
+        prompt_text = _build_seller_pm_prompt_text(selected_pm, offer_id)
+        await message.answer(prompt_text, reply_markup=cancel_kb, parse_mode="Markdown")
+        return
     else:
         # Maker is SELLER, Taker is BUYER
         seller_id = creator_id
@@ -219,16 +250,16 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
         seller_account = payout_details.get(selected_pm) or data.get('payout_info') or "PENDING"
         seller_payment_info = {"method": selected_pm, "info": seller_account}
 
-    await _finalize_deal_creation(
-        message=message,
-        state=state,
-        db_session=db_session,
-        data=data,
-        seller_id=seller_id,
-        buyer_id=buyer_id,
-        buyer_payout_address=buyer_payout_address,
-        seller_payment_info=seller_payment_info
-    )
+        await _finalize_deal_creation(
+            message=message,
+            state=state,
+            db_session=db_session,
+            data=data,
+            seller_id=seller_id,
+            buyer_id=buyer_id,
+            buyer_payout_address=buyer_payout_address,
+            seller_payment_info=seller_payment_info
+        )
 
 
 @deals_router.callback_query(DealCreateFSM.waiting_for_payment_method, F.data.startswith("deal_select_pm_"))
@@ -247,16 +278,21 @@ async def process_deal_payment_method_choice(callback: CallbackQuery, state: FSM
     data['selected_payment_method'] = selected_pm
 
     offer_type = data.get('offer_type', 'sell')
+    offer_id = data.get('offer_id')
     creator_id = data.get('creator_id')
     taker_id = callback.from_user.id
     payout_details = data.get('payout_details') or {}
 
     if offer_type == 'buy':
-        # Maker is BUYER, Taker is SELLER
-        seller_id = taker_id
-        buyer_id = creator_id
-        buyer_payout_address = data.get('payout_info') or "PENDING"
-        seller_payment_info = {"method": selected_pm, "info": "PENDING"}
+        # Maker is BUYER, Taker is SELLER -> Taker MUST provide account info for the chosen method!
+        await state.set_state(DealCreateFSM.waiting_for_seller_payment_info)
+        cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+        ])
+        prompt_text = _build_seller_pm_prompt_text(selected_pm, offer_id)
+        await callback.message.edit_text(prompt_text, reply_markup=cancel_kb, parse_mode="Markdown")
+        await callback.answer()
+        return
     else:
         # Maker is SELLER, Taker is BUYER
         seller_id = creator_id
@@ -265,9 +301,53 @@ async def process_deal_payment_method_choice(callback: CallbackQuery, state: FSM
         seller_account = payout_details.get(selected_pm) or data.get('payout_info') or "PENDING"
         seller_payment_info = {"method": selected_pm, "info": seller_account}
 
-    await callback.answer()
+        await callback.answer()
+        await _finalize_deal_creation(
+            message=callback.message,
+            state=state,
+            db_session=db_session,
+            data=data,
+            seller_id=seller_id,
+            buyer_id=buyer_id,
+            buyer_payout_address=buyer_payout_address,
+            seller_payment_info=seller_payment_info,
+            bot=callback.bot
+        )
+
+
+@deals_router.message(DealCreateFSM.waiting_for_seller_payment_info)
+async def process_deal_seller_payment_info(message: Message, state: FSMContext, db_session: AsyncSession):
+    info_text = message.text.strip() if message.text else ""
+    if not info_text:
+        await message.answer("يرجى إدخال بيانات صحيحة وغير فارغة:")
+        return
+
+    data = await state.get_data()
+    selected_pm = data.get('selected_payment_method') or "شام كاش ليرة"
+
+    is_valid, formatted_info, err_msg = validate_payment_method_info(selected_pm, info_text)
+    if not is_valid:
+        cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+        ])
+        await message.answer(
+            f"{err_msg}\n\nيرجى إعادة إدخال البيانات بالشكل المطلوب أو الضغط على إلغاء:",
+            reply_markup=cancel_kb,
+            parse_mode="Markdown"
+        )
+        return
+
+    raw_account = formatted_info.split(": ", 1)[-1] if ": " in formatted_info else formatted_info
+
+    seller_payment_info = {"method": selected_pm, "info": raw_account}
+    creator_id = data.get('creator_id')
+    taker_id = message.from_user.id
+    seller_id = taker_id
+    buyer_id = creator_id
+    buyer_payout_address = data.get('payout_info') or "PENDING"
+
     await _finalize_deal_creation(
-        message=callback.message,
+        message=message,
         state=state,
         db_session=db_session,
         data=data,
@@ -276,6 +356,7 @@ async def process_deal_payment_method_choice(callback: CallbackQuery, state: FSM
         buyer_payout_address=buyer_payout_address,
         seller_payment_info=seller_payment_info
     )
+
 
 
 async def derive_escrow_address(db_session: AsyncSession) -> tuple[str, int]:
@@ -293,8 +374,11 @@ async def _finalize_deal_creation(
     seller_id: int,
     buyer_id: int,
     buyer_payout_address: str,
-    seller_payment_info: dict
+    seller_payment_info: dict,
+    bot: Optional[Bot] = None
 ):
+    if bot is None:
+        bot = message.bot
     offer_id = data['offer_id']
     amount_usdt_val = data.get('amount_usdt')
     if not amount_usdt_val:
@@ -388,7 +472,7 @@ async def _finalize_deal_creation(
 
     # Update channel offer message post-commit
     try:
-        await update_channel_offer_message(message.bot, offer)
+        await update_channel_offer_message(bot, offer)
     except Exception as e:
         logger.warning(f"Failed to update channel offer message: {e}")
     await state.clear()
@@ -397,7 +481,7 @@ async def _finalize_deal_creation(
     syp_str = format_syp(amount_syp)
 
     # Dispatch unified Deal Card to both Counterparties
-    await push_deal_card(new_deal.id, message.bot)
+    await push_deal_card(new_deal.id, bot)
 
 # ================= OWNER APPROVAL / REJECTION HANDLERS =================
 
@@ -513,7 +597,7 @@ async def ask_cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
         f"⚠️ **تأكيد إلغاء الصفقة — صفقة #{deal.id}**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"• الكمية:  `{usdt_str}` USDT\n"
-        f"• الإجمالي:  `{syp_str}` SYP\n"
+        f"▫️ **الإجمالي :** `{syp_str}` ل.س\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"سيتم إلغاء الصفقة وإعادة العرض إلى السوق.\n"
         f"تنبيه: لا يمكن التراجع عن هذا الإجراء بعد تنفيذه. هل ترغب بالتأكيد؟"
@@ -553,7 +637,7 @@ async def cq_back_cancel_deal(callback: CallbackQuery, db_session: AsyncSession)
             f"• الحالة:  **بانتظار موافقة الطرف الآخر**\n\n"
             f"• دورك في الصفقة:  {role}\n\n"
             f"• الكمية:  `{usdt_str}` USDT\n\n"
-            f"• المبلغ الإجمالي:  `{syp_str}` SYP\n\n"
+            f"▫️ **المبلغ الإجمالي :** `{syp_str}` ل.س\n\n"
             f"• المهلة المتاحة:  30 دقيقة\n\n\n"
             f"تم إرسال إشعار لصاحب العرض. سيتم إشعارك فور اتخاذ قراره للمتابعة."
         )
@@ -722,17 +806,14 @@ async def forward_proof_photo_to_seller(deal: Deal, photo_file_id: str, bot: Bot
         [InlineKeyboardButton(text="⚠️ عدم الاستلام (اعتراض)", callback_data=f"dispute_deal_{deal.id}")]
     ])
     caption = (
-        f"💸 **صفقة #{deal.id} — إشعار تحويل المبلغ بالليرة السورية**\n\n"
-        f"المرحلة: [ 🟩 🟩 🟩 🟩 🟩 ⬜ ⬜ ] تأكيد الاستلام بالليرة السورية\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🔴 **بائع USDT**\n"
-        f"• المبلغ المطلوب استلامه: 💰 `{syp_str} SYP`\n"
-        f"• رصيد الضمان المحجوز: 🔒 `{usdt_str} USDT`\n"
-        f"• حساب الاستلام: 💳 {payment_info_str}\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"📸 **المرفق:** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
-        f"⚠️ **تنبيه:** يرجى فتح تطبيقك والتحقق من وصول كامل المبلغ الفعلي لحسابك قبل التأكيد.\n"
-        f"بمجرد التأكيد، ستُحال الصفقة للإدارة لإطلاق رصيد الضمان للمشتري فوراً."
+        f"🧾 **إشعار تحويل المبلغ بالليرة السورية — صفقة #{deal.id}**\n\n"
+        f"📍 **المرحلة :** الخطوة 5 من 7 (تأكيد الاستلام بالليرة)\n\n"
+        f"▫️ **دورك بالصفقة :** 🔴 بائع\n"
+        f"▫️ **المبلغ المطلوب استلامه :** `{syp_str}` ل.س\n"
+        f"▫️ **رصيد الضمان المقابل :** `{usdt_str}` دولار\n"
+        f"▫️ **حساب الاستلام :** {payment_info_str}\n\n"
+        f"📸 **المرفق :** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
+        f"⚠️ **تنبيه هام :** يرجى التحقق من وصول كامل المبلغ لحسابك البنكي أو المحفظة قبل الضغط على زر التأكيد أدناه."
     )
     try:
         sent_msg = await bot.send_photo(
@@ -1123,7 +1204,7 @@ async def start_set_seller_info(callback: CallbackQuery, state: FSMContext, db_s
     if saved_info:
         # Show explicit Confirmation Gate
         gate_text = (
-            f"💳 **صفقة #{deal.id} — حساب استلام الليرة (SYP)**\n\n"
+            f"💳 **صفقة #{deal.id} — حساب استلام الليرة السورية**\n\n"
             f"━━━━━━━━━━━━━━━\n"
             f"• البيانات المحفوظة بملفك الشخصي:\n"
             f"`{escape_markdown(saved_info)}`\n"
@@ -1147,7 +1228,7 @@ async def start_set_seller_info(callback: CallbackQuery, state: FSMContext, db_s
     curr_info_str = f"\n• البيانات المسجلة حالياً: `{escape_markdown(curr_info)}`" if curr_info and curr_info not in ["PENDING", "غير محدد", "N/A"] else ""
 
     await callback.message.answer(
-        f"💳 **صفقة #{deal.id} — حساب استلام الليرة (SYP)**\n\n"
+        f"💳 **صفقة #{deal.id} — حساب استلام الليرة السورية**\n\n"
         f"━━━━━━━━━━━━━━━{curr_info_str}\n"
         f"اختر وسيلة الدفع التي ترغب باستلام الدفعة عبرها:",
         reply_markup=get_deal_payment_methods_kb(deal.id),
@@ -1317,7 +1398,7 @@ async def manual_await_syp(callback: CallbackQuery, state: FSMContext, db_sessio
     # 1. Update Seller's UI
     await callback.message.edit_text(
         f"⏳ **صفقة #{deal.id} — بانتظار تحويل الدفعة بالليرة**\n\n"
-        f"💰 **المبلغ المتوقع :** `{usdt_str}` USDT مقابل `{syp_str}` ل.س\n"
+        f"▫️ **المبلغ المتوقع :** `{usdt_str}` دولار مقابل `{syp_str}` ل.س\n"
         f"💳 **حساب الاستلام المعتمد :** `{payment_info_str}`\n\n"
         f"تم إشعار المشتري بالتحويل، وسيصلك إشعار فور تأكيد الدفع من قِبله.",
         parse_mode="Markdown"
@@ -1333,7 +1414,7 @@ async def manual_await_syp(callback: CallbackQuery, state: FSMContext, db_sessio
             text=(
                 f"💸 **صفقة #{deal.id} — مطلوب تحويل المبلغ بالليرة**\n\n"
                 f"💰 **المبلغ المطلوب تحويله :** `{syp_str}` ل.س\n"
-                f"🔒 **رصيد الضمان المحجوز :** `{usdt_str}` USDT\n\n"
+                f"▫️ **رصيد الضمان المحجوز :** `{usdt_str}` دولار\n\n"
                 f"💳 **حساب استلام البائع :**\n"
                 f"`{payment_info_str}`\n\n"
                 f"⚠️ يرجى التحويل بدقة على الحساب المذكور أعلاه، ثم النقر على زر التأكيد وإرفاق إشعار الدفع:",
@@ -1743,12 +1824,10 @@ async def ask_confirm_syp(callback: CallbackQuery, db_session: AsyncSession):
 
     text = (
         f"⚠️ **تأكيد استلام الدفعة — صفقة #{deal.id}**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• دورك: 🔴 بائع USDT\n"
-        f"• المبلغ المطلوب استلامه:  `{syp_str}` SYP\n"
-        f"• رصيد الضمان المقابل:  `{usdt_str}` USDT\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"⚠️ **تنبيه:** تأكد من وصول كامل المبلغ لحسابك قبل التأكيد.\n"
+        f"▫️ **دورك بالصفقة :** 🔴 بائع\n"
+        f"▫️ **المبلغ المطلوب استلامه :** `{syp_str}` ل.س\n"
+        f"▫️ **رصيد الضمان المقابل :** `{usdt_str}` دولار\n\n"
+        f"⚠️ **تنبيه :** تأكد من وصول كامل المبلغ لحسابك قبل التأكيد.\n"
         f"بمجرد التأكيد، ستُحال الصفقة تلقائياً للإدارة لإطلاق رصيد الضمان للمشتري ولا يمكن التراجع عن هذا الإجراء."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1792,17 +1871,14 @@ async def cq_back_seller_deal(callback: CallbackQuery, db_session: AsyncSession)
             [InlineKeyboardButton(text="⚠️ عدم الاستلام (اعتراض)", callback_data=f"dispute_deal_{deal.id}")]
         ])
         caption = (
-            f"💸 **صفقة #{deal.id} — إشعار تحويل المبلغ بالليرة السورية**\n\n"
-            f"المرحلة: [ 🟩 🟩 🟩 🟩 🟩 ⬜ ⬜ ] تأكيد الاستلام بالليرة السورية\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"• دورك: 🔴 **بائع USDT**\n"
-            f"• المبلغ المطلوب استلامه: 💰 `{syp_str} SYP`\n"
-            f"• رصيد الضمان المحجوز: 🔒 `{usdt_str} USDT`\n"
-            f"• حساب الاستلام: 💳 {payment_info_str}\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"📸 **المرفق:** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
-            f"⚠️ **تنبيه:** يرجى فتح تطبيقك والتحقق من وصول كامل المبلغ الفعلي لحسابك قبل التأكيد.\n"
-            f"بمجرد التأكيد، ستُحال الصفقة للإدارة لإطلاق رصيد الضمان للمشتري فوراً."
+            f"🧾 **إشعار تحويل المبلغ بالليرة السورية — صفقة #{deal.id}**\n\n"
+            f"📍 **المرحلة :** الخطوة 5 من 7 (تأكيد الاستلام بالليرة)\n\n"
+            f"▫️ **دورك بالصفقة :** 🔴 بائع\n"
+            f"▫️ **المبلغ المطلوب استلامه :** `{syp_str}` ل.س\n"
+            f"▫️ **رصيد الضمان المقابل :** `{usdt_str}` دولار\n"
+            f"▫️ **حساب الاستلام :** {payment_info_str}\n\n"
+            f"📸 **المرفق :** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
+            f"⚠️ **تنبيه هام :** يرجى التحقق من وصول كامل المبلغ لحسابك البنكي أو المحفظة قبل الضغط على زر التأكيد أدناه."
         )
         try:
             await callback.message.edit_caption(caption=caption, reply_markup=seller_kb, parse_mode="Markdown")
@@ -1845,10 +1921,9 @@ async def _dispatch_admin_approval(
             elif origin_callback.from_user.id == deal.seller_id:
                 seller_text = (
                     f"✅ **صفقة #{deal.id} — تم تأكيد الاستلام وأُحيلت الصفقة تلقائياً للإدارة**\n\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"• دورك: 🔴 بائع USDT\n"
-                    f"• المبلغ:  `{usdt_str}` USDT ⇄ `{syp_str}` SYP\n"
-                    f"━━━━━━━━━━━━━━━\n\n"
+                    f"▫️ **دورك بالصفقة :** 🔴 بائع\n"
+                    f"▫️ **الكمية :** `{usdt_str}` دولار\n"
+                    f"▫️ **المبلغ المقابل :** `{syp_str}` ل.س\n\n"
                     f"تم إشعار إدارة {BOT_NAME} لمراجعة الصفقة وإطلاق رصيد الضمان للمشتري."
                 )
                 if origin_callback.message.photo:
@@ -1867,7 +1942,7 @@ async def _dispatch_admin_approval(
                 await origin_callback.message.edit_text(
                     f"🛡️ **صفقة #{deal.id} — قيد التدقيق والاعتماد الإداري**\n\n"
                     f"━━━━━━━━━━━━━━━\n"
-                    f"• القيمة:  `{usdt_str}` USDT ⇄ `{syp_str}` SYP\n"
+                    f"▫️ **القيمة :** `{usdt_str}` دولار مقابل `{syp_str}` ل.س\n"
                     f"━━━━━━━━━━━━━━━\n\n"
                     f"تمت إحالة العملية للإدارة للمراجعة وإطلاق رصيد الضمان إلى محفظة المشتري بأمان.",
                     parse_mode="Markdown"
@@ -1889,7 +1964,7 @@ async def _dispatch_admin_approval(
                 text=(
                     f"🛡️ **تحديث صفقة #{deal.id}**\n\n"
                     f"━━━━━━━━━━━━━━━\n"
-                    f"• القيمة:  `{usdt_str}` USDT ⇄ `{syp_str}` SYP\n"
+                    f"▫️ **القيمة :** `{usdt_str}` دولار مقابل `{syp_str}` ل.س\n"
                     f"━━━━━━━━━━━━━━━\n\n"
                     f"أكد البائع استلام كامل حقه بالليرة.\n"
                     f"الصفقة الآن قيد التدقيق والاعتماد الإداري النهائي لإطلاق الرصيد إلى محفظتك."
@@ -2112,7 +2187,7 @@ async def ask_admin_release(callback: CallbackQuery, db_session: AsyncSession):
         f"⚠️ **تأكيد اعتماد وإطلاق الضمان — صفقة #{deal.id}**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"• الكمية:  `{usdt_str}` USDT\n"
-        f"• المقابل:  `{syp_str}` SYP\n"
+        f"▫️ **المقابل :** `{syp_str}` ل.س\n"
         f"• محفظة استلام المشتري (BEP-20):\n"
         f"`{buyer_wallet_escaped}`\n"
         f"━━━━━━━━━━━━━━━\n\n"

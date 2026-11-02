@@ -244,10 +244,10 @@ def render_deal_card(
 
     if is_seller:
         viewer_role = "seller"
-        role_label = "🔴 بائع USDT"
+        role_label = "🔴 بائع"
     elif is_buyer:
         viewer_role = "buyer"
-        role_label = "🟢 مشتري USDT"
+        role_label = "🟢 مشتري"
     elif is_admin:
         viewer_role = "admin"
         role_label = "🛡️ مشرف المنصة"
@@ -291,10 +291,10 @@ def render_deal_card(
         lines.append(f"⏱️ **المهلة المتبقية :** {remaining_str}")
 
     lines.append("\n💰 **البيانات المالية :**")
-    lines.append(f"👤 **دورك بالصفقة :** {role_label}")
-    lines.append(f"📦 **الكمية :** `{usdt_str}` USDT")
-    lines.append(f"💵 **الإجمالي :** `{syp_str}` ل.س")
-    lines.append(f"📊 **سعر الصرف :** `{rate_str}` ل.س")
+    lines.append(f"▫️ **دورك بالصفقة :** {role_label}")
+    lines.append(f"▫️ **الكمية :** `{usdt_str}` دولار")
+    lines.append(f"▫️ **الإجمالي :** `{syp_str}` ل.س")
+    lines.append(f"▫️ **سعر الصرف :** `{rate_str}` ل.س")
 
     # Commission details
     seller_fee = getattr(deal, "seller_fee_usdt", None)
@@ -308,9 +308,9 @@ def render_deal_card(
     if is_buyer:
         net_buyer_str = format_usdt(deal.amount_usdt - buyer_fee)
         if buyer_fee > Decimal("0"):
-            lines.append(f"📥 **صافي استلامك المتوقع :** `{net_buyer_str}` USDT (عمولة `{format_usdt(buyer_fee)}` USDT)")
+            lines.append(f"▫️ **صافي استلامك :** `{net_buyer_str}` دولار (العمولة: `{format_usdt(buyer_fee)}` دولار)")
         else:
-            lines.append(f"📥 **صافي استلامك المتوقع :** `{net_buyer_str}` USDT (عمولة مجانية)")
+            lines.append(f"▫️ **صافي استلامك :** `{net_buyer_str}` دولار (العمولة: مجانية)")
 
     # Specific phase context
     if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and is_seller:
@@ -318,9 +318,9 @@ def render_deal_card(
         total_dep_str = format_usdt(total_dep)
         lines.append("\n🔐 **بيانات الإيداع :**")
         if seller_fee > Decimal("0"):
-            lines.append(f"💳 **المطلوب إيداعه :** `{total_dep_str}` USDT (تشمل عمولة `{format_usdt(seller_fee)}` USDT)")
+            lines.append(f"▫️ **المطلوب إيداعه :** `{total_dep_str}` دولار (العمولة: `{format_usdt(seller_fee)}` دولار)")
         else:
-            lines.append(f"💳 **المطلوب إيداعه :** `{total_dep_str}` USDT (العمولة مجانية)")
+            lines.append(f"▫️ **المطلوب إيداعه :** `{total_dep_str}` دولار (العمولة: مجانية)")
         lines.append(f"📥 **محفظة الإيداع :**\n`{deal.deposit_address}`")
 
     elif deal.status in ("AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT", "SYP_PAYMENT_CONFIRMED", "ADMIN_APPROVAL"):

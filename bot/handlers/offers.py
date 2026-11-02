@@ -185,8 +185,8 @@ async def _render_current_step(message: Message, state: FSMContext, db_session: 
             "📝 **إنشاء عرض تداول جديد**\n\n"
             "━━━━━━━━━━━━━━━\n"
             "حدد نوع العملية التي ترغب بطرحها في السوق:\n\n"
-            "• 🔴 **بيع USDT**: تقديم USDT واستلام ليرة سورية (SYP).\n"
-            "• 🟢 **شراء USDT**: دفع ليرة سورية (SYP) واستلام USDT.\n"
+            "• 🔴 **بيع USDT**: تقديم USDT واستلام ليرة سورية.\n"
+            "• 🟢 **شراء USDT**: دفع ليرة سورية واستلام USDT.\n"
             "━━━━━━━━━━━━━━━\n\n"
             "اختر النوع للمتابعة:",
             reply_markup=kb,
@@ -280,8 +280,8 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
         "📝 **إنشاء عرض تداول جديد**\n\n"
         "━━━━━━━━━━━━━━━\n"
         "حدد نوع العملية التي ترغب بطرحها في السوق:\n\n"
-        "• 🔴 **بيع USDT**: تقديم USDT واستلام ليرة سورية (SYP).\n"
-        "• 🟢 **شراء USDT**: دفع ليرة سورية (SYP) واستلام USDT.\n"
+        "• 🔴 **بيع USDT**: تقديم USDT واستلام ليرة سورية.\n"
+        "• 🟢 **شراء USDT**: دفع ليرة سورية واستلام USDT.\n"
         "━━━━━━━━━━━━━━━\n\n"
         "اختر النوع للمتابعة:",
         reply_markup=kb,
@@ -332,8 +332,8 @@ async def back_to_offer_type(callback: CallbackQuery, state: FSMContext):
         "📝 **إنشاء عرض تداول جديد**\n\n"
         "━━━━━━━━━━━━━━━\n"
         "حدد نوع العملية التي ترغب بطرحها في السوق:\n\n"
-        "• 🔴 **بيع USDT**: تقديم USDT واستلام ليرة سورية (SYP).\n"
-        "• 🟢 **شراء USDT**: دفع ليرة سورية (SYP) واستلام USDT.\n"
+        "• 🔴 **بيع USDT**: تقديم USDT واستلام ليرة سورية.\n"
+        "• 🟢 **شراء USDT**: دفع ليرة سورية واستلام USDT.\n"
         "━━━━━━━━━━━━━━━\n\n"
         "اختر النوع للمتابعة:",
         reply_markup=kb,
@@ -368,7 +368,7 @@ async def process_offer_rate(message: Message, state: FSMContext):
 
         rate_str = format_syp(rate)
         await message.answer(
-            f"📝 **إنشاء عرض** | السعر المعتمد: 💵 `{rate_str} SYP`\n\n"
+            f"📝 **إنشاء عرض** | سعر الصرف المعتمد: `{rate_str}` ل.س\n\n"
             f"━━━━━━━━━━━━━━━\n"
             f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
             f"━━━━━━━━━━━━━━━",
@@ -422,7 +422,7 @@ async def confirm_rate_and_advance(callback: CallbackQuery, state: FSMContext):
 
     rate_str = format_syp(Decimal(str(rate_val)))
     await callback.message.edit_text(
-        f"📝 **إنشاء عرض** | السعر المعتمد: 💵 `{rate_str} SYP`\n\n"
+        f"📝 **إنشاء عرض** | سعر الصرف المعتمد: `{rate_str}` ل.س\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
         f"━━━━━━━━━━━━━━━",
@@ -1490,7 +1490,7 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         f"🎉 **تم نشر العرض بنجاح — عرض #{new_offer.id}** ✅\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"• النوع: {offer_type_ar}\n"
-        f"• سعر الصرف: 💵 `{rate_str} SYP`\n"
+        f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n"
         f"• حدود الكمية: 📦 من `{min_str}` إلى `{max_str}` USDT\n"
         f"• وسائل الدفع: 💳 {methods_str}\n"
         f"• حالة التفاوض: {neg_status_ar}\n"
@@ -1505,17 +1505,19 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
 
     # 6. Broadcast to Channel (Notice: No payout details in public channel!)
     if settings.CHANNEL_ID and settings.BOT_USERNAME:
-        action_ar = "💸 شراء هذا العرض" if new_offer.offer_type == 'sell' else "💸 البيع لهذا الزبون"
-        neg_line = f"\n🤝 <b>التفاوض :</b> {neg_status_ar}" if new_offer.negotiable else ""
+        offer_type_chan = "🔴 بيع (المعلن يبيع)" if new_offer.offer_type == 'sell' else "🟢 شراء (المعلن يشتري)"
+        action_ar = "💸 تنفيذ هذا العرض" if new_offer.offer_type == 'sell' else "💸 البيع لهذا الزبون"
+        neg_line = f"\n▫️ <b>التفاوض :</b> {neg_status_ar}" if new_offer.negotiable else ""
 
         channel_text = (
-            f"<b>{CHANNEL_NAME}</b>\n\nفرصة رقم : #{new_offer.id}\n{offer_type_ar}\n"
-            f"~~~~~~~~~~~~~~~~\n"
-            f"💰 <b>الكمية :</b> من {min_str} إلى {max_str} USDT\n"
-            f"💵 <b>سعر الصرف :</b> {rate_str} ل.س\n"
-            f"💳 <b>طرق الدفع :</b> {methods_str}{neg_line}\n"
-            f"⌛ <b>مدة المعاملة :</b> {duration_str}\n"
-            f"~~~~~~~~~~~~~~~~\n"
+            f"📢 <b>{CHANNEL_NAME} | عرض #{new_offer.id} [متاح للتداول]</b>\n\n"
+            f"▫️ <b>النوع :</b> {offer_type_chan}\n"
+            f"────────────────\n"
+            f"▫️ <b>سعر الصرف :</b> {rate_str} ل.س\n"
+            f"▫️ <b>حدود الكمية :</b> من {min_str} إلى {max_str} دولار\n"
+            f"▫️ <b>طرق الدفع :</b> {methods_str}{neg_line}\n"
+            f"▫️ <b>مدة المعاملة :</b> {duration_str}\n"
+            f"────────────────\n"
             f"{format_fee_rule_html()}"
         )
 
@@ -1585,7 +1587,7 @@ async def list_offers(message: Message, db_session: AsyncSession):
 
         text = (
             f"🏷️ **عرض #{offer.id}** — {offer_type_ar}\n\n\n"
-            f"• سعر الصرف:  `{rate_str}` SYP\n\n"
+            f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n\n"
             f"• حدود الكمية:  من `{min_str}` إلى `{max_str}` USDT\n\n"
             f"• طرق الدفع:  {methods_str}\n\n"
             f"• حالة التفاوض:  {neg_str}\n\n"

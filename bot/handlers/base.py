@@ -189,7 +189,7 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
         f"➕ **إنشاء عرض تداول جديد**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"حدد نوع العرض الذي ترغب بطرحه في السوق:\n\n"
-        f"• 🟢 **أريد شراء USDT**: تدفع ليرة سورية (SYP) وتستلم USDT.\n"
+        f"• 🟢 **أريد شراء USDT**: تدفع ليرة سورية وتستلم USDT.\n"
         f"• 🔴 **أريد بيع USDT**: تقدم USDT وتستلم ليرة سورية (SYP).\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"اختر نوع العملية للبدء:"
@@ -408,7 +408,7 @@ async def cq_menu_my_offers(callback: CallbackQuery, db_session: AsyncSession):
         text_lines.append(
             f"🏷️ **عرض #{off.id}** — {type_str}\n\n"
             f"• الحالة:  **{badge}**\n"
-            f"• سعر الصرف:  `{rate_str}` SYP\n"
+            f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n"
             f"• حدود الكمية:  `{min_str}` إلى `{max_str}` USDT\n\n\n"
         )
 

@@ -123,7 +123,7 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
         await callback.message.answer(
             f"🤝 **بدء جلسة تفاوض — عرض #{offer.id}**\n\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"• السعر الحالي بالعرض: 💵 `{rate_str} SYP`\n"
+            f"▫️ **سعر الصرف الحالي :** `{rate_str}` ل.س\n"
             f"• حدود الكمية المتاحة: 📦 من `{min_str}` إلى `{max_str}` USDT\n"
             f"━━━━━━━━━━━━━━━\n\n"
             f"⌨️ أدخل الكمية المقترحة للتداول (USDT):",
@@ -136,9 +136,9 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
         await callback.message.answer(
             f"🤝 **بدء جلسة تفاوض على السعر — عرض #{offer.id}**\n\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"• السعر الحالي بالعرض: 💵 `{rate_str} SYP`\n"
+            f"▫️ **سعر الصرف الحالي :** `{rate_str}` ل.س\n"
             f"━━━━━━━━━━━━━━━\n\n"
-            f"⌨️ أدخل سعر الصرف المقترح (SYP لكل 1 USDT):",
+            f"⌨️ أدخل سعر الصرف المقترح (ليرة سورية لكل 1 دولار):",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -168,9 +168,9 @@ async def process_taker_amount(message: Message, state: FSMContext):
         await message.answer(
             f"📦 **الكمية المقترحة:** `{format_usdt(amount_val)} USDT`\n\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"• السعر الحالي بالعرض: 💵 `{rate_str} SYP`\n"
+            f"▫️ **سعر الصرف الحالي :** `{rate_str}` ل.س\n"
             f"━━━━━━━━━━━━━━━\n\n"
-            f"⌨️ أدخل الآن سعر الصرف المقترح (SYP لكل 1 USDT):",
+            f"⌨️ أدخل الآن سعر الصرف المقترح (ليرة سورية لكل 1 دولار):",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -281,8 +281,8 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
     await message.answer(
         f"📨 **تم إرسال طلب التفاوض بنجاح (عرض #{offer_id})**\n\n\n"
         f"• الكمية المقترحة:  `{amount_str}` USDT\n\n"
-        f"• سعر الصرف المقترح:  `{rate_str}` SYP\n\n"
-        f"• القيمة الإجمالية:  `{total_syp_str}` SYP\n\n"
+        f"▫️ **سعر الصرف المقترح :** `{rate_str}` ل.س\n\n"
+        f"▫️ **القيمة الإجمالية :** `{total_syp_str}` ل.س\n\n"
         f"• مهلة الرد:  30 دقيقة\n\n\n"
         f"تم إرسال الاقتراح لصاحب العرض. سيصلك إشعار فوري فور اتخاذ قراره.",
         parse_mode="Markdown"
@@ -302,8 +302,8 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
     maker_text = (
         f"🔔 **طلب تفاوض جديد على عرضك #{offer_id}**\n\n\n"
         f"• الكمية المقترحة:  `{amount_str}` USDT\n\n"
-        f"• السعر المقترح:  `{rate_str}` SYP\n\n"
-        f"• القيمة الإجمالية:  `{total_syp_str}` SYP\n\n"
+        f"▫️ **السعر المقترح :** `{rate_str}` ل.س\n\n"
+        f"▫️ **القيمة الإجمالية :** `{total_syp_str}` ل.س\n\n"
         f"• سجل الطرف المفاوض:  `{taker_completed_count}` صفقة مكتملة\n\n"
         f"• مهلة الرد:  30 دقيقة\n\n\n"
         f"حدد الإجراء المطلوب لاتخاذ القرار:"
@@ -461,7 +461,7 @@ async def maker_start_counter(callback: CallbackQuery, db_session: AsyncSession,
         await callback.message.answer(
             f"🔄 **تقديم عرض مضاد — جلسة #{neg.id}**\n\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"• اقتراح الطرف الآخر: 📦 `{format_usdt(neg.proposed_amount)} USDT` بسعر 💵 `{format_syp(neg.proposed_rate)} SYP`\n"
+            f"▫️ **اقتراح الطرف الآخر :** `{format_usdt(neg.proposed_amount)}` دولار بسعر `{format_syp(neg.proposed_rate)}` ل.س\n"
             f"━━━━━━━━━━━━━━━\n\n"
             f"⌨️ أدخل الكمية النهائية التي تقترحها (USDT):",
             reply_markup=cancel_kb,
@@ -473,9 +473,9 @@ async def maker_start_counter(callback: CallbackQuery, db_session: AsyncSession,
         await callback.message.answer(
             f"🔄 **تقديم عرض مضاد على السعر — جلسة #{neg.id}**\n\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"• اقتراح الطرف الآخر للسعر: 💵 `{format_syp(neg.proposed_rate)} SYP`\n"
+            f"▫️ **سعر الصرف المقترح :** `{format_syp(neg.proposed_rate)}` ل.س\n"
             f"━━━━━━━━━━━━━━━\n\n"
-            f"⌨️ أدخل السعر النهائي الذي تقترحه (SYP لكل 1 USDT):",
+            f"⌨️ أدخل السعر النهائي الذي تقترحه (ليرة سورية لكل 1 دولار):",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -503,7 +503,7 @@ async def process_maker_counter_amount(message: Message, state: FSMContext):
         await message.answer(
             f"📦 **الكمية المسجلة:** `{format_usdt(amount_val)} USDT`\n\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"⌨️ أدخل السعر النهائي المقترح (SYP لكل 1 USDT):\n"
+            f"⌨️ أدخل السعر النهائي المقترح (ليرة سورية لكل 1 دولار):\n"
             f"━━━━━━━━━━━━━━━",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
@@ -580,8 +580,8 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
         f"📨 **تم إرسال العرض المضاد بنجاح**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"• الكمية المقترحة: 📦 `{amount_str} USDT`\n"
-        f"• سعر الصرف النهائي: 💵 `{rate_str} SYP`\n"
-        f"• الإجمالي: 💰 `{total_syp_str} SYP`\n"
+        f"▫️ **سعر الصرف النهائي :** `{rate_str}` ل.س\n"
+        f"▫️ **الإجمالي :** `{total_syp_str}` ل.س\n"
         f"• مهلة الرد: ⏱️ 30 دقيقة\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"القرار النهائي الآن لدى الطرف المفاوض.",
@@ -600,8 +600,8 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
         f"🔄 **وصلك عرض مضاد على تفاوض عرض #{neg.offer_id}**\n\n"
         f"━━━━━━━━━━━━━━━\n"
         f"• الكمية المقترحة: 📦 `{amount_str} USDT`\n"
-        f"• سعر الصرف: 💵 `{rate_str} SYP`\n"
-        f"• الإجمالي: 💰 `{total_syp_str} SYP`\n"
+        f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n"
+        f"▫️ **الإجمالي :** `{total_syp_str}` ل.س\n"
         f"• سجل صاحب العرض: ⭐ `{maker_completed_count}` صفقة مكتملة\n"
         f"• مهلة الرد: ⏱️ 30 دقيقة\n"
         f"━━━━━━━━━━━━━━━\n\n"

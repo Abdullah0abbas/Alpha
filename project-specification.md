@@ -1,6 +1,6 @@
 # Project Specification: Alpha Bot (USDT/SYP Escrow)
 
-**Version:** 3.4
+**Version:** 3.5
 **Document Type:** Technical Architecture & Implementation Reference
 **Purpose:** This document is the authoritative technical reference for Alpha Bot. It must be provided as context at the start of any development session. All architectural decisions are final unless explicitly revised in Section 17 (Change Log).
 
@@ -418,4 +418,5 @@ To keep scope bounded, the following are intentionally excluded from MVP:
 | Date | Change |
 |---|---|
 | v1.0 - v3.3 | See previous version history. |
+| v3.5 | **Technical & UX Overhaul v3.5:**<br>• **Dynamic Payment Method Selection & Collection in Deals**:<br>  - For Buy Offers (Maker=Buyer, Taker=Seller), Taker selects from Maker's supported payment rails and immediately inputs their valid account info (Sham Cash 32-hex address, Syriatel Cash 09xx number, or Bank transfer details). The deal is created with `seller_payment_info` fully populated.<br>  - For Sell Offers (Maker=Seller, Taker=Buyer), Taker picks from Maker's supported rails and the corresponding account from `payout_details` is automatically linked.<br>• **Comprehensive BiDi & UI Overhaul**:<br>  - Total eradication of Arabic/English/symbol inline BiDi inversion.<br>  - Replaced `SYP` with `ل.س` and `USDT` with `دولار` across all bot interfaces, deal cards, and channel posts.<br>  - Rewrote platform fee line into clean, human-readable Arabic: `⚡ عمولة المنصة : مجاناً حتى 25 دولار • 0.1% لما فوق ذلك`.<br>  - Unified payment proof dispatch to the seller into a single dedicated photo message with action buttons. |
 | v3.4 | **Official Technical Update v3.4:**<br>• Renamed to **Alpha Bot**.<br>• Adopted **New Syrian Lira Scale** (1:100 conversion).<br>• Implemented **Mandatory SYP Photo Proof**: Buyer must upload a screenshot/photo of the transfer to advance to `SYP_PAYMENT_SENT`.<br>• Refined **Timeout Rules**:<br>  - Offer duration expiry -> Immediate deletion.<br>  - Deal approval timeout (30m) -> Deal cancel + Offer deletion.<br>  - USDT deposit timeout (15m) -> Deal cancel + Offer revert to active + Admin alert.<br>  - SYP payment timeout (30m) -> Soft warning to contact support before paying.<br>• Replaced "Dispute" button text with **"⚠️ عدم الاستلام"** (Non-Receipt) and unified support routing to `@AlphaSupport`.<br>• Enforced professional, formal Arabic terminology throughout. |
