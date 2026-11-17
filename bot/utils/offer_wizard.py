@@ -110,15 +110,96 @@ def is_wizard_data_complete(wizard_data: dict) -> Tuple[bool, str]:
         if not wallet or not re.match(r"^0[xX][0-9a-fA-F]{40}$", wallet):
             return False, "عنوان محفظة استلام USDT (BEP-20) غير صالح."
 
-    # Duration validation
+    # Duration validation (5 minutes up to 4 hours)
     try:
         dur = float(wizard_data.get("duration_hours", 4.0))
-        if dur < 1.0 or dur > 4.0:
-            return False, "مدة صلاحية العرض يجب أن تكون بين 1 و 4 ساعات."
+        if dur < (5.0 / 60.0 - 0.001) or dur > 4.0:
+            return False, "مدة صلاحية العرض يجب أن تكون بين 5 دقائق و 4 ساعات."
     except (TypeError, ValueError):
         return False, "مدة الصلاحية غير صالحة."
 
     return True, ""
+
+
+def format_duration_hours_minutes(duration_hours: float | str | None) -> str:
+    """Format duration in hours/minutes cleanly (e.g. '1 ساعة و 5 دقيقة', '30 دقيقة', '4 ساعات')."""
+    try:
+        total_mins = int(round(float(duration_hours or 4.0) * 60))
+    except Exception:
+        return "4 ساعات"
+
+    if total_mins <= 0:
+        return "4 ساعات"
+
+    hours = total_mins // 60
+    mins = total_mins % 60
+
+    if hours > 0 and mins > 0:
+        return f"{hours} ساعة و {mins} دقيقة"
+    if hours > 0:
+        return f"{hours} ساعات" if hours >= 3 else f"{hours} ساعة"
+    return f"{mins} دقيقة"
+
+
+def _fmt_rate_str(rate_val) -> str:
+    try:
+        dec = Decimal(str(rate_val))
+        if dec == dec.to_integral_value():
+            return f"{int(dec):,}"
+        return f"{dec.normalize()}"
+    except Exception:
+        return str(rate_val)
+
+
+def _fmt_usdt_str(val) -> str:
+    try:
+        dec = Decimal(str(val))
+        return f"{dec:.2f}".rstrip("0").rstrip(".")
+    except Exception:
+        return str(val)
+
+
+def format_wizard_draft_header(wizard_data: dict, up_to_step: str) -> str:
+    """Builds a compact progressive header showing accumulated choices so far."""
+    lines = ["➕ **إنشاء عرض جديد**"]
+    offer_type = wizard_data.get("offer_type")
+    if offer_type in ("sell", "buy"):
+        type_ar = "🔴 بيع USDT" if offer_type == "sell" else "🟢 شراء USDT"
+        lines.append(f"⚖️ **النوع :** {type_ar}")
+
+    if up_to_step in ("min_limit", "max_limit", "methods", "payout", "negotiation", "duration"):
+        if wizard_data.get("rate"):
+            lines.append(f"📊 **سعر الصرف :** `{_fmt_rate_str(wizard_data['rate'])}` ل.س")
+
+    if up_to_step == "max_limit":
+        if wizard_data.get("min_limit"):
+            lines.append(f"💰 **الحد الأدنى :** `{_fmt_usdt_str(wizard_data['min_limit'])} USDT`")
+    elif up_to_step in ("methods", "payout", "negotiation", "duration"):
+        if wizard_data.get("min_limit") and wizard_data.get("max_limit"):
+            min_s = _fmt_usdt_str(wizard_data["min_limit"])
+            max_s = _fmt_usdt_str(wizard_data["max_limit"])
+            lines.append(f"💰 **الكمية :** من `{min_s}` إلى `{max_s} USDT`")
+
+    if up_to_step in ("payout", "negotiation", "duration"):
+        methods = wizard_data.get("payment_methods") or []
+        if methods:
+            m_str = "، ".join(f"{PAYMENT_METHOD_ICONS.get(m, '💳')} {m}" for m in methods)
+            lines.append(f"🏦 **طرق الدفع :** {m_str}")
+
+    if up_to_step == "duration":
+        if "negotiable" in wizard_data:
+            is_neg = wizard_data.get("negotiable", False)
+            neg_type = wizard_data.get("negotiable_type", "none")
+            neg_labels = {
+                "amount": "متاح على الكمية",
+                "rate": "متاح على السعر",
+                "both": "متاح على السعر والكمية",
+            }
+            neg_s = neg_labels.get(neg_type, "متاح") if (is_neg and neg_type != "none") else "غير متاح 🔒"
+            lines.append(f"🤝 **التفاوض :** {neg_s}")
+
+    lines.append("〰️〰️〰️〰️〰️〰️〰️")
+    return "\n".join(lines)
 
 
 def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str:
@@ -126,25 +207,9 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
     offer_type = wizard_data.get("offer_type", "")
     type_ar = "🔴 بيع USDT (استلام ليرة سورية)" if offer_type == "sell" else "🟢 شراء USDT (دفع ليرة سورية)"
 
-    rate_val = wizard_data.get("rate", "0")
-    try:
-        rate_int = int(round(Decimal(str(rate_val))))
-        rate_str = f"{rate_int:,}"
-    except Exception:
-        rate_str = str(rate_val)
-
-    min_val = wizard_data.get("min_limit", "0")
-    max_val = wizard_data.get("max_limit", "0")
-    try:
-        min_dec = Decimal(str(min_val))
-        min_str = f"{min_dec:.2f}".rstrip('0').rstrip('.')
-    except Exception:
-        min_str = str(min_val)
-    try:
-        max_dec = Decimal(str(max_val))
-        max_str = f"{max_dec:.2f}".rstrip('0').rstrip('.')
-    except Exception:
-        max_str = str(max_val)
+    rate_str = _fmt_rate_str(wizard_data.get("rate", "0"))
+    min_str = _fmt_usdt_str(wizard_data.get("min_limit", "0"))
+    max_str = _fmt_usdt_str(wizard_data.get("max_limit", "0"))
 
     methods = wizard_data.get("payment_methods", []) or []
     formatted_methods = []
@@ -181,11 +246,7 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
         neg_str = "غير متاح (شروط ثابتة)"
 
     dur_val = wizard_data.get("duration_hours", 4.0)
-    try:
-        dur_float = float(dur_val)
-        dur_str = f"{int(dur_float)} ساعات" if dur_float == int(dur_float) else f"{dur_float} ساعة"
-    except Exception:
-        dur_str = f"{dur_val} ساعات"
+    dur_str = format_duration_hours_minutes(dur_val)
 
     lines = [
         "📋 **المراجعة النهائية وتأكيد نشر العرض**",

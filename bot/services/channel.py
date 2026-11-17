@@ -65,8 +65,8 @@ def build_channel_offer_message(
     else:
         raw_duration = getattr(offer, "duration_hours", None)
         if raw_duration and raw_duration > 0:
-            hrs = int(raw_duration) if float(raw_duration).is_integer() else raw_duration
-            dur_str = f"{hrs} ساعات"
+            from bot.utils.offer_wizard import format_duration_hours_minutes
+            dur_str = format_duration_hours_minutes(raw_duration)
         else:
             dur_str = humanize_time_remaining(getattr(offer, "expires_at", None), "4 ساعات")
 
