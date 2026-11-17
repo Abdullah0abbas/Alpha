@@ -990,6 +990,7 @@ async def cmd_admin_audit(message: Message, db_session: AsyncSession):
     ]
 
     action_names = {
+        "CREATE_DEAL": "🤝 إنشاء صفقة جديدة",
         "RELEASE_ESCROW": "☑️ إطلاق ضمان مالي",
         "CANCEL_DEAL": "❌ إلغاء صفقة",
         "BAN_USER": "🚫 حظر مستخدم",
@@ -1001,11 +1002,12 @@ async def cmd_admin_audit(message: Message, db_session: AsyncSession):
 
     for log in logs:
         time_str = format_local_datetime(log.created_at) if log.created_at else "—"
-        act_title = action_names.get(log.action, log.action)
+        act_title = escape_markdown(action_names.get(log.action, log.action))
+        actor_type_safe = escape_markdown(log.actor_type)
         actor_tag = f"`{log.actor_id}`" if log.actor_id else "SYSTEM"
         lines.append(
             f"🔹 **#{log.id} — {act_title}**\n"
-            f"▫️ **المنفّذ:** {log.actor_type} ({actor_tag})\n"
+            f"▫️ **المنفّذ:** {actor_type_safe} ({actor_tag})\n"
             f"▫️ **الهدف:** `{log.target_type}:{log.target_id}`\n"
             f"▫️ **التوقيت:** `{time_str}`\n\n"
         )
@@ -1036,6 +1038,7 @@ async def cq_admin_refresh_audit(callback: CallbackQuery, db_session: AsyncSessi
         return
 
     action_names = {
+        "CREATE_DEAL": "🤝 إنشاء صفقة جديدة",
         "RELEASE_ESCROW": "☑️ إطلاق ضمان مالي",
         "CANCEL_DEAL": "❌ إلغاء صفقة",
         "BAN_USER": "🚫 حظر مستخدم",
@@ -1051,11 +1054,12 @@ async def cq_admin_refresh_audit(callback: CallbackQuery, db_session: AsyncSessi
     ]
     for log in logs:
         time_str = format_local_datetime(log.created_at) if log.created_at else "—"
-        act_title = action_names.get(log.action, log.action)
+        act_title = escape_markdown(action_names.get(log.action, log.action))
+        actor_type_safe = escape_markdown(log.actor_type)
         actor_tag = f"`{log.actor_id}`" if log.actor_id else "SYSTEM"
         lines.append(
             f"🔹 **#{log.id} — {act_title}**\n"
-            f"▫️ **المنفّذ:** {log.actor_type} ({actor_tag})\n"
+            f"▫️ **المنفّذ:** {actor_type_safe} ({actor_tag})\n"
             f"▫️ **الهدف:** `{log.target_type}:{log.target_id}`\n"
             f"▫️ **التوقيت:** `{time_str}`\n\n"
         )

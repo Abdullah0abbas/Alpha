@@ -665,12 +665,13 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
 
     support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip('@')
     support_link = f"https://t.me/{support_username}"
+    escaped_support = escape_markdown(support_username)
 
     notice_text = (
         f"⚠️ **صفقة #{deal.id} — إبلاغ بعدم استلام الليرة السورية**\n\n"
         f"أبلغ البائع بعدم استلام الدفعة بالليرة السورية حتى الآن.\n\n"
         f"يرجى التواصل مع فريق الدعم الفني لمراجعة إشعار التحويل:\n"
-        f"👨‍💻 **الدعم الفني:** @{support_username}"
+        f"👨‍💻 **الدعم الفني:** @{escaped_support}"
     )
 
     support_kb = InlineKeyboardMarkup(inline_keyboard=[

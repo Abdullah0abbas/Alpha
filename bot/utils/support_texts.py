@@ -31,22 +31,22 @@ def get_support_contact_text() -> str:
     channel_user = settings.CHANNEL_USERNAME.strip() if settings.CHANNEL_USERNAME else ""
 
     support_line = (
-        f"• معرف الدعم الفني: {_format_tg_handle(support_user)}"
+        f"👤 **معرف الدعم الفني :** {_format_tg_handle(support_user)}"
         if support_user
-        else "• الدعم الفني: متاح عبر خيار تقديم شكوى أو اقتراح أدناه."
+        else "👤 **الدعم الفني :** متاح عبر خيار إرسال رسالة للإدارة أدناه."
     )
     channel_line = (
-        f"• قناة الإعلانات الرسمية: {_format_tg_handle(channel_user)} ({CHANNEL_NAME})"
+        f"📢 **القناة الرسمية :** {_format_tg_handle(channel_user)} ({CHANNEL_NAME})"
         if channel_user
-        else f"• قناة الإعلانات الرسمية: {CHANNEL_NAME}"
+        else f"📢 **القناة الرسمية :** {CHANNEL_NAME}"
     )
 
     return (
-        f"\u200f**الدعم الفني — {BOT_NAME} 📞**\n\n"
-        "فريق الدعم متاح لمساعدتك في الاستفسارات المتعلقة بالصفقات ومعالجة النزاعات.\n\n"
+        f"\u200f💬 **الدعم الفني — {BOT_NAME}**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        "للتواصل مع فريق الدعم وشرح مشكلتك أو الاستفسار عن صفقة، راسلنا مباشرة عبر:\n\n"
         f"{support_line}\n"
-        f"{channel_line}\n\n"
-        "يمكنك أيضاً استخدام خيار **تقديم شكوى / اقتراح** لإرسال رسالتك مباشرة للإدارة."
+        f"{channel_line}"
     )
 
 

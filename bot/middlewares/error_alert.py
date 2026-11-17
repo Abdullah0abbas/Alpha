@@ -130,9 +130,15 @@ async def handle_critical_error(event: ErrorEvent, bot: Bot):
             action_type = "زر تفاعلي (Callback)"
             action_payload = cq.data or ""
 
-    # Step 3: Extract traceback & code location
+    # Step 3: Extract traceback & code location (prefer last frame in project code over library internals)
     tb_list = traceback.extract_tb(exception.__traceback__)
     relevant_frame = tb_list[-1] if tb_list else None
+    for frame in reversed(tb_list):
+        norm_path = frame.filename.replace("\\", "/")
+        if "site-packages" not in norm_path and "dist-packages" not in norm_path:
+            if any(seg in norm_path for seg in ("/bot/", "/db/", "/config/", "/watcher/", "app.py")):
+                relevant_frame = frame
+                break
     
     file_location = "غير محدد"
     line_number = "—"

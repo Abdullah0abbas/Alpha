@@ -19,6 +19,7 @@ from bot.handlers.offers import (
     humanize_time_remaining,
     start_offer_creation
 )
+from bot.utils.formatters import escape_markdown
 from bot.utils.deal_views import build_offer_action_buttons
 from bot.handlers.deals import my_deals
 from bot.utils.support_texts import (
@@ -130,6 +131,28 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                     parse_mode="Markdown"
                 )
                 return
+
+    if command.args == "offers":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🟢 شراء USDT", callback_data="browse_type_sell_0"),
+                InlineKeyboardButton(text="🔴 بيع USDT", callback_data="browse_type_buy_0")
+            ],
+            [
+                InlineKeyboardButton(text="🌐 كل العروض", callback_data="browse_type_all_0")
+            ],
+            [
+                InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
+            ]
+        ])
+        await message.answer(
+            "📊 **سوق العروض**\n"
+            "〰️〰️〰️〰️〰️〰️〰️\n"
+            "اختر نوع العملية المطلوبة:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        return
 
     welcome_text = (
         f"\u200f🛡️ **{BOT_NAME}**\n"
@@ -588,12 +611,29 @@ async def cq_faq_item(callback: CallbackQuery):
     await callback.answer()
 
 
+def _build_support_contact_kb(back_callback: str = "menu_back_main", back_label: str = "🔙 الرئيسية") -> InlineKeyboardMarkup:
+    rows = []
+    support_user = (settings.SUPPORT_USERNAME or "").strip().lstrip("@")
+    if support_user:
+        rows.append([InlineKeyboardButton(text="💬 مراسلة الدعم المباشر", url=f"https://t.me/{support_user}")])
+    rows.append([InlineKeyboardButton(text="✍️ إرسال رسالة للإدارة", callback_data="supp_feedback")])
+    rows.append([InlineKeyboardButton(text=back_label, callback_data=back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@base_router.message(Command("support"))
+async def cmd_support(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        get_support_contact_text(),
+        reply_markup=_build_support_contact_kb(back_callback="menu_back_main", back_label="🔙 الرئيسية"),
+        parse_mode="Markdown"
+    )
+
+
 @base_router.callback_query(F.data == "supp_contact")
 async def cq_supp_contact(callback: CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ تقديم شكوى / اقتراح الآن", callback_data="supp_feedback")],
-        [InlineKeyboardButton(text="🔙 عودة لقسم الدعم", callback_data="menu_support")]
-    ])
+    kb = _build_support_contact_kb(back_callback="menu_support", back_label="🔙 رجوع")
     await callback.message.edit_text(get_support_contact_text(), reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
@@ -624,14 +664,16 @@ async def process_user_feedback(message: Message, state: FSMContext, bot: Bot):
 
     await state.clear()
     user = message.from_user
-    username_str = f"@{user.username}" if user.username else "بدون معرف"
+    full_name_safe = escape_markdown(user.full_name or "مستخدم")
+    username_str = f"@{escape_markdown(user.username)}" if user.username else "بدون معرف"
+    feedback_safe = escape_markdown(feedback_text)
 
     admin_alert = (
         "📩 **رسالة اقتراح أو شكوى جديدة**\n\n"
-        f"▫️ **المستخدم:** {user.full_name}\n"
+        f"▫️ **المستخدم:** {full_name_safe}\n"
         f"▫️ **الرقم التعريفي:** `{user.id}`\n"
         f"▫️ **المعرف:** {username_str}\n\n"
-        f"**نص الرسالة:**\n{feedback_text}"
+        f"**نص الرسالة:**\n{feedback_safe}"
     )
 
     for admin_id in settings.ADMIN_IDS:
@@ -666,13 +708,14 @@ async def cq_create_offer(callback: CallbackQuery, state: FSMContext, db_session
 async def cq_my_deals(callback: CallbackQuery, db_session: AsyncSession):
     await callback.answer()
     class MockMessage:
-        def __init__(self, original_msg, from_user):
+        def __init__(self, original_msg, from_user, bot):
             self.original_msg = original_msg
             self.from_user = from_user
+            self.bot = bot
         async def answer(self, *args, **kwargs):
             return await self.original_msg.answer(*args, **kwargs)
             
-    mock_msg = MockMessage(callback.message, callback.from_user)
+    mock_msg = MockMessage(callback.message, callback.from_user, callback.bot)
     await my_deals(mock_msg, db_session)
 
 @base_router.callback_query(F.data.in_(["fsm_cancel_back", "main_cancel_op"]))

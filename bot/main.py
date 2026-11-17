@@ -28,14 +28,15 @@ async def setup_bot_commands(bot: Bot):
     # Public commands for all ordinary users
     public_commands = [
         BotCommand(command="start", description="القائمة الرئيسية"),
-        BotCommand(command="profile", description="👤 ملفي الشخصي"),
-        BotCommand(command="offers", description="تصفح العروض النشطة"),
-        BotCommand(command="create_offer", description="إنشاء عرض جديد"),
+        BotCommand(command="continue", description="متابعة صفقتك الحالية"),
+        BotCommand(command="support", description="التواصل مع الدعم الفني"),
     ]
 
     # Secret admin commands for Bot Menu Button (bottom-left)
     admin_commands = [
         BotCommand(command="start", description="القائمة الرئيسية"),
+        BotCommand(command="continue", description="متابعة صفقتك الحالية"),
+        BotCommand(command="support", description="التواصل مع الدعم الفني"),
         BotCommand(command="admin", description="👑 لوحة الإدارة"),
         BotCommand(command="pending", description="🛡️ الصفقات المعلقة للاعتماد"),
         BotCommand(command="stats", description="📊 الإحصائيات الشاملة"),

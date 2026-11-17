@@ -153,8 +153,9 @@ async def process_cancel_confirm_yes(callback: CallbackQuery, state: FSMContext)
     """Discard wizard draft data and clear FSM state."""
     await state.clear()
     await callback.message.edit_text(
-        "❌ **تم إلغاء عملية إنشاء العرض**\n\n"
-        "تم مسح كافة البيانات المؤقتة. يمكنك البدء من جديد عبر /create_offer أو من القائمة الرئيسية.",
+        "❌ **تم إلغاء عملية إنشاء العرض**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        "يمكنك البدء من جديد عبر `/create_offer` أو من القائمة الرئيسية.",
         parse_mode="Markdown"
     )
     await callback.answer("تم إلغاء العملية.")
@@ -753,12 +754,10 @@ async def use_saved_payment_method_info(callback: CallbackQuery, state: FSMConte
         return
 
     is_valid, norm_info, err = validate_payment_method_info(cur_method, saved_val)
-    if not is_valid:
-        await callback.answer("البيانات المحفوظة غير متوافقة.", show_alert=True)
-        return
+    final_info = norm_info if is_valid else f"{cur_method}: {saved_val}"
 
     payout_details = dict(data.get("payout_details", {}) or {})
-    payout_details[cur_method] = norm_info
+    payout_details[cur_method] = final_info
     next_idx = idx + 1
     await state.update_data(
         payout_details=payout_details,
@@ -1365,9 +1364,10 @@ async def list_offers(message: Message, db_session: AsyncSession):
     
     if not offers:
         await message.answer(
-            "🏪 **سوق التداول المباشر**\n\n"
+            "📊 **سوق العروض**\n"
+            "〰️〰️〰️〰️〰️〰️〰️\n"
             "لا توجد عروض نشطة في السوق حالياً.\n"
-            "يمكنك إنشاء عرض جديد عبر /create_offer أو من القائمة الرئيسية.",
+            "يمكنك إنشاء عرض جديد عبر `/create_offer` أو من القائمة الرئيسية.",
             parse_mode="Markdown"
         )
         return
@@ -1385,7 +1385,7 @@ async def list_offers(message: Message, db_session: AsyncSession):
         rate_str = format_syp(offer.rate)
         min_str = format_usdt(offer.min_limit)
         max_str = format_usdt(offer.max_limit)
-        offer_type_ar = "🔴 بيع USDT" if offer.offer_type == 'sell' else "🟢 شراء USDT"
+        offer_type_ar = '🔴 بيع "USDT"' if offer.offer_type == 'sell' else '🟢 شراء "USDT"'
         methods_str = format_payment_methods(offer.payment_methods)
         remaining_str = humanize_time_remaining(offer.expires_at, "4 ساعات")
         
@@ -1398,12 +1398,14 @@ async def list_offers(message: Message, db_session: AsyncSession):
         neg_str = neg_type_labels.get(offer.negotiable_type, "غير متاح 🔒") if offer.negotiable else "غير متاح 🔒"
 
         text = (
-            f"🏷️ **عرض #{offer.id} — {offer_type_ar}**\n\n"
-            f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-            f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
-            f"▫️ **وسائل الدفع:** {methods_str}\n"
-            f"▫️ **التفاوض:** {neg_str}\n"
-            f"▫️ **الصلاحية المتبقية:** {remaining_str}"
+            f"📦 **فرصة رقم : {offer.id}** (عرض #{offer.id})\n"
+            f"⚖️ **النوع :** {offer_type_ar}\n"
+            f"〰️〰️〰️〰️〰️〰️〰️\n"
+            f"💰 **الكمية :** من `{min_str}` إلى `{max_str} USDT`\n"
+            f"📊 **سعر الصرف :** `{rate_str}` ل.س\n"
+            f"🏦 **طرق الدفع :** {methods_str}\n"
+            f"🤝 **التفاوض :** {neg_str}\n"
+            f"⏳ **مدة المعاملة :** {remaining_str}"
         )
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 

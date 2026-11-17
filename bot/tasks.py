@@ -9,7 +9,7 @@ from bot.services.channel import update_channel_offer_message
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from bot.utils.formatters import format_usdt, format_syp
+from bot.utils.formatters import format_usdt, format_syp, escape_markdown
 from config.settings import settings
 
 from bot.services.backup_service import perform_and_send_backup
@@ -293,6 +293,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
         logger.error(f"Error querying candidate SYP payment reminder deal IDs: {e}", exc_info=True)
 
     support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip("@")
+    escaped_support = escape_markdown(support_username)
     for deal_id in syp_reminder_ids:
         try:
             async with AsyncSessionLocal() as item_session:
@@ -326,7 +327,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                         f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n"
                         f"▫️ **المبلغ المطلوب بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n\n"
                         f"مرت 30 دقيقة على مرحلة بانتظار تحويل الليرة السورية، ولا تزال الصفقة قائمة والضمان محجوزاً بأمان.\n"
-                        f"⚠️ **يرجى التواصل مع فريق الدعم الفني:** @{support_username}\n"
+                        f"⚠️ **يرجى التواصل مع فريق الدعم الفني:** @{escaped_support}\n"
                         f"قبل تنفيذ التحويل، أو إرفاق إشعار التحويل أدناه إذا قمت بالتحويل بالفعل."
                     )
                     try:

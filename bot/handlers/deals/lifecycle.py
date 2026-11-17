@@ -284,7 +284,7 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
 
 # ================= ACTIVE DEALS LISTING =================
 
-@lifecycle_router.message(Command("my_deals"))
+@lifecycle_router.message(Command("continue", "my_deals"))
 async def my_deals(message: Message, db_session: AsyncSession):
     user_id = message.from_user.id
     is_admin = user_id in settings.ADMIN_IDS
@@ -307,7 +307,10 @@ async def my_deals(message: Message, db_session: AsyncSession):
     deals = result.scalars().all()
 
     if not deals and not admin_pending_deals:
-        await message.answer("ℹ️ ليس لديك أي صفقات نشطة حالياً.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")]
+        ])
+        await message.answer("ℹ️ ليس لديك أي صفقات نشطة حالياً.", reply_markup=kb)
         return
 
     # If admin, show deals awaiting admin approval first
@@ -326,14 +329,23 @@ async def my_deals(message: Message, db_session: AsyncSession):
             await message.answer("📋 **صفقاتك النشطة:**", parse_mode="Markdown")
 
         for deal in deals:
+            old_msg_id = deal.buyer_card_msg_id if deal.buyer_id == user_id else deal.seller_card_msg_id
+            is_seller_proof_photo = (deal.seller_id == user_id and deal.status == "SYP_PAYMENT_SENT")
+            if old_msg_id and not is_seller_proof_photo and hasattr(message, "bot") and message.bot:
+                try:
+                    await message.bot.delete_message(chat_id=user_id, message_id=old_msg_id)
+                except Exception:
+                    pass
+
             offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
             offer = offer_res.scalar_one_or_none()
             is_offer_owner = bool(offer and offer.user_id == user_id)
             card_text, kb = render_deal_card(deal, user_id, is_offer_owner=is_offer_owner)
             sent_msg = await message.answer(card_text, reply_markup=kb, parse_mode="Markdown")
 
-            col = Deal.buyer_card_msg_id if deal.buyer_id == user_id else Deal.seller_card_msg_id
-            await db_session.execute(
-                update(Deal).where(Deal.id == deal.id).values({col: sent_msg.message_id})
-            )
+            if not is_seller_proof_photo:
+                col = Deal.buyer_card_msg_id if deal.buyer_id == user_id else Deal.seller_card_msg_id
+                await db_session.execute(
+                    update(Deal).where(Deal.id == deal.id).values({col: sent_msg.message_id})
+                )
         await db_session.commit()
