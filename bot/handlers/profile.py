@@ -111,7 +111,7 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
         f"▫️ **المستوى:** {tier_badge}\n"
         f"▫️ **نسبة السمعة:** `{rep_score}`\n"
         f"▫️ **الصفقات المكتملة:** `{deals_count}` صفقة\n"
-        f"▫️ **إجمالي حجم التداول:** `{format_usdt(total_volume)}` دولار رقمي\n"
+        f"▫️ **إجمالي حجم التداول:** `{format_usdt(total_volume)} USDT`\n"
         f"{rewards_section}\n"
         "💳 **البيانات المحفوظة:**\n"
         "▫️ **محفظة الاستلام (BEP-20):**\n"
@@ -410,18 +410,18 @@ async def cq_prof_rewards(callback: CallbackQuery, db_session: AsyncSession):
         f"▫️ **المستوى الحالي:** {level_str}\n"
         f"▫️ **رصيد النقاط:** `{points}` نقطة\n\n"
         "🎁 **جوائز الاستبدال:**\n"
-        "▫️ `500` نقطة = `5` دولار رقمي\n"
-        "▫️ `1500` نقطة = `17` دولار رقمي\n"
-        "▫️ `3000` نقطة = `35` دولار رقمي"
+        "▫️ `500` نقطة = `5 USDT`\n"
+        "▫️ `1500` نقطة = `17 USDT`\n"
+        "▫️ `3000` نقطة = `35 USDT`"
     )
 
     buttons = []
     if points >= 500:
-        buttons.append([InlineKeyboardButton(text="استبدال 500 نقطة بـ 5 دولار رقمي", callback_data="claim_points_500")])
+        buttons.append([InlineKeyboardButton(text="استبدال 500 نقطة بـ 5 USDT", callback_data="claim_points_500")])
     if points >= 1500:
-        buttons.append([InlineKeyboardButton(text="استبدال 1500 نقطة بـ 17 دولار رقمي", callback_data="claim_points_1500")])
+        buttons.append([InlineKeyboardButton(text="استبدال 1500 نقطة بـ 17 USDT", callback_data="claim_points_1500")])
     if points >= 3000:
-        buttons.append([InlineKeyboardButton(text="استبدال 3000 نقطة بـ 35 دولار رقمي", callback_data="claim_points_3000")])
+        buttons.append([InlineKeyboardButton(text="استبدال 3000 نقطة بـ 35 USDT", callback_data="claim_points_3000")])
 
     buttons.append([InlineKeyboardButton(text="🔙 العودة للملف الشخصي", callback_data="menu_user_profile")])
     
@@ -459,13 +459,13 @@ async def cq_claim_points(callback: CallbackQuery, db_session: AsyncSession):
     user.reward_points -= req_points
     await db_session.commit()
 
-    await callback.answer(f"تم تقديم طلب استبدال {reward_usdt} دولار رقمي بنجاح.", show_alert=True)
+    await callback.answer(f"تم تقديم طلب استبدال {reward_usdt} USDT بنجاح.", show_alert=True)
     
     admin_text = (
         "🎁 **طلب استبدال نقاط جديد**\n\n"
         f"▫️ **المستخدم:** {safe_username(user.username, user.telegram_id)}\n"
         f"▫️ **النقاط المستبدلة:** `{req_points}` نقطة\n"
-        f"▫️ **المكافأة المستحقة:** `{reward_usdt}` دولار رقمي\n"
+        f"▫️ **المكافأة المستحقة:** `{reward_usdt} USDT`\n"
         f"▫️ **محفظة الاستلام:**\n`{escape_markdown(user.saved_usdt_address or 'غير محددة')}`"
     )
     for admin_id in settings.ADMIN_IDS:

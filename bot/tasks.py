@@ -204,7 +204,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                         f"▫️ **رقم الصفقة:** #{deal_id_val}\n"
                         f"▫️ **البائع:** `{seller_id_val}`\n"
                         f"▫️ **المشتري:** `{buyer_id_val}`\n"
-                        f"▫️ **الكمية:** `{format_usdt(amount_usdt_val)}` دولار رقمي\n"
+                        f"▫️ **الكمية:** `{format_usdt(amount_usdt_val)} USDT`\n"
                         f"▫️ **المقابل:** `{format_syp(amount_syp_val)}` ل.س\n\n"
                         f"تم إلغاء الصفقة لعدم إيداع الضمان خلال 15 دقيقة، وإعادة العرض متاحاً في القناة."
                     )
@@ -323,7 +323,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     ])
                     reminder_text = (
                         f"⏰ **تذكير مهلة التحويل — صفقة #{deal_id_val}**\n\n"
-                        f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)}` دولار رقمي\n"
+                        f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n"
                         f"▫️ **المبلغ المطلوب بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n\n"
                         f"مرت 30 دقيقة على مرحلة بانتظار تحويل الليرة السورية، ولا تزال الصفقة قائمة والضمان محجوزاً بأمان.\n"
                         f"⚠️ **يرجى التواصل مع فريق الدعم الفني:** @{support_username}\n"

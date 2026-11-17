@@ -186,23 +186,23 @@ async def _render_current_step(message: Message, state: FSMContext, db_session: 
         await message.edit_text(
             "📝 **إنشاء عرض تداول جديد**\n\n"
             "حدد نوع العملية التي ترغب بنشرها في السوق:\n\n"
-            "▫️ 🔴 **بيع دولار رقمي:** تقديم الدولار الرقمي واستلام ليرة سورية.\n"
-            "▫️ 🟢 **شراء دولار رقمي:** دفع ليرة سورية واستلام الدولار الرقمي.",
+            "▫️ 🔴 **بيع USDT:** تقديم `USDT` واستلام ليرة سورية.\n"
+            "▫️ 🟢 **شراء USDT:** دفع ليرة سورية واستلام `USDT`.",
             reply_markup=kb,
             parse_mode="Markdown"
         )
     elif cur_state == OfferCreateFSM.waiting_for_rate.state:
-        offer_type_ar = "🔴 بيع دولار رقمي" if data.get("offer_type") == "sell" else "🟢 شراء دولار رقمي"
+        offer_type_ar = "🔴 بيع USDT" if data.get("offer_type") == "sell" else "🟢 شراء USDT"
         await message.edit_text(
             f"📝 **إنشاء عرض جديد — {offer_type_ar}**\n\n"
-            f"💵 أدخل سعر الصرف بالليرة السورية مقابل وحدة واحدة من الدولار الرقمي:",
+            f"💵 أدخل سعر الصرف بالليرة السورية مقابل كل `1 USDT`:",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
             parse_mode="Markdown"
         )
     elif cur_state == OfferCreateFSM.waiting_for_min_limit.state:
         await message.edit_text(
             "📝 **إنشاء عرض جديد — الحد الأدنى**\n\n"
-            "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة الواحدة (بالدولار الرقمي):",
+            "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة الواحدة (بـ `USDT`):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
             parse_mode="Markdown"
         )
@@ -210,8 +210,8 @@ async def _render_current_step(message: Message, state: FSMContext, db_session: 
         min_str = format_usdt(Decimal(str(data.get("min_limit", "0"))))
         await message.edit_text(
             f"📝 **إنشاء عرض جديد — الحد الأقصى**\n"
-            f"▫️ **الحد الأدنى المسجل:** `{min_str}` دولار رقمي\n\n"
-            f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة (بالدولار الرقمي):",
+            f"▫️ **الحد الأدنى المسجل:** `{min_str} USDT`\n\n"
+            f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة (بـ `USDT`):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
             parse_mode="Markdown"
         )
@@ -270,8 +270,8 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
     await message.answer(
         "📝 **إنشاء عرض تداول جديد**\n\n"
         "حدد نوع العملية التي ترغب بنشرها في السوق:\n\n"
-        "▫️ 🔴 **بيع دولار رقمي:** تقديم الدولار الرقمي واستلام ليرة سورية.\n"
-        "▫️ 🟢 **شراء دولار رقمي:** دفع ليرة سورية واستلام الدولار الرقمي.",
+        "▫️ 🔴 **بيع USDT:** تقديم `USDT` واستلام ليرة سورية.\n"
+        "▫️ 🟢 **شراء USDT:** دفع ليرة سورية واستلام `USDT`.",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -282,7 +282,7 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
 async def process_offer_type(callback: CallbackQuery, state: FSMContext):
     """Capture offer type and advance to rate input."""
     offer_type = callback.data.split("_")[-1]
-    offer_type_ar = "🔴 بيع دولار رقمي" if offer_type == "sell" else "🟢 شراء دولار رقمي"
+    offer_type_ar = "🔴 بيع USDT" if offer_type == "sell" else "🟢 شراء USDT"
     data = await state.get_data()
     history = push_wizard_step(data.get("step_history", []), "type", {"offer_type": offer_type})
 
@@ -292,7 +292,7 @@ async def process_offer_type(callback: CallbackQuery, state: FSMContext):
     )
     await callback.message.edit_text(
         f"📝 **إنشاء عرض جديد — {offer_type_ar}**\n\n"
-        f"💵 أدخل سعر الصرف بالليرة السورية مقابل وحدة واحدة من الدولار الرقمي:",
+        f"💵 أدخل سعر الصرف بالليرة السورية مقابل كل `1 USDT`:",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
         parse_mode="Markdown"
     )
@@ -317,8 +317,8 @@ async def back_to_offer_type(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "📝 **إنشاء عرض تداول جديد**\n\n"
         "حدد نوع العملية التي ترغب بنشرها في السوق:\n\n"
-        "▫️ 🔴 **بيع دولار رقمي:** تقديم الدولار الرقمي واستلام ليرة سورية.\n"
-        "▫️ 🟢 **شراء دولار رقمي:** دفع ليرة سورية واستلام الدولار الرقمي.",
+        "▫️ 🔴 **بيع USDT:** تقديم `USDT` واستلام ليرة سورية.\n"
+        "▫️ 🟢 **شراء USDT:** دفع ليرة سورية واستلام `USDT`.",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -353,7 +353,7 @@ async def process_offer_rate(message: Message, state: FSMContext):
         await message.answer(
             f"📝 **إنشاء عرض جديد — الحد الأدنى**\n"
             f"▫️ **سعر الصرف المعتمد:** `{rate_str}` ل.س\n\n"
-            f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة الواحدة (بالدولار الرقمي):",
+            f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة الواحدة (بـ `USDT`):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
             parse_mode="Markdown"
         )
@@ -370,10 +370,10 @@ async def process_offer_rate(message: Message, state: FSMContext):
 async def edit_rate_input(callback: CallbackQuery, state: FSMContext):
     """Prompt user to re-enter exchange rate."""
     data = await state.get_data()
-    offer_type_ar = "🔴 بيع دولار رقمي" if data.get("offer_type") == "sell" else "🟢 شراء دولار رقمي"
+    offer_type_ar = "🔴 بيع USDT" if data.get("offer_type") == "sell" else "🟢 شراء USDT"
     await callback.message.edit_text(
         f"📝 **تعديل السعر — {offer_type_ar}**\n\n"
-        f"💵 أدخل سعر الصرف الجديد بالليرة السورية مقابل وحدة واحدة من الدولار الرقمي:",
+        f"💵 أدخل سعر الصرف الجديد بالليرة السورية مقابل كل `1 USDT`:",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
         parse_mode="Markdown"
     )
@@ -389,10 +389,10 @@ async def edit_rate_input(callback: CallbackQuery, state: FSMContext):
 async def back_to_rate(callback: CallbackQuery, state: FSMContext):
     """Navigate back from Min Limit to Rate input."""
     data = await state.get_data()
-    offer_type_ar = "🔴 بيع دولار رقمي" if data.get("offer_type") == "sell" else "🟢 شراء دولار رقمي"
+    offer_type_ar = "🔴 بيع USDT" if data.get("offer_type") == "sell" else "🟢 شراء USDT"
     await callback.message.edit_text(
         f"📝 **إنشاء عرض جديد — {offer_type_ar}**\n\n"
-        f"💵 أدخل سعر الصرف بالليرة السورية مقابل وحدة واحدة من الدولار الرقمي:",
+        f"💵 أدخل سعر الصرف بالليرة السورية مقابل كل `1 USDT`:",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
         parse_mode="Markdown"
     )
@@ -430,8 +430,8 @@ async def process_min_limit(message: Message, state: FSMContext):
         min_str = format_usdt(min_limit)
         await message.answer(
             f"📝 **إنشاء عرض جديد — الحد الأقصى**\n"
-            f"▫️ **الحد الأدنى المسجل:** `{min_str}` دولار رقمي\n\n"
-            f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة (يجب أن يكون أكبر من أو يساوي `{min_str}` دولار رقمي):",
+            f"▫️ **الحد الأدنى المسجل:** `{min_str} USDT`\n\n"
+            f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة (يجب أن يكون أكبر من أو يساوي `{min_str} USDT`):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
             parse_mode="Markdown"
         )
@@ -439,7 +439,7 @@ async def process_min_limit(message: Message, state: FSMContext):
     except Exception:
         await message.answer(
             "⚠️ **قيمة غير صالحة**\n\n"
-            "يرجى إدخال رقم صحيح وموجب للحد الأدنى (بالدولار الرقمي):",
+            "يرجى إدخال رقم صحيح وموجب للحد الأدنى (بـ `USDT`):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
             parse_mode="Markdown"
         )
@@ -449,7 +449,7 @@ async def edit_min_limit_input(callback: CallbackQuery, state: FSMContext):
     """Prompt user to re-enter min limit."""
     await callback.message.edit_text(
         "📝 **تعديل الحد الأدنى**\n\n"
-        "📦 أدخل الحد الأدنى الجديد للكمية المسموح بها في الصفقة (بالدولار الرقمي):",
+        "📦 أدخل الحد الأدنى الجديد للكمية المسموح بها في الصفقة (بـ `USDT`):",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
         parse_mode="Markdown"
     )
@@ -466,7 +466,7 @@ async def back_to_min_limit(callback: CallbackQuery, state: FSMContext):
     """Navigate back from Max Limit to Min Limit input."""
     await callback.message.edit_text(
         "📝 **إنشاء عرض جديد — الحد الأدنى**\n\n"
-        "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة الواحدة (بالدولار الرقمي):",
+        "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة الواحدة (بـ `USDT`):",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
         parse_mode="Markdown"
     )
@@ -488,7 +488,7 @@ async def process_max_limit(message: Message, state: FSMContext):
         if max_limit < min_limit:
             await message.answer(
                 f"⚠️ **الحد الأقصى غير متطابق**\n\n"
-                f"يجب أن يكون أكبر من أو يساوي الحد الأدنى (`{format_usdt(min_limit)}` دولار رقمي).\n"
+                f"يجب أن يكون أكبر من أو يساوي الحد الأدنى (`{format_usdt(min_limit)} USDT`).\n"
                 f"يرجى إعادة إدخال الحد الأقصى:",
                 reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
                 parse_mode="Markdown"
@@ -520,7 +520,7 @@ async def process_max_limit(message: Message, state: FSMContext):
     except Exception:
         await message.answer(
             "⚠️ **قيمة غير صالحة**\n\n"
-            "يرجى إدخال رقم صحيح وموجب للحد الأقصى (بالدولار الرقمي):",
+            "يرجى إدخال رقم صحيح وموجب للحد الأقصى (بـ `USDT`):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
             parse_mode="Markdown"
         )
@@ -532,8 +532,8 @@ async def edit_max_limit_input(callback: CallbackQuery, state: FSMContext):
     min_str = format_usdt(Decimal(str(data.get("min_limit", "0"))))
     await callback.message.edit_text(
         f"📝 **تعديل الحد الأقصى**\n"
-        f"▫️ **الحد الأدنى المسجل:** `{min_str}` دولار رقمي\n\n"
-        f"📦 أدخل الحد الأقصى الجديد للكمية (بالدولار الرقمي):",
+        f"▫️ **الحد الأدنى المسجل:** `{min_str} USDT`\n\n"
+        f"📦 أدخل الحد الأقصى الجديد للكمية (بـ `USDT`):",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
         parse_mode="Markdown"
     )
@@ -1321,7 +1321,7 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
     rate_str = format_syp(new_offer.rate)
     min_str = format_usdt(new_offer.min_limit)
     max_str = format_usdt(new_offer.max_limit)
-    offer_type_ar = "🔴 بيع دولار رقمي" if new_offer.offer_type == 'sell' else "🟢 شراء دولار رقمي"
+    offer_type_ar = "🔴 بيع USDT" if new_offer.offer_type == 'sell' else "🟢 شراء USDT"
     methods_str = format_payment_methods(new_offer.payment_methods)
 
     neg_type_labels = {
@@ -1336,7 +1336,7 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         f"✅ **تم نشر العرض بنجاح — عرض #{new_offer.id}**\n\n"
         f"▫️ **النوع:** {offer_type_ar}\n"
         f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-        f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+        f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
         f"▫️ **وسائل الدفع:** {methods_str}\n"
         f"▫️ **التفاوض:** {neg_status_ar}\n"
         f"▫️ **مدة الصلاحية:** {duration_str}\n\n"
@@ -1392,7 +1392,7 @@ async def list_offers(message: Message, db_session: AsyncSession):
         rate_str = format_syp(offer.rate)
         min_str = format_usdt(offer.min_limit)
         max_str = format_usdt(offer.max_limit)
-        offer_type_ar = "🔴 بيع دولار رقمي" if offer.offer_type == 'sell' else "🟢 شراء دولار رقمي"
+        offer_type_ar = "🔴 بيع USDT" if offer.offer_type == 'sell' else "🟢 شراء USDT"
         methods_str = format_payment_methods(offer.payment_methods)
         remaining_str = humanize_time_remaining(offer.expires_at, "4 ساعات")
         
@@ -1407,7 +1407,7 @@ async def list_offers(message: Message, db_session: AsyncSession):
         text = (
             f"🏷️ **عرض #{offer.id} — {offer_type_ar}**\n\n"
             f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+            f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
             f"▫️ **وسائل الدفع:** {methods_str}\n"
             f"▫️ **التفاوض:** {neg_str}\n"
             f"▫️ **الصلاحية المتبقية:** {remaining_str}"

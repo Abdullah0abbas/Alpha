@@ -110,10 +110,10 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
         f"📋 **بيانات العرض:**\n"
         f"▫️ **النوع:** {offer_type_ar}\n"
         f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-        f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+        f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
         f"▫️ **وسائل الدفع:** {methods_str}\n"
         f"▫️ **دورك في الصفقة:** **{taker_role_ar}**\n\n"
-        f"⌨️ **أدخل كمية الدولار الرقمي المطلوبة للتداول:**",
+        f"⌨️ **أدخل كمية `USDT` المطلوبة للتداول:**",
         reply_markup=cancel_kb,
         parse_mode="Markdown"
     )
@@ -134,7 +134,7 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
     except Exception:
         await message.answer(
             "⚠️ **قيمة غير صحيحة**\n\n"
-            "يرجى إدخال رقم صحيح وموجب يعبّر عن الكمية المطلوبة من الدولار الرقمي:",
+            "يرجى إدخال رقم صحيح وموجب يعبّر عن الكمية المطلوبة (بـ `USDT`):",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -149,8 +149,8 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
     if amount_usdt < min_limit or amount_usdt > max_limit:
         await message.answer(
             f"⚠️ **الكمية المدخلة خارج الحدود المسموحة**\n\n"
-            f"▫️ **الحد الأدنى:** `{min_str}` دولار رقمي\n"
-            f"▫️ **الحد الأقصى:** `{max_str}` دولار رقمي\n\n"
+            f"▫️ **الحد الأدنى:** `{min_str} USDT`\n"
+            f"▫️ **الحد الأقصى:** `{max_str} USDT`\n\n"
             f"⌨️ يرجى إدخال كمية ضمن هذا النطاق:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
@@ -179,7 +179,7 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
         await state.set_state(DealCreateFSM.waiting_for_payment_method)
         prompt_msg = (
             f"💳 **اختيار وسيلة الدفع بالليرة السورية**\n\n"
-            f"▫️ **الكمية المطلوبة:** `{format_usdt(amount_usdt)}` دولار رقمي\n"
+            f"▫️ **الكمية المطلوبة:** `{format_usdt(amount_usdt)} USDT`\n"
             f"▫️ **المبلغ المقابل:** `{format_syp(amount_syp)}` ل.س\n\n"
             f"يدعم هذا العرض عدة وسائل دفع. اختر الوسيلة المناسبة لك من الأزرار أدناه:"
         )

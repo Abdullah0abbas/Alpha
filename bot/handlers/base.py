@@ -113,7 +113,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                     f"🏷️ **تفاصيل العرض #{offer.id}**\n\n"
                     f"▫️ **نوع العرض:** {offer_type_label}\n"
                     f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-                    f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+                    f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
                     f"▫️ **وسائل الدفع:** {methods_str}\n"
                     f"▫️ **التفاوض:** {neg_str}\n\n"
                     f"{format_fee_rule_line()}\n\n"
@@ -135,7 +135,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
     user_label = f"@{username}" if username else f"ID: {user_id}"
     welcome_text = (
         f"\u200f🛡️ **{BOT_NAME}**\n\n"
-        "منصة تداول مباشر للدولار الرقمي مقابل الليرة السورية عبر آلية ضمان تحفظ الرصيد حتى اكتمال الصفقة.\n\n"
+        "منصة تداول مباشر لـ `USDT` مقابل الليرة السورية عبر آلية ضمان تحفظ الرصيد حتى اكتمال الصفقة.\n\n"
         f"👤 **الحساب:** `{user_label}`\n\n"
         "اختر من القائمة أدناه:"
     )
@@ -191,8 +191,8 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
     text = (
         "➕ **إنشاء عرض تداول جديد**\n\n"
         "حدد نوع العرض الذي ترغب بطرحه في السوق:\n\n"
-        "▫️ 🟢 **شراء دولار رقمي:** تدفع ليرة سورية وتستلم الدولار الرقمي.\n"
-        "▫️ 🔴 **بيع دولار رقمي:** تقدم الدولار الرقمي وتستلم ليرة سورية."
+        "▫️ 🟢 **شراء USDT:** تدفع ليرة سورية وتستلم `USDT`.\n"
+        "▫️ 🔴 **بيع USDT:** تقدم `USDT` وتستلم ليرة سورية."
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -221,8 +221,8 @@ async def cq_menu_browse_offers(callback: CallbackQuery):
     text = (
         "🔍 **تصفح العروض المتاحة**\n\n"
         "حدد فئة العروض التي تبحث عنها:\n\n"
-        "▫️ 🟢 **أريد الشراء:** استعراض البائعين المعلنين لشراء الدولار الرقمي منهم.\n"
-        "▫️ 🔴 **أريد البيع:** استعراض المشترين المعلنين لبيع الدولار الرقمي لهم.\n"
+        "▫️ 🟢 **أريد الشراء:** استعراض البائعين المعلنين لشراء `USDT` منهم.\n"
+        "▫️ 🔴 **أريد البيع:** استعراض المشترين المعلنين لبيع `USDT` لهم.\n"
         "▫️ 🌐 **كافة العروض:** استعراض جميع العروض النشطة في السوق."
     )
     try:
@@ -302,7 +302,7 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         text_lines.append(
             f"🏷️ **عرض #{off.id}** — {off_type}\n"
             f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+            f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
             f"▫️ **وسائل الدفع:** {methods}\n"
             f"▫️ **التفاوض:** {neg}\n"
             f"▫️ **الصلاحية المتبقية:** {remaining}\n"
@@ -397,7 +397,7 @@ async def cq_menu_my_offers(callback: CallbackQuery, db_session: AsyncSession):
             f"🏷️ **عرض #{off.id}** — {type_str}\n"
             f"▫️ **الحالة:** {badge}\n"
             f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+            f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
         )
 
         row = []

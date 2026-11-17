@@ -124,7 +124,7 @@ def is_wizard_data_complete(wizard_data: dict) -> Tuple[bool, str]:
 def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str:
     """Format full, clean summary markdown for the offer owner before publication."""
     offer_type = wizard_data.get("offer_type", "")
-    type_ar = "🔴 بيع دولار رقمي (استلام ليرة سورية)" if offer_type == "sell" else "🟢 شراء دولار رقمي (دفع ليرة سورية)"
+    type_ar = "🔴 بيع USDT (استلام ليرة سورية)" if offer_type == "sell" else "🟢 شراء USDT (دفع ليرة سورية)"
 
     rate_val = wizard_data.get("rate", "0")
     try:
@@ -192,7 +192,7 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
         "",
         f"▫️ **النوع:** {type_ar}",
         f"▫️ **سعر الصرف:** `{rate_str}` ل.س",
-        f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي",
+        f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`",
         f"▫️ **وسائل الدفع:** {methods_str}",
         f"▫️ **التفاوض:** {neg_str}",
         f"▫️ **مدة الصلاحية:** {dur_str}",

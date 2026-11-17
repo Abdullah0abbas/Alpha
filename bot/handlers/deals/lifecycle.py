@@ -133,7 +133,7 @@ async def ask_cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
 
     text = (
         f"⚠️ **تأكيد إلغاء الصفقة — صفقة #{deal.id}**\n\n"
-        f"▫️ **الكمية:** `{usdt_str}` دولار رقمي\n"
+        f"▫️ **الكمية:** `{usdt_str} USDT`\n"
         f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
         f"سيتم إلغاء الصفقة وإعادة العرض إلى السوق.\n"
         f"تنبيه: لا يمكن التراجع عن هذا الإجراء بعد تنفيذه. هل ترغب بالمتابعة؟"
@@ -172,7 +172,7 @@ async def cq_back_cancel_deal(callback: CallbackQuery, db_session: AsyncSession)
             f"⏳ **طلب صفقة جديدة #{deal.id}**\n\n"
             f"▫️ **الحالة:** بانتظار موافقة الطرف الآخر\n"
             f"▫️ **دورك في الصفقة:** {role}\n"
-            f"▫️ **الكمية:** `{usdt_str}` دولار رقمي\n"
+            f"▫️ **الكمية:** `{usdt_str} USDT`\n"
             f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n"
             f"▫️ **المهلة المتاحة:** 30 دقيقة\n\n"
             f"تم إرسال إشعار لصاحب العرض، وسيصلك تنبيه فور اتخاذ قراره."

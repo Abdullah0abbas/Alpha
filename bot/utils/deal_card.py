@@ -293,7 +293,7 @@ def render_deal_card(
 
     lines.append("\n💰 **البيانات المالية:**")
     lines.append(f"▫️ **دورك في الصفقة:** {role_label}")
-    lines.append(f"▫️ **الكمية:** `{usdt_str}` دولار رقمي")
+    lines.append(f"▫️ **الكمية:** `{usdt_str} USDT`")
     lines.append(f"▫️ **الإجمالي:** `{syp_str}` ل.س")
     lines.append(f"▫️ **سعر الصرف:** `{rate_str}` ل.س")
 
@@ -308,18 +308,18 @@ def render_deal_card(
     if is_buyer:
         net_buyer_str = format_usdt(deal.amount_usdt - buyer_fee)
         if buyer_fee > Decimal("0"):
-            lines.append(f"▫️ **صافي الاستلام:** `{net_buyer_str}` دولار رقمي (العمولة: `{format_usdt(buyer_fee)}` دولار رقمي)")
+            lines.append(f"▫️ **صافي الاستلام:** `{net_buyer_str} USDT` (العمولة: `{format_usdt(buyer_fee)} USDT`)")
         else:
-            lines.append(f"▫️ **صافي الاستلام:** `{net_buyer_str}` دولار رقمي (العمولة: مجانية)")
+            lines.append(f"▫️ **صافي الاستلام:** `{net_buyer_str} USDT` (العمولة: مجانية)")
 
     if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and is_seller:
         total_dep = deal.amount_usdt + seller_fee
         total_dep_str = format_usdt(total_dep)
         lines.append("\n🔐 **بيانات الإيداع:**")
         if seller_fee > Decimal("0"):
-            lines.append(f"▫️ **المطلوب إيداعه:** `{total_dep_str}` دولار رقمي (العمولة: `{format_usdt(seller_fee)}` دولار رقمي)")
+            lines.append(f"▫️ **المطلوب إيداعه:** `{total_dep_str} USDT` (العمولة: `{format_usdt(seller_fee)} USDT`)")
         else:
-            lines.append(f"▫️ **المطلوب إيداعه:** `{total_dep_str}` دولار رقمي (العمولة: مجانية)")
+            lines.append(f"▫️ **المطلوب إيداعه:** `{total_dep_str} USDT` (العمولة: مجانية)")
         lines.append("▫️ **الشبكة المعتمدة:**")
         lines.append("`BEP-20`")
         lines.append(f"📥 **محفظة الإيداع:**\n`{deal.deposit_address}`")

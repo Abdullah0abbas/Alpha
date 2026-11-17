@@ -100,7 +100,7 @@ async def forward_proof_photo_to_seller(deal: Deal, photo_file_id: str, bot: Bot
         f"📍 **المرحلة:** الخطوة 5 من 7 — تأكيد استلام المبلغ\n\n"
         f"▫️ **دورك بالصفقة:** 🔴 بائع\n"
         f"▫️ **المبلغ المطلوب استلامه:** `{syp_str}` ل.س\n"
-        f"▫️ **رصيد الضمان المقابل:** `{usdt_str}` دولار رقمي\n"
+        f"▫️ **رصيد الضمان المقابل:** `{usdt_str} USDT`\n"
         f"▫️ **حساب الاستلام:**\n{payment_info_str}\n\n"
         f"📸 **المرفق:** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
         f"⚠️ **تنبيه:** يرجى التحقق من وصول كامل المبلغ إلى حسابك قبل الضغط على زر التأكيد."
@@ -608,7 +608,7 @@ async def start_set_buyer_payout(callback: CallbackQuery, state: FSMContext, db_
     if is_saved_valid:
         # Show explicit Confirmation Gate
         gate_text = (
-            f"📥 **محفظة استلام الدولار الرقمي — صفقة #{deal.id}**\n\n"
+            f"📥 **محفظة استلام `USDT` — صفقة #{deal.id}**\n\n"
             f"▫️ **الشبكة:** `BEP-20`\n"
             f"▫️ **العنوان المحفوظ بملفك:**\n"
             f"`{escape_markdown(normalized_saved)}`\n\n"
@@ -635,7 +635,7 @@ async def start_set_buyer_payout(callback: CallbackQuery, state: FSMContext, db_
     curr_addr_str = f"\n▫️ **العنوان المسجل حالياً:**\n`{escape_markdown(curr_addr)}`\n" if curr_addr and curr_addr not in ["PENDING", "غير محدد", "N/A"] else ""
 
     await callback.message.answer(
-        f"📥 **محفظة استلام الدولار الرقمي — صفقة #{deal.id}**\n"
+        f"📥 **محفظة استلام `USDT` — صفقة #{deal.id}**\n"
         f"{curr_addr_str}\n"
         f"▫️ **الشبكة المطلوبة:** `BNB Smart Chain (BEP-20)`\n\n"
         f"أرسل عنوان محفظتك الخاصة لتلقي الرصيد عليها فور اعتماد الإدارة:",

@@ -124,8 +124,8 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
         await callback.message.answer(
             f"🤝 **بدء جلسة تفاوض — عرض #{offer.id}**\n\n"
             f"▫️ **سعر الصرف الحالي:** `{rate_str}` ل.س\n"
-            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n\n"
-            f"⌨️ أدخل الكمية المقترحة للتداول (بالدولار الرقمي):",
+            f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n\n"
+            f"⌨️ أدخل الكمية المقترحة للتداول (بـ `USDT`):",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -134,8 +134,8 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
         await callback.message.answer(
             f"🤝 **بدء جلسة تفاوض على السعر — عرض #{offer.id}**\n\n"
             f"▫️ **سعر الصرف الحالي:** `{rate_str}` ل.س\n"
-            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n\n"
-            f"⌨️ أدخل أولاً الكمية التي ترغب بتداولها ضمن الحدود (بالدولار الرقمي):",
+            f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n\n"
+            f"⌨️ أدخل أولاً الكمية التي ترغب بتداولها ضمن الحدود (بـ `USDT`):",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -144,7 +144,7 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
         await state.update_data(proposed_amount=str(offer.min_limit))
         await callback.message.answer(
             f"🤝 **بدء جلسة تفاوض على السعر — عرض #{offer.id}**\n\n"
-            f"▫️ **الكمية الثابتة للعرض:** `{min_str}` دولار رقمي\n"
+            f"▫️ **الكمية الثابتة للعرض:** `{min_str} USDT`\n"
             f"▫️ **سعر الصرف الحالي:** `{rate_str}` ل.س\n\n"
             f"⌨️ أدخل سعر الصرف المقترح بالليرة السورية:",
             reply_markup=cancel_kb,
@@ -174,7 +174,7 @@ async def process_taker_amount(message: Message, state: FSMContext):
     if (min_limit > 0 and amount_val < min_limit) or (max_limit > 0 and amount_val > max_limit):
         await message.answer(
             "⚠️ **الكمية خارج حدود العرض**\n\n"
-            f"▫️ **الحدود المتاحة:** من `{format_usdt(min_limit)}` إلى `{format_usdt(max_limit)}` دولار رقمي\n\n"
+            f"▫️ **الحدود المتاحة:** من `{format_usdt(min_limit)} USDT` إلى `{format_usdt(max_limit)} USDT`\n\n"
             "يرجى إدخال كمية ضمن هذا النطاق:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
@@ -186,7 +186,7 @@ async def process_taker_amount(message: Message, state: FSMContext):
     if data.get("negotiable_type") in ("both", "rate"):
         rate_str = format_syp(Decimal(data['current_rate']))
         await message.answer(
-            f"▫️ **الكمية المقترحة:** `{format_usdt(amount_val)}` دولار رقمي\n"
+            f"▫️ **الكمية المقترحة:** `{format_usdt(amount_val)} USDT`\n"
             f"▫️ **سعر الصرف الحالي:** `{rate_str}` ل.س\n\n"
             "⌨️ أدخل الآن سعر الصرف المقترح بالليرة السورية:",
             reply_markup=cancel_kb,
@@ -297,7 +297,7 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
 
     await message.answer(
         f"📨 **تم إرسال طلب التفاوض — عرض #{offer_id}**\n\n"
-        f"▫️ **الكمية المقترحة:** `{amount_str}` دولار رقمي\n"
+        f"▫️ **الكمية المقترحة:** `{amount_str} USDT`\n"
         f"▫️ **سعر الصرف المقترح:** `{rate_str}` ل.س\n"
         f"▫️ **القيمة الإجمالية:** `{total_syp_str}` ل.س\n"
         f"▫️ **مهلة الرد:** 30 دقيقة\n\n"
@@ -317,7 +317,7 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
 
     maker_text = (
         f"🔔 **طلب تفاوض جديد على عرضك #{offer_id}**\n\n"
-        f"▫️ **الكمية المقترحة:** `{amount_str}` دولار رقمي\n"
+        f"▫️ **الكمية المقترحة:** `{amount_str} USDT`\n"
         f"▫️ **السعر المقترح:** `{rate_str}` ل.س\n"
         f"▫️ **القيمة الإجمالية:** `{total_syp_str}` ل.س\n"
         f"▫️ **سجل الطرف المفاوض:** `{taker_completed_count}` صفقة مكتملة\n"
@@ -473,9 +473,9 @@ async def maker_start_counter(callback: CallbackQuery, db_session: AsyncSession,
     if neg_type in ["amount", "both"]:
         await callback.message.answer(
             f"🔄 **تقديم عرض مضاد — جلسة #{neg.id}**\n\n"
-            f"▫️ **الكمية المقترحة حالياً:** `{format_usdt(neg.proposed_amount)}` دولار رقمي\n"
+            f"▫️ **الكمية المقترحة حالياً:** `{format_usdt(neg.proposed_amount)} USDT`\n"
             f"▫️ **سعر الصرف المقترح حالياً:** `{format_syp(neg.proposed_rate)}` ل.س\n\n"
-            "⌨️ أدخل الكمية النهائية التي تقترحها (بالدولار الرقمي):",
+            "⌨️ أدخل الكمية النهائية التي تقترحها (بـ `USDT`):",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -511,7 +511,7 @@ async def process_maker_counter_amount(message: Message, state: FSMContext):
 
     if data.get("negotiable_type") == "both":
         await message.answer(
-            f"▫️ **الكمية المسجلة:** `{format_usdt(amount_val)}` دولار رقمي\n\n"
+            f"▫️ **الكمية المسجلة:** `{format_usdt(amount_val)} USDT`\n\n"
             "⌨️ أدخل السعر النهائي المقترح بالليرة السورية:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
@@ -585,7 +585,7 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
 
     await message.answer(
         "📨 **تم إرسال العرض المضاد بنجاح**\n\n"
-        f"▫️ **الكمية المقترحة:** `{amount_str}` دولار رقمي\n"
+        f"▫️ **الكمية المقترحة:** `{amount_str} USDT`\n"
         f"▫️ **سعر الصرف النهائي:** `{rate_str}` ل.س\n"
         f"▫️ **الإجمالي:** `{total_syp_str}` ل.س\n"
         "▫️ **مهلة الرد:** 30 دقيقة\n\n"
@@ -602,7 +602,7 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
 
     taker_text = (
         f"🔄 **وصلك عرض مضاد — عرض #{neg.offer_id}**\n\n"
-        f"▫️ **الكمية المقترحة:** `{amount_str}` دولار رقمي\n"
+        f"▫️ **الكمية المقترحة:** `{amount_str} USDT`\n"
         f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
         f"▫️ **الإجمالي:** `{total_syp_str}` ل.س\n"
         f"▫️ **سجل صاحب العرض:** `{maker_completed_count}` صفقة مكتملة\n"

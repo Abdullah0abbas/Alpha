@@ -59,7 +59,7 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
     total_deposit_usdt = deal.amount_usdt + seller_fee
     total_deposit_str = format_usdt(total_deposit_usdt)
 
-    fee_note = f"\n▫️ **عمولة البائع المشمولة:** `{format_usdt(seller_fee)}` دولار رقمي" if seller_fee > 0 else ""
+    fee_note = f"\n▫️ **عمولة البائع المشمولة:** `{format_usdt(seller_fee)} USDT`" if seller_fee > 0 else ""
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ تأكيد إيداع رصيد الضمان", callback_data=f"man_dep_{deal.id}")]
@@ -67,7 +67,7 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
     escaped_deposit = escape_markdown(deal.deposit_address)
     await callback.message.edit_text(
         f"🔐 **صفقة #{deal.id} — مطلوب إيداع الضمان**\n\n"
-        f"▫️ **المبلغ المطلوب تحويله:** `{total_deposit_str}` دولار رقمي{fee_note}\n"
+        f"▫️ **المبلغ المطلوب تحويله:** `{total_deposit_str} USDT`{fee_note}\n"
         f"▫️ **المقابل بالليرة السورية:** `{syp_str}` ل.س\n"
         f"▫️ **المهلة المتاحة:** 15 دقيقة\n"
         f"▫️ **الشبكة:** `BEP-20`\n\n"
@@ -85,7 +85,7 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
             text=(
                 f"ℹ️ **تحديث صفقة #{deal.id}**\n\n"
                 f"▫️ **دورك:** 🟢 مشتري\n"
-                f"▫️ **الكمية:** `{usdt_str}` دولار رقمي\n"
+                f"▫️ **الكمية:** `{usdt_str} USDT`\n"
                 f"▫️ **المقابل:** `{syp_str}` ل.س\n\n"
                 f"بدأ البائع مهلة إيداع رصيد الضمان (15 دقيقة)، وسيتم إشعارك فور تأكيد الإيداع."
             ),
@@ -139,7 +139,7 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
             text=(
                 f"🔒 **تحديث صفقة #{deal.id} — تم حجز رصيد الضمان**\n\n"
                 f"▫️ **دورك:** 🟢 مشتري\n"
-                f"▫️ **رصيد الضمان المحتجز:** `{usdt_str}` دولار رقمي\n"
+                f"▫️ **رصيد الضمان المحتجز:** `{usdt_str} USDT`\n"
                 f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
                 f"تم تأكيد حجز الضمان في محفظة الوساطة لـ {BOT_NAME}.\n"
                 f"يقوم البائع الآن بتحديد حساب الاستلام لتتمكن من التحويل."
@@ -151,7 +151,7 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
 
     header = (
         f"🔒 **صفقة #{deal.id} — تم حجز الضمان بنجاح**\n\n"
-        f"▫️ **الكمية المحتجزة:** `{usdt_str}` دولار رقمي\n"
+        f"▫️ **الكمية المحتجزة:** `{usdt_str} USDT`\n"
         f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
     )
     await prompt_seller_payment_info_flow(
@@ -209,7 +209,7 @@ async def manual_await_syp(callback: CallbackQuery, state: FSMContext, db_sessio
     # 1. Update Seller's UI
     await callback.message.edit_text(
         f"⏳ **صفقة #{deal.id} — بانتظار تحويل الليرة السورية**\n\n"
-        f"▫️ **الكمية:** `{usdt_str}` دولار رقمي\n"
+        f"▫️ **الكمية:** `{usdt_str} USDT`\n"
         f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n"
         f"▫️ **حساب الاستلام المعتمد:**\n{payment_info_str}\n\n"
         f"تم إشعار المشتري بالتحويل، وسيصلك إشعار فور تأكيد الدفع من قِبله.",
@@ -226,7 +226,7 @@ async def manual_await_syp(callback: CallbackQuery, state: FSMContext, db_sessio
             text=(
                 f"💸 **صفقة #{deal.id} — مطلوب تحويل الليرة السورية**\n\n"
                 f"▫️ **المبلغ المطلوب تحويله:** `{syp_str}` ل.س\n"
-                f"▫️ **رصيد الضمان المحجوز:** `{usdt_str}` دولار رقمي\n"
+                f"▫️ **رصيد الضمان المحجوز:** `{usdt_str} USDT`\n"
                 f"▫️ **حساب استلام البائع:**\n{payment_info_str}\n\n"
                 f"⚠️ يرجى التحويل بدقة على الحساب أعلاه، ثم الضغط على زر التأكيد وإرفاق إشعار الدفع."
             ),
@@ -418,7 +418,7 @@ async def ask_confirm_syp(callback: CallbackQuery, db_session: AsyncSession):
         f"⚠️ **تأكيد استلام الدفعة — صفقة #{deal.id}**\n\n"
         f"▫️ **دورك بالصفقة:** 🔴 بائع\n"
         f"▫️ **المبلغ المطلوب استلامه:** `{syp_str}` ل.س\n"
-        f"▫️ **رصيد الضمان المقابل:** `{usdt_str}` دولار رقمي\n\n"
+        f"▫️ **رصيد الضمان المقابل:** `{usdt_str} USDT`\n\n"
         f"⚠️ **تنبيه:** تأكد من وصول كامل المبلغ إلى حسابك قبل التأكيد.\n"
         f"بمجرد التأكيد، ستُحال الصفقة تلقائياً للإدارة لإطلاق رصيد الضمان للمشتري ولا يمكن التراجع عن هذا الإجراء."
     )
@@ -471,7 +471,7 @@ async def cq_back_seller_deal(callback: CallbackQuery, db_session: AsyncSession)
             f"📍 **المرحلة:** الخطوة 5 من 7 — تأكيد استلام المبلغ\n\n"
             f"▫️ **دورك بالصفقة:** 🔴 بائع\n"
             f"▫️ **المبلغ المطلوب استلامه:** `{syp_str}` ل.س\n"
-            f"▫️ **رصيد الضمان المقابل:** `{usdt_str}` دولار رقمي\n"
+            f"▫️ **رصيد الضمان المقابل:** `{usdt_str} USDT`\n"
             f"▫️ **حساب الاستلام:**\n{payment_info_str}\n\n"
             f"📸 **المرفق:** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
             f"⚠️ **تنبيه:** يرجى التحقق من وصول كامل المبلغ إلى حسابك قبل الضغط على زر التأكيد."
@@ -518,7 +518,7 @@ async def _dispatch_admin_approval(
                 seller_text = (
                     f"✅ **صفقة #{deal.id} — تم تأكيد الاستلام وإحالة الصفقة للإدارة**\n\n"
                     f"▫️ **دورك بالصفقة:** 🔴 بائع\n"
-                    f"▫️ **الكمية:** `{usdt_str}` دولار رقمي\n"
+                    f"▫️ **الكمية:** `{usdt_str} USDT`\n"
                     f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
                     f"تم إشعار إدارة {BOT_NAME} لمراجعة الصفقة وإطلاق رصيد الضمان للمشتري."
                 )
@@ -530,7 +530,7 @@ async def _dispatch_admin_approval(
             else:
                 await origin_callback.message.edit_text(
                     f"🛡️ **صفقة #{deal.id} — قيد الاعتماد الإداري**\n\n"
-                    f"▫️ **الكمية:** `{usdt_str}` دولار رقمي\n"
+                    f"▫️ **الكمية:** `{usdt_str} USDT`\n"
                     f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
                     f"تمت إحالة العملية للإدارة للمراجعة وإطلاق رصيد الضمان إلى محفظة المشتري.",
                     parse_mode="Markdown"
@@ -551,7 +551,7 @@ async def _dispatch_admin_approval(
                 chat_id=deal.buyer_id,
                 text=(
                     f"🛡️ **تحديث صفقة #{deal.id}**\n\n"
-                    f"▫️ **الكمية:** `{usdt_str}` دولار رقمي\n"
+                    f"▫️ **الكمية:** `{usdt_str} USDT`\n"
                     f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
                     f"أكد البائع استلام كامل المبلغ بالليرة السورية.\n"
                     f"الصفقة الآن قيد الاعتماد الإداري لإطلاق الرصيد إلى محفظتك."
@@ -677,7 +677,7 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
         f"🚨 **إبلاغ عدم استلام — صفقة #{deal.id}**\n\n"
         f"▫️ **البائع:** `{deal.seller_id}`\n"
         f"▫️ **المشتري:** `{deal.buyer_id}`\n"
-        f"▫️ **الكمية:** `{format_usdt(deal.amount_usdt)}` دولار رقمي\n"
+        f"▫️ **الكمية:** `{format_usdt(deal.amount_usdt)} USDT`\n"
         f"▫️ **المبلغ المقابل:** `{format_syp(deal.amount_syp)}` ل.س\n\n"
         f"أبلغ البائع عن عدم استلام المبلغ بالليرة السورية."
     )
@@ -772,7 +772,7 @@ async def ask_admin_release(callback: CallbackQuery, db_session: AsyncSession):
 
     text = (
         f"⚠️ **تأكيد اعتماد وإطلاق الضمان — صفقة #{deal.id}**\n\n"
-        f"▫️ **الكمية:** `{usdt_str}` دولار رقمي\n"
+        f"▫️ **الكمية:** `{usdt_str} USDT`\n"
         f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n"
         f"▫️ **الشبكة:** `BEP-20`\n"
         f"📥 **محفظة استلام المشتري:**\n"
@@ -914,9 +914,9 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
     try:
         await callback.message.edit_text(
             f"✅ **صفقة #{deal.id} — تم الاعتماد والإطلاق بنجاح**\n\n"
-            f"▫️ **قيمة الصفقة:** `{usdt_str}` دولار رقمي\n"
+            f"▫️ **قيمة الصفقة:** `{usdt_str} USDT`\n"
             f"▫️ **المبلغ بالليرة:** `{syp_str}` ل.س\n"
-            f"▫️ **صافي المشتري المحول:** `{net_buyer_usdt_str}` دولار رقمي\n"
+            f"▫️ **صافي المشتري المحول:** `{net_buyer_usdt_str} USDT`\n"
             f"▫️ **الشبكة:** `BEP-20`\n"
             f"📥 **محفظة المستلم:**\n`{escape_markdown(deal.buyer_payout_address)}`\n"
             f"▫️ **معتمد التنفيذ:** `{callback.from_user.id}`\n"
@@ -938,7 +938,7 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
             chat_id=deal.buyer_id,
             text=(
                 f"✅ **صفقة #{deal.id} — اكتملت الصفقة بنجاح**\n\n"
-                f"▫️ **صافي الرصيد المستلم:** `{net_buyer_usdt_str}` دولار رقمي\n"
+                f"▫️ **صافي الرصيد المستلم:** `{net_buyer_usdt_str} USDT`\n"
                 f"▫️ **الشبكة:** `BEP-20`\n"
                 f"📥 **محفظة الاستلام:**\n`{escape_markdown(deal.buyer_payout_address)}`\n\n"
                 f"تم اعتماد الإدارة وإطلاق رصيد الضمان إلى محفظتك.\n"
@@ -954,7 +954,7 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
             chat_id=deal.seller_id,
             text=(
                 f"✅ **صفقة #{deal.id} — اكتملت الصفقة بنجاح**\n\n"
-                f"▫️ **قيمة الصفقة:** `{usdt_str}` دولار رقمي\n"
+                f"▫️ **قيمة الصفقة:** `{usdt_str} USDT`\n"
                 f"▫️ **المبلغ بالليرة:** `{syp_str}` ل.س\n\n"
                 f"تم إطلاق رصيد الضمان للمشتري بعد تأكيد استلامك لكامل الدفعة بالليرة.\n"
                 f"شكراً لتعاملك عبر {BOT_NAME}."

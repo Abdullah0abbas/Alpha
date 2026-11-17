@@ -58,7 +58,7 @@ def build_channel_offer_message(
             f"▫️ <b>الحالة:</b> متاح للتداول\n\n"
             f"▫️ <b>نوع العرض:</b> {offer_type_ar}\n"
             f"▫️ <b>سعر الصرف:</b> {rate_str} ل.س\n"
-            f"▫️ <b>حدود الكمية:</b> من {min_str} إلى {max_str} دولار رقمي\n"
+            f"▫️ <b>حدود الكمية:</b> من <code>{min_str} USDT</code> إلى <code>{max_str} USDT</code>\n"
             f"▫️ <b>وسائل الدفع:</b> {methods_str}{neg_line}\n"
             f"▫️ <b>الصلاحية المتبقية:</b> {dur_str}\n\n"
             f"{fee_line}"
@@ -75,7 +75,7 @@ def build_channel_offer_message(
     details_text = (
         f"<s>▫️ نوع العرض: {offer_type_ar}</s>\n"
         f"<s>▫️ سعر الصرف: {rate_str} ل.س</s>\n"
-        f"<s>▫️ حدود الكمية: من {min_str} إلى {max_str} دولار رقمي</s>\n"
+        f"<s>▫️ حدود الكمية: من {min_str} USDT إلى {max_str} USDT</s>\n"
         f"<s>▫️ وسائل الدفع: {methods_str}</s>"
     )
     deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offers"
