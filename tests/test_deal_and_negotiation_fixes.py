@@ -662,6 +662,86 @@ class TestDealAndNegotiationFixes(unittest.IsolatedAsyncioTestCase):
         cb_dep.bot.send_message.assert_not_awaited()
         mock_push.assert_awaited_once_with(905, cb_dep.bot)
 
+    async def test_seller_proof_photo_preserved_on_confirm_and_dispute(self):
+        from bot.handlers.deals import settlement as set_mod
+
+        # 1. Confirming SYP receipt on a photo message edits caption, clears seller_card_msg_id, and never calls edit_text
+        deal_conf = _FakeDeal(
+            id=910,
+            seller_id=1001,
+            buyer_id=2002,
+            amount_usdt=Decimal("100"),
+            amount_syp=Decimal("1450000"),
+            buyer_payout_address="0x" + "b" * 40,
+            seller_payment_info={"method": "سيريتيل كاش", "info": "0912345678"},
+            seller_card_msg_id=777,
+            status="SYP_PAYMENT_SENT",
+        )
+        cb_conf = MagicMock()
+        cb_conf.data = "man_conf_910"
+        cb_conf.from_user = SimpleNamespace(id=1001)
+        cb_conf.answer = AsyncMock()
+        cb_conf.bot = MagicMock()
+        cb_conf.bot.send_message = AsyncMock()
+        cb_conf.message = MagicMock()
+        cb_conf.message.photo = [SimpleNamespace(file_id="proof_photo_1")]
+        cb_conf.message.edit_caption = AsyncMock()
+        cb_conf.message.edit_text = AsyncMock()
+
+        db_conf = MagicMock()
+        db_conf.commit = AsyncMock()
+
+        with (
+            patch.object(set_mod, "acquire_deal_lock", AsyncMock(return_value=(True, deal_conf, None, None))),
+            patch.object(set_mod, "format_admin_deal_review_text", AsyncMock(return_value="ADMIN_REVIEW")),
+            patch.object(set_mod, "push_deal_card", AsyncMock()) as mock_push_conf,
+        ):
+            await set_mod.manual_syp_confirmed(cb_conf, db_conf)
+
+        self.assertEqual(deal_conf.status, "ADMIN_APPROVAL")
+        self.assertIsNone(deal_conf.seller_card_msg_id)
+        cb_conf.message.edit_caption.assert_awaited_once()
+        cb_conf.message.edit_text.assert_not_awaited()
+        self.assertIsNone(cb_conf.message.edit_caption.call_args.kwargs.get("reply_markup"))
+        mock_push_conf.assert_awaited_once_with(910, cb_conf.bot, notify_handoff=False)
+
+        # 2. Disputing non-receipt on a photo message edits caption, clears seller_card_msg_id, and never calls edit_text
+        deal_disp = _FakeDeal(
+            id=911,
+            seller_id=1001,
+            buyer_id=2002,
+            amount_usdt=Decimal("50"),
+            amount_syp=Decimal("725000"),
+            seller_card_msg_id=778,
+            status="SYP_PAYMENT_SENT",
+        )
+        cb_disp = MagicMock()
+        cb_disp.data = "dispute_deal_911"
+        cb_disp.from_user = SimpleNamespace(id=1001)
+        cb_disp.answer = AsyncMock()
+        cb_disp.bot = MagicMock()
+        cb_disp.bot.send_message = AsyncMock()
+        cb_disp.message = MagicMock()
+        cb_disp.message.photo = [SimpleNamespace(file_id="proof_photo_2")]
+        cb_disp.message.edit_caption = AsyncMock()
+        cb_disp.message.edit_text = AsyncMock()
+
+        db_disp = MagicMock()
+        db_disp.commit = AsyncMock()
+
+        with (
+            patch.object(set_mod, "acquire_deal_lock", AsyncMock(return_value=(True, deal_disp, None, None))),
+            patch.object(set_mod, "add_audit", MagicMock()),
+            patch.object(set_mod, "push_deal_card", AsyncMock()) as mock_push_disp,
+        ):
+            await set_mod.handle_non_receipt_dispute(cb_disp, db_disp)
+
+        self.assertEqual(deal_disp.status, "DISPUTED")
+        self.assertIsNone(deal_disp.seller_card_msg_id)
+        cb_disp.message.edit_caption.assert_awaited_once()
+        cb_disp.message.edit_text.assert_not_awaited()
+        mock_push_disp.assert_awaited_once_with(911, cb_disp.bot, notify_handoff=False)
+
 
 if __name__ == "__main__":
     unittest.main()

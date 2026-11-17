@@ -441,12 +441,13 @@ async def push_deal_card(
                         if "message is not modified" in err_desc:
                             pass
                         elif "message to edit not found" in err_desc or "cant be edited" in err_desc or "there is no text in the message to edit" in err_desc:
-                            # Send replacement message
+                            # Send replacement message (preserve existing message if it is a photo/media message)
                             try:
-                                try:
-                                    await bot.delete_message(chat_id=user_id, message_id=current_msg_id)
-                                except Exception:
-                                    pass
+                                if "there is no text in the message to edit" not in err_desc:
+                                    try:
+                                        await bot.delete_message(chat_id=user_id, message_id=current_msg_id)
+                                    except Exception:
+                                        pass
                                 sent_msg = await bot.send_message(
                                     chat_id=user_id,
                                     text=card_text,

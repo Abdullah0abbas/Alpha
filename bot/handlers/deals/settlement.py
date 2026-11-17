@@ -508,13 +508,21 @@ async def _dispatch_admin_approval(
     # 1. Update origin message if present
     if origin_callback:
         try:
+            is_photo_msg = bool(getattr(origin_callback.message, "photo", None))
             if origin_callback.from_user.id in settings.ADMIN_IDS:
-                await origin_callback.message.edit_text(
-                    admin_alert_text,
-                    reply_markup=admin_kb,
-                    parse_mode="Markdown"
-                )
-            elif origin_callback.from_user.id == deal.seller_id and not origin_callback.message.photo:
+                if is_photo_msg:
+                    await origin_callback.message.edit_caption(
+                        caption=admin_alert_text,
+                        reply_markup=admin_kb,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await origin_callback.message.edit_text(
+                        admin_alert_text,
+                        reply_markup=admin_kb,
+                        parse_mode="Markdown"
+                    )
+            elif origin_callback.from_user.id == deal.seller_id:
                 seller_text = (
                     f"✅ **صفقة #{deal.id} — تم تأكيد الاستلام وإحالة الصفقة للإدارة**\n\n"
                     f"▫️ **دورك بالصفقة:** 🔴 بائع\n"
@@ -522,19 +530,36 @@ async def _dispatch_admin_approval(
                     f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
                     f"تم إشعار إدارة {BOT_NAME} لمراجعة الصفقة وإطلاق رصيد الضمان للمشتري."
                 )
-                await origin_callback.message.edit_text(
-                    seller_text,
-                    reply_markup=None,
-                    parse_mode="Markdown"
-                )
+                if is_photo_msg:
+                    await origin_callback.message.edit_caption(
+                        caption=seller_text,
+                        reply_markup=None,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await origin_callback.message.edit_text(
+                        seller_text,
+                        reply_markup=None,
+                        parse_mode="Markdown"
+                    )
             else:
-                await origin_callback.message.edit_text(
+                fallback_text = (
                     f"🛡️ **صفقة #{deal.id} — قيد الاعتماد الإداري**\n\n"
                     f"▫️ **الكمية:** `{usdt_str} USDT`\n"
                     f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
-                    f"تمت إحالة العملية للإدارة للمراجعة وإطلاق رصيد الضمان إلى محفظة المشتري.",
-                    parse_mode="Markdown"
+                    f"تمت إحالة العملية للإدارة للمراجعة وإطلاق رصيد الضمان إلى محفظة المشتري."
                 )
+                if is_photo_msg:
+                    await origin_callback.message.edit_caption(
+                        caption=fallback_text,
+                        reply_markup=None,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await origin_callback.message.edit_text(
+                        fallback_text,
+                        parse_mode="Markdown"
+                    )
         except Exception as e:
             logger.warning(f"Failed to edit origin message in admin dispatch for deal #{deal.id}: {e}")
 
@@ -612,6 +637,9 @@ async def manual_syp_confirmed(callback: CallbackQuery, db_session: AsyncSession
 
     # Atomic 1-transaction 1-commit: SYP_PAYMENT_SENT -> SYP_PAYMENT_CONFIRMED -> ADMIN_APPROVAL
     deal.status = "ADMIN_APPROVAL"
+    if getattr(callback.message, "photo", None):
+        # Detach seller_card_msg_id from the proof photo so push_deal_card sends a new text card below it without deleting the photo
+        deal.seller_card_msg_id = None
     await db_session.commit()
 
     await _dispatch_admin_approval(deal, callback.bot, db_session, origin_callback=callback)
@@ -633,6 +661,9 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
         return
 
     deal.status = "DISPUTED"
+    if getattr(callback.message, "photo", None):
+        # Detach seller_card_msg_id from the proof photo so push_deal_card keeps the photo in chat history
+        deal.seller_card_msg_id = None
     add_audit(
         session=db_session,
         action="REPORT_NON_RECEIPT",
@@ -659,7 +690,10 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
     ])
 
     try:
-        await callback.message.edit_text(notice_text, reply_markup=support_kb, parse_mode="Markdown")
+        if getattr(callback.message, "photo", None):
+            await callback.message.edit_caption(caption=notice_text, reply_markup=support_kb, parse_mode="Markdown")
+        else:
+            await callback.message.edit_text(notice_text, reply_markup=support_kb, parse_mode="Markdown")
     except Exception:
         await callback.message.answer(notice_text, reply_markup=support_kb, parse_mode="Markdown")
 
