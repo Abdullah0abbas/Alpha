@@ -152,6 +152,7 @@ def validate_bep20_address(raw: str | None) -> Tuple[bool, str, str]:
 
 SHAM_CASH_HEX_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
 SYRIATEL_PHONE_PATTERN = re.compile(r"^09\d{8}$")
+_ARABIC_DIGITS_MAP = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
 
 def validate_sham_cash_address(raw: str | None) -> Tuple[bool, str, str]:
@@ -192,6 +193,7 @@ def validate_syriatel_cash_number(raw: str | None) -> Tuple[bool, str, str]:
     cleaned = str(raw).strip()
     for ch in INVISIBLE_CHARS:
         cleaned = cleaned.replace(ch, "")
+    cleaned = cleaned.translate(_ARABIC_DIGITS_MAP)
     cleaned = re.sub(
         r"^(?:سيريت[يي]ل\s*كاش|رقم|الهاتف|الموبايل)[\s:\-—]*",
         "",
@@ -221,22 +223,31 @@ def validate_syriatel_cash_number(raw: str | None) -> Tuple[bool, str, str]:
 def validate_bank_transfer_info(raw: str | None) -> Tuple[bool, str, str]:
     """
     Validates bank / remittance transfer info (e.g. Al-Haram, Al-Fouad).
-    Requires: Triple full name (at least 3 words) and Syrian mobile number (09xxxxxxxx).
+    Requires: Triple full name (at least 3 alphabetic words) and Syrian mobile number (09xxxxxxxx).
     """
     if not raw:
         return False, "", "يرجى إدخال الاسم الثلاثي ورقم الموبايل السوري."
     cleaned = str(raw).strip()
     for ch in INVISIBLE_CHARS:
         cleaned = cleaned.replace(ch, "")
+    normalized = cleaned.translate(_ARABIC_DIGITS_MAP)
 
-    # Look for a Syrian phone number within the text
-    phone_match = re.search(r"(?:(?:\+|00)?963\s*9|09)\d(?:[\s\-]?\d){7}", cleaned)
+    # Strip leading method prefix only if followed by ':' (e.g. "حوالة بنكية (الفؤاد): ...")
+    normalized = re.sub(
+        r"^\s*(?:حوالة\s*بنكية\s*\((?:الهرم|الفؤاد)\)|حوالة\s*(?:الهرم|الفؤاد)|حوالة\s*بنكية)\s*:\s*",
+        "",
+        normalized,
+    )
+
+    # 1. Look for a Syrian phone number within the text
+    phone_match = re.search(r"(?:(?:\+|00)?963[\s\-]*9|09)\d(?:[\s\-]?\d){7}(?!\d)", normalized)
     if not phone_match:
         return (
             False,
             "",
             "⚠️ **رقم الموبايل غير موجود أو غير صحيح!**\n\n"
-            "يرجى كتابة رقم موبايل سوري يبدأ بـ 09 (10 أرقام)."
+            "يجب إدخال **الاسم الثلاثي** مع **رقم موبايل سوري صحيح** مكون من 10 أرقام يبدأ بـ `09`.\n"
+            "مثال: `محمد أحمد العلي - 0912345678`"
         )
 
     raw_phone = phone_match.group(0)
@@ -246,24 +257,37 @@ def validate_bank_transfer_info(raw: str | None) -> Tuple[bool, str, str]:
             False,
             "",
             "⚠️ **رقم الموبايل غير صحيح!**\n\n"
-            "يجب أن يتكون رقم الموبايل من 10 أرقام ويبدأ بـ 09."
+            "يجب أن يتكون رقم الموبايل من 10 أرقام ويبدأ بـ `09`.\n"
+            "مثال: `محمد أحمد العلي - 0912345678`"
         )
 
-    # Extract name parts
-    name_part = cleaned.replace(raw_phone, " ")
-    name_part = re.sub(r"(الاسم الثلاثي|الاسم|رقم الموبايل|الموبايل|هاتف|جوال|الهرم|الفؤاد|حوالة|بنك)[:\-—]*", " ", name_part)
-    name_part = re.sub(r"[\-\|\:\,\/]+", " ", name_part)
-    name_words = [w for w in name_part.split() if len(w) > 1 and not w.isdigit()]
+    # 2. Extract name part by removing the matched phone span
+    name_part = normalized[:phone_match.start()] + " " + normalized[phone_match.end():]
+    # Remove optional labels only when followed by ':' or '-' so real names like "فؤاد" or "الفؤاد" are preserved
+    name_part = re.sub(
+        r"(?:الاسم\s*الثلاثي|الاسم\s*الكامل|الاسم|رقم\s*الموبايل|رقم\s*الهاتف|الموبايل|الهاتف|جوال|موبايل)\s*[:\-—]+",
+        " ",
+        name_part,
+    )
+    name_part = re.sub(r"[,،/\\|_\-—:()\[\]]+", " ", name_part)
+    name_words = [
+        w for w in name_part.split()
+        if re.fullmatch(r"[\u0600-\u06FFa-zA-Z]{2,}", w)
+    ]
 
     if len(name_words) < 3:
         return (
             False,
             "",
             "⚠️ **الاسم الثلاثي غير مكتمل!**\n\n"
-            "يجب إدخال الاسم الثلاثي كاملاً (3 أسماء على الأقل) ورقم الموبايل."
+            "يجب كتابة **الاسم الثلاثي الكامل** (الاسم الأول + اسم الأب + الكنية) مع رقم الموبايل.\n"
+            "مثال: `محمد أحمد العلي - 0912345678`"
         )
 
     full_name = " ".join(name_words)
+    if len(full_name) > 80:
+        return False, "", "⚠️ **الاسم المدخل طويل جداً!** يرجى الاكتفاء بالاسم الثلاثي ورقم الموبايل."
+
     formatted = f"{full_name} - {norm_phone}"
     return True, formatted, ""
 

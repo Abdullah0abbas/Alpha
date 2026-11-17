@@ -31,6 +31,7 @@ from bot.utils.validators import (
 )
 from bot.utils.payment_prompts import (
     extract_clean_account,
+    get_pm_spec,
     match_saved_payment_info,
 )
 from bot.utils.offer_wizard import (
@@ -731,11 +732,12 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         icon = PAYMENT_METHOD_ICONS.get(cur_method, "💳")
         step_str = f"({idx + 1}/{len(methods)})"
         header = format_wizard_draft_header(data, "payout")
+        spec = get_pm_spec(cur_method)
 
         text = (
             f"{header}"
             f"{icon} **بيانات الاستلام — {cur_method}** {step_str}\n"
-            f"أرسل رقم الحساب فقط، من دون أي نص أو كلمات إضافية:"
+            f"{spec['instruction']}"
         )
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
