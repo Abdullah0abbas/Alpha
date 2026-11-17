@@ -11,6 +11,7 @@ from db.models import User, Deal, Offer
 from bot.states.flow_states import ProfileFSM
 from bot.utils.formatters import escape_markdown, safe_username, format_usdt
 from bot.utils.validators import validate_bep20_address, validate_payment_method_info
+from bot.utils.payment_prompts import build_profile_pm_prompt, build_payment_method_selection_kb
 from bot.utils.branding import BOT_NAME
 from config.settings import settings
 
@@ -25,7 +26,7 @@ def get_profile_keyboard(user: User) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🕒 سجل الصفقات", callback_data="main_my_deals")
             ],
             [
-                InlineKeyboardButton(text="📍 عنوان USDT المحفوظ", callback_data="prof_wallet"),
+                InlineKeyboardButton(text="📍 محفظة الاستلام", callback_data="prof_wallet"),
                 InlineKeyboardButton(text="💳 حساب الدفع المعتمد", callback_data="prof_payment")
             ],
             [
@@ -43,15 +44,15 @@ def get_profile_keyboard(user: User) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🕒 سجل الصفقات", callback_data="main_my_deals")
         ],
         [
-            InlineKeyboardButton(text="📍 عنوان USDT المحفوظ", callback_data="prof_wallet"),
+            InlineKeyboardButton(text="📍 محفظة الاستلام", callback_data="prof_wallet"),
             InlineKeyboardButton(text="💳 حساب الدفع المعتمد", callback_data="prof_payment")
         ],
         [
-            InlineKeyboardButton(text="🆔 توثيق الحساب (KYC)", callback_data="prof_kyc"),
+            InlineKeyboardButton(text="🆔 توثيق الحساب", callback_data="prof_kyc"),
             InlineKeyboardButton(text="🔗 رابط الإحالة", callback_data="prof_referral")
         ],
         [
-            InlineKeyboardButton(text="⚡ برنامج النقاط الذهبية", callback_data="prof_rewards"),
+            InlineKeyboardButton(text="⚡ برنامج النقاط", callback_data="prof_rewards"),
             InlineKeyboardButton(text="✏️ تعديل اللقب", callback_data="prof_set_nickname")
         ],
         [
@@ -65,7 +66,6 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
     user_display = safe_username(user.username, user.telegram_id)
     nickname_display = escape_markdown(user.nickname) if user.nickname else "غير محدد"
     
-    # Calculate total trading volume from completed deals
     vol_query = select(func.coalesce(func.sum(Deal.amount_usdt), 0)).where(
         (Deal.seller_id == user.telegram_id) | (Deal.buyer_id == user.telegram_id),
         Deal.status == "COMPLETED"
@@ -76,47 +76,49 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
     deals_count = user.completed_deals_count or 0
     rep_score = f"{user.reputation_score}%" if user.reputation_score is not None else "100%"
     
-    # Tier level badge
     if deals_count >= 50:
-        tier_badge = "تاجر ماسي (VIP)"
+        tier_badge = "تاجر ماسي"
     elif deals_count >= 15:
-        tier_badge = "تاجر محترف (Pro)"
+        tier_badge = "تاجر محترف"
     elif deals_count >= 3:
-        tier_badge = "تاجر موثوق (Verified)"
+        tier_badge = "تاجر موثوق"
     else:
-        tier_badge = "متداول مبتدئ (Beginner)"
+        tier_badge = "متداول مبتدئ"
 
-    saved_wallet = escape_markdown(user.saved_usdt_address) if user.saved_usdt_address else "لم يتم ضبطه بعد"
-    saved_acc = escape_markdown(user.saved_payment_info) if user.saved_payment_info else "لم يتم ضبطه بعد"
+    saved_wallet = escape_markdown(user.saved_usdt_address) if user.saved_usdt_address else "غير محدد"
+    saved_acc = escape_markdown(user.saved_payment_info) if user.saved_payment_info else "غير محدد"
 
     rewards_section = ""
     if settings.REWARDS_ENABLED:
         kyc_badges = {
-            "verified": "🟢 موثّق بالكامل ✅",
-            "pending": "🟡 قيد المراجعة الإدارية ⏳",
-            "unverified": "⚪ غير موثّق"
+            "verified": "🟢 موثق بالكامل",
+            "pending": "🟡 قيد المراجعة الإدارية",
+            "unverified": "⚪ غير موثق"
         }
-        kyc_display = kyc_badges.get(user.kyc_status, "⚪ غير موثّق")
+        kyc_display = kyc_badges.get(user.kyc_status, "⚪ غير موثق")
         points = user.reward_points or 0
-        rewards_section = f"• حالة التوثيق:  {kyc_display}\n• رصيد النقاط الذهبية:  `{points}` نقطة\n"
+        rewards_section = (
+            f"▫️ **حالة التوثيق:** {kyc_display}\n"
+            f"▫️ **رصيد النقاط:** `{points}` نقطة\n"
+        )
 
     text = (
-        f"👤 **الملف الشخصي للمتداول**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• **المعرف:**  {user_display}\n"
-        f"• **اللقب:**  `{nickname_display}`\n"
-        f"• **رقم الحساب:**  `{user.telegram_id}`\n\n"
-        f"**مؤشرات الثقة والتداول:**\n\n"
-        f"• المستوى:  **{tier_badge}**\n"
-        f"• نسبة السمعة:  **{rep_score}**\n"
-        f"• الصفقات المكتملة:  `{deals_count}` صفقة\n"
-        f"• إجمالي حجم التداول:  `{format_usdt(total_volume)}` USDT\n"
+        "👤 **الملف الشخصي**\n\n"
+        f"▫️ **المعرف:** {user_display}\n"
+        f"▫️ **اللقب:** `{nickname_display}`\n"
+        f"▫️ **رقم الحساب:** `{user.telegram_id}`\n\n"
+        "📊 **مؤشرات التداول:**\n"
+        f"▫️ **المستوى:** {tier_badge}\n"
+        f"▫️ **نسبة السمعة:** `{rep_score}`\n"
+        f"▫️ **الصفقات المكتملة:** `{deals_count}` صفقة\n"
+        f"▫️ **إجمالي حجم التداول:** `{format_usdt(total_volume)}` دولار رقمي\n"
         f"{rewards_section}\n"
-        f"**البيانات المحفوظة تلقائياً:**\n\n"
-        f"• محفظة USDT (BEP20):  `{saved_wallet}`\n"
-        f"• حساب الدفع (شام كاش/بنكي):  `{saved_acc}`\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"اختر أي قسم أدناه للإدارة أو التعديل:"
+        "💳 **البيانات المحفوظة:**\n"
+        "▫️ **محفظة الاستلام (BEP-20):**\n"
+        f"`{saved_wallet}`\n"
+        "▫️ **حساب الاستلام بالليرة السورية:**\n"
+        f"`{saved_acc}`\n\n"
+        "اختر أي قسم أدناه للإدارة أو التعديل:"
     )
     return text
 
@@ -160,15 +162,13 @@ async def cq_prof_reputation(callback: CallbackQuery, db_session: AsyncSession):
     deals = user.completed_deals_count if user else 0
 
     text = (
-        f"⭐ **سجل السمعة والتقييم الائتماني**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• نسبة التقييم العام:  ⭐ **{rep}%**\n"
-        f"• الصفقات المنفذة بنجاح:  🏁 `{deals}` صفقة\n"
-        f"• النزاعات المفتوحة:  🛡️ `0` نزاع\n\n"
-        f"💡 **كيف يتم احتساب السمعة؟**\n"
-        f"• كل صفقة مكتملة بدون نزاع ترفع من رصيدك الائتماني.\n"
-        f"• الالتزام بمواعيد الدفع والإطلاق السريع يعزز مكانتك في السوق كتاجر موثوق.\n"
-        f"━━━━━━━━━━━━━━━"
+        "⭐ **سجل السمعة والتقييم**\n\n"
+        f"▫️ **نسبة التقييم العام:** `{rep}%`\n"
+        f"▫️ **الصفقات المكتملة بنجاح:** `{deals}` صفقة\n"
+        f"▫️ **النزاعات المفتوحة:** `0` نزاع\n\n"
+        "ℹ️ **معايير احتساب السمعة:**\n"
+        "▫️ كل صفقة مكتملة دون نزاع تعزز تقييم حسابك.\n"
+        "▫️ الالتزام بمواعيد التحويل والتأكيد يرفع مستوى الموثوقية في السوق."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 العودة للملف الشخصي", callback_data="menu_user_profile")]
@@ -183,17 +183,17 @@ async def cq_prof_wallet(callback: CallbackQuery, state: FSMContext, db_session:
     res = await db_session.execute(select(User).where(User.telegram_id == user_id))
     user = res.scalar_one_or_none()
     
-    current_addr = escape_markdown(user.saved_usdt_address) if user and user.saved_usdt_address else "لم يتم التعيين بعد"
+    current_addr = escape_markdown(user.saved_usdt_address) if user and user.saved_usdt_address else "غير محدد"
 
     await state.set_state(ProfileFSM.waiting_for_usdt_address)
     text = (
-        f"📍 **إدارة عنوان محفظة USDT (BEP-20 / BNB Smart Chain)**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• العنوان المحفوظ حالياً:\n`{current_addr}`\n\n"
-        f"هذا العنوان سيتم اقتراحه عليك في بوابة تأكيد صفقات الشراء لتوفير الوقت وسرعة الاستلام.\n\n"
-        f"⚠️ **تنبيه وقائي هام:**\n"
-        f"تأكد أن هذا العنوان من محفظة تدعم شبكة **BNB Smart Chain (BEP20)** تحديداً — إرسال عنوان من شبكة أخرى قد يؤدي لفقدان الأموال بشكل دائم.\n\n"
-        f"✍️ **لتعيين أو تغيير العنوان:** أرسل عنوان محفظتك (يبدأ بـ `0x` ومكون من 42 خانة) الآن:"
+        "📍 **إدارة محفظة الاستلام**\n\n"
+        f"▫️ **العنوان المحفوظ حالياً:**\n`{current_addr}`\n\n"
+        "⚠️ **تنبيه الشبكة المعتمدة:**\n"
+        "يجب أن يكون العنوان على شبكة:\n"
+        "`BNB Smart Chain (BEP-20)`\n"
+        "إرسال عنوان من شبكة أخرى قد يؤدي إلى فقدان الأموال بشكل دائم.\n\n"
+        "أرسل عنوان محفظتك الجديد الآن (يبدأ بـ `0x` ومكون من 42 خانة):"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="menu_user_profile")]
@@ -213,9 +213,9 @@ async def process_saved_usdt(message: Message, state: FSMContext, db_session: As
 
     if not is_valid:
         warn_msg = await message.answer(
-            f"⚠️ **عنوان غير صالح!**\n{err_msg}\n\n"
-            "⚠️ **تنبيه وقائي هام:**\n"
-            "تأكد أن هذا العنوان من محفظة تدعم شبكة **BNB Smart Chain (BEP20)** تحديداً — إرسال عنوان من شبكة أخرى قد يؤدي لفقدان الأموال بشكل دائم.\n\n"
+            f"⚠️ **عنوان غير صالح**\n{err_msg}\n\n"
+            "تأكد من أن العنوان يدعم شبكة:\n"
+            "`BNB Smart Chain (BEP-20)`\n\n"
             "يرجى إعادة المحاولة أو الإلغاء:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ إلغاء", callback_data="menu_user_profile")]
@@ -233,7 +233,9 @@ async def process_saved_usdt(message: Message, state: FSMContext, db_session: As
 
     await state.clear()
     await message.answer(
-        f"✅ **تم حفظ عنوان محفظة USDT (BEP-20) بنجاح!**\n\n`{escape_markdown(normalized_addr)}`",
+        "✅ **تم حفظ عنوان محفظة الاستلام بنجاح**\n\n"
+        "▫️ **الشبكة:** `BEP-20`\n"
+        f"`{escape_markdown(normalized_addr)}`",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="👤 العودة للملف الشخصي", callback_data="menu_user_profile")]
         ]),
@@ -241,44 +243,6 @@ async def process_saved_usdt(message: Message, state: FSMContext, db_session: As
     )
 
 # ================= 3. PAYMENT INFO MANAGEMENT =================
-PAYMENT_METHOD_PROMPTS = {
-    "prof_pm_sham_lira": {
-        "name": "شام كاش ليرة",
-        "icon": "💳",
-        "prompt": (
-            "💳 **إعداد حساب استلام: شام كاش ليرة**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "يرجى إرسال عنوان حساب شام كاش الخاص بك (مكوّن من 32 خانة hex دون مسافات):"
-        )
-    },
-    "prof_pm_syriatel": {
-        "name": "سيريتيل كاش",
-        "icon": "📱",
-        "prompt": (
-            "📱 **إعداد حساب استلام: سيريتيل كاش**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "يرجى إرسال رقم سيريتيل كاش الخاص بك (رقم سوري مكوّن من 10 أرقام يبدأ بـ 09):"
-        )
-    },
-    "prof_pm_haram": {
-        "name": "حوالة بنكية (الهرم)",
-        "icon": "🏛️",
-        "prompt": (
-            "🏛️ **إعداد حساب استلام: حوالة بنكية (الهرم)**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "يرجى إرسال الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:"
-        )
-    },
-    "prof_pm_fouad": {
-        "name": "حوالة بنكية (الفؤاد)",
-        "icon": "🏢",
-        "prompt": (
-            "🏢 **إعداد حساب استلام: حوالة بنكية (الفؤاد)**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "يرجى إرسال الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:"
-        )
-    },
-}
 
 @profile_router.callback_query(F.data == "prof_payment")
 async def cq_prof_payment(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
@@ -286,30 +250,19 @@ async def cq_prof_payment(callback: CallbackQuery, state: FSMContext, db_session
     res = await db_session.execute(select(User).where(User.telegram_id == user_id))
     user = res.scalar_one_or_none()
     
-    current_acc = escape_markdown(user.saved_payment_info) if user and user.saved_payment_info else "لم يتم التعيين بعد"
+    current_acc = escape_markdown(user.saved_payment_info) if user and user.saved_payment_info else "غير محدد"
 
     text = (
-        f"💳 **إدارة حساب استلام المستحقات المالية**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• الحساب المحفوظ حالياً:\n`{current_acc}`\n\n"
-        f"يتم تزويد المشتري بهذا الحساب تلقائياً عند بيعك لـ USDT لتسريع إتمام المعاملة.\n\n"
-        f"اختر وسيلة الدفع التي ترغب في تعيينها أو تحديثها أدناه:"
+        "💳 **إدارة حساب استلام الليرة السورية**\n\n"
+        f"▫️ **الحساب المحفوظ حالياً:**\n`{current_acc}`\n\n"
+        "يُستخدم هذا الحساب لتسريع تزويد المشتري ببيانات التحويل في صفقات البيع.\n\n"
+        "اختر وسيلة الدفع التي ترغب بتعيينها أو تحديثها:"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="💳 شام كاش ليرة", callback_data="prof_pm_sham_lira"),
-        ],
-        [
-            InlineKeyboardButton(text="📱 سيريتيل كاش", callback_data="prof_pm_syriatel")
-        ],
-        [
-            InlineKeyboardButton(text="🏛️ حوالة بنكية (الهرم)", callback_data="prof_pm_haram"),
-            InlineKeyboardButton(text="🏢 حوالة بنكية (الفؤاد)", callback_data="prof_pm_fouad")
-        ],
-        [
-            InlineKeyboardButton(text="🔙 العودة للملف الشخصي", callback_data="menu_user_profile")
-        ]
-    ])
+    kb = build_payment_method_selection_kb(
+        callback_prefix="prof_pm_",
+        back_text="🔙 العودة للملف الشخصي",
+        back_callback="menu_user_profile",
+    )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except Exception:
@@ -318,23 +271,24 @@ async def cq_prof_payment(callback: CallbackQuery, state: FSMContext, db_session
 
 @profile_router.callback_query(F.data.startswith("prof_pm_"))
 async def cq_prof_choose_payment_method(callback: CallbackQuery, state: FSMContext):
-    key = callback.data
-    info = PAYMENT_METHOD_PROMPTS.get(key)
-    if not info:
+    pm_key = callback.data.removeprefix("prof_pm_")
+    prompt_res = build_profile_pm_prompt(pm_key)
+    if not prompt_res:
         await callback.answer("طريقة دفع غير معروفة.", show_alert=True)
         return
 
+    pm_name, prompt_text = prompt_res
     await state.set_state(ProfileFSM.waiting_for_payment_info)
-    await state.update_data(selected_pm=info["name"])
+    await state.update_data(selected_pm=pm_name)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="prof_payment")]
     ])
     try:
-        sent_msg = await callback.message.edit_text(info["prompt"], reply_markup=kb, parse_mode="Markdown")
+        sent_msg = await callback.message.edit_text(prompt_text, reply_markup=kb, parse_mode="Markdown")
         await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
     except Exception:
-        sent_msg = await callback.message.answer(info["prompt"], reply_markup=kb, parse_mode="Markdown")
+        sent_msg = await callback.message.answer(prompt_text, reply_markup=kb, parse_mode="Markdown")
         await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
     await callback.answer()
 
@@ -385,25 +339,25 @@ async def cq_prof_kyc(callback: CallbackQuery, db_session: AsyncSession):
 
     status = user.kyc_status if user else "unverified"
     if status == "verified":
-        desc = f"🟢 **حسابك موثّق بالكامل لدى {BOT_NAME}!**\nتتمتع بحدود تداول مفتوحة وشارة التاجر الموثوق."
+        desc = f"🟢 **حسابك موثق بالكامل لدى {BOT_NAME}.**\nتتمتع بحدود تداول مفتوحة وشارة التاجر الموثوق."
     elif status == "pending":
-        desc = "🟡 **طلب التوثيق قيد المراجعة الإدارية.**\nسيتم إشعارك فور اكتمال التدقيق من قبل فريق الإدارة."
+        desc = "🟡 **طلب التوثيق قيد المراجعة الإدارية.**\nسيتم إشعارك فور اكتمال التدقيق."
     else:
         desc = (
-            "⚪ **حسابك غير موثّق حالياً.**\n\n"
-            "مزايا التوثيق (KYC):\n"
-            "• شارة التوثيق الذهبية بجانب اسمك في السوق.\n"
-            "• أولوية في تداول الصفقات والمبالغ الكبيرة.\n"
-            "• زيادة ثقة المشترين والبائعين في عروضك.\n\n"
-            "لطلب التوثيق، تواصل مباشرة مع فريق الإدارة عبر زر الدعم الفني."
+            "⚪ **حسابك غير موثق حالياً.**\n\n"
+            "مزايا التوثيق:\n"
+            "▫️ شارة التوثيق بجانب اسمك في السوق.\n"
+            "▫️ أولوية في تداول الصفقات والمبالغ الكبيرة.\n"
+            "▫️ تعزيز موثوقية عروضك أمام المتداولين.\n\n"
+            "لطلب التوثيق، تواصل مع فريق الإدارة عبر الدعم الفني."
         )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📞 التواصل مع الدعم لتوثيق الحساب", callback_data="supp_contact")],
+        [InlineKeyboardButton(text="📞 التواصل مع الدعم للتوثيق", callback_data="supp_contact")],
         [InlineKeyboardButton(text="🔙 العودة للملف الشخصي", callback_data="menu_user_profile")]
     ])
     await callback.message.edit_text(
-        f"🆔 **توثيق الهوية والحساب (KYC)**\n\n━━━━━━━━━━━━━━━\n{desc}\n━━━━━━━━━━━━━━━",
+        f"🆔 **توثيق الحساب**\n\n{desc}",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -420,14 +374,10 @@ async def cq_prof_referral(callback: CallbackQuery):
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{callback.from_user.id}"
 
     text = (
-        f"🔗 **برنامج الإحالة والمكافآت (Referral Program)**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"شارك رابط الإحالة الخاص بك مع أصدقائك وتجار العملات الرقمية:\n\n"
-        f"📎 **رابطك الخاص:**\n`{ref_link}`\n\n"
-        f"🎁 **المزايا والمكافآت:**\n"
-        f"• احصل على نقاط ذهبية عن كل مستخدم جديد يسجل ويبدأ أول صفقة وساطة ناجحة.\n"
-        f"• خصومات مباشرة على عمولة الضمان بنسبة تصل إلى 50%.\n"
-        f"━━━━━━━━━━━━━━━"
+        "🔗 **برنامج الإحالة والمكافآت**\n\n"
+        "شارك رابط الإحالة الخاص بك:\n\n"
+        f"▫️ **رابطك الخاص:**\n`{ref_link}`\n\n"
+        "▫️ تحصل على نقاط مكافآت عند تسجيل مستخدم جديد وإتمام أول صفقة ناجحة."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 العودة للملف الشخصي", callback_data="menu_user_profile")]
@@ -456,24 +406,22 @@ async def cq_prof_rewards(callback: CallbackQuery, db_session: AsyncSession):
         level_str = "فضي"
 
     text = (
-        "🌟 **ملف نقاطك الشخصي** 🌟\n\n\n"
-        f"👤 المستوى الحالي: {level_str}\n"
-        f"💎 رصيد نقاطك: {points}\n\n\n"
-        "---------------------\n\n\n"
-        "🎁 **جوائز استبدال النقاط:**\n\n"
-        "🔵 500 نقطة = 5$ رصيد USDT\n"
-        "🟡 1500 نقطة = 17$ رصيد USDT\n"
-        "🟣 3000 نقطة = 35$ رصيد USDT\n\n"
+        "🌟 **برنامج النقاط والمكافآت**\n\n"
+        f"▫️ **المستوى الحالي:** {level_str}\n"
+        f"▫️ **رصيد النقاط:** `{points}` نقطة\n\n"
+        "🎁 **جوائز الاستبدال:**\n"
+        "▫️ `500` نقطة = `5` دولار رقمي\n"
+        "▫️ `1500` نقطة = `17` دولار رقمي\n"
+        "▫️ `3000` نقطة = `35` دولار رقمي"
     )
 
     buttons = []
-    # If user has enough points, show redemption buttons
     if points >= 500:
-        buttons.append([InlineKeyboardButton(text="🔵 استبدال 500 نقطة بـ 5$ USDT", callback_data="claim_points_500")])
+        buttons.append([InlineKeyboardButton(text="استبدال 500 نقطة بـ 5 دولار رقمي", callback_data="claim_points_500")])
     if points >= 1500:
-        buttons.append([InlineKeyboardButton(text="🟡 استبدال 1500 نقطة بـ 17$ USDT", callback_data="claim_points_1500")])
+        buttons.append([InlineKeyboardButton(text="استبدال 1500 نقطة بـ 17 دولار رقمي", callback_data="claim_points_1500")])
     if points >= 3000:
-        buttons.append([InlineKeyboardButton(text="🟣 استبدال 3000 نقطة بـ 35$ USDT", callback_data="claim_points_3000")])
+        buttons.append([InlineKeyboardButton(text="استبدال 3000 نقطة بـ 35 دولار رقمي", callback_data="claim_points_3000")])
 
     buttons.append([InlineKeyboardButton(text="🔙 العودة للملف الشخصي", callback_data="menu_user_profile")])
     
@@ -498,30 +446,27 @@ async def cq_claim_points(callback: CallbackQuery, db_session: AsyncSession):
     }
     action = callback.data
     if action not in reward_map:
-        await callback.answer("طلب غير صالح", show_alert=True)
+        await callback.answer("طلب غير صالح.", show_alert=True)
         return
 
     req_points, reward_usdt = reward_map[action]
     current_points = user.reward_points if user else 0
 
     if current_points < req_points:
-        await callback.answer("⚠️ رصيد نقاطك غير كافٍ للاستبدال!", show_alert=True)
+        await callback.answer("⚠️ رصيد نقاطك غير كافٍ للاستبدال.", show_alert=True)
         return
 
-    # Deduct points
     user.reward_points -= req_points
     await db_session.commit()
 
-    # Notify user
-    await callback.answer(f"🎉 تهانينا! تم تقديم طلب استبدال الجائزة ({reward_usdt}$ USDT).", show_alert=True)
+    await callback.answer(f"تم تقديم طلب استبدال {reward_usdt} دولار رقمي بنجاح.", show_alert=True)
     
-    # Notify Admin for payout
     admin_text = (
-        f"🎁 **طلب استبدال نقاط ذهبية جديد**\n\n"
-        f"• المستخدم: {safe_username(user.username, user.telegram_id)}\n"
-        f"• النقاط المستبدلة: `{req_points}` نقطة\n"
-        f"• المكافأة المستحقة: `{reward_usdt}$ USDT`\n"
-        f"• محفظة الاستلام: `{escape_markdown(user.saved_usdt_address or 'لم يحدد عنواناً بعد')}`\n"
+        "🎁 **طلب استبدال نقاط جديد**\n\n"
+        f"▫️ **المستخدم:** {safe_username(user.username, user.telegram_id)}\n"
+        f"▫️ **النقاط المستبدلة:** `{req_points}` نقطة\n"
+        f"▫️ **المكافأة المستحقة:** `{reward_usdt}` دولار رقمي\n"
+        f"▫️ **محفظة الاستلام:**\n`{escape_markdown(user.saved_usdt_address or 'غير محددة')}`"
     )
     for admin_id in settings.ADMIN_IDS:
         if admin_id:
@@ -530,7 +475,6 @@ async def cq_claim_points(callback: CallbackQuery, db_session: AsyncSession):
             except Exception:
                 pass
 
-    # Refresh screen
     await cq_prof_rewards(callback, db_session)
 
 # ================= 7. SET NICKNAME =================
@@ -538,10 +482,9 @@ async def cq_claim_points(callback: CallbackQuery, db_session: AsyncSession):
 async def cq_prof_set_nickname(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ProfileFSM.waiting_for_nickname)
     text = (
-        f"✏️ **تغيير اللقب التجاري**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"أرسل الآن الاسم أو اللقب التجاري الذي ترغب بظهوره للمتداولين الآخرين في السوق:\n"
-        f"*(الحد الأقصى: 30 حرفاً)*"
+        "✏️ **تغيير اللقب التجاري**\n\n"
+        "أرسل الاسم أو اللقب التجاري الذي ترغب بظهوره للمتداولين الآخرين:\n"
+        "*(الحد الأقصى: 30 حرفاً)*"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="menu_user_profile")]

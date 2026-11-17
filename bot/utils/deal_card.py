@@ -37,7 +37,7 @@ def step_of(status: str) -> Tuple[int, str, str]:
     if status == "PENDING_OWNER_APPROVAL":
         return 1, "[ 🟩 ⬜ ⬜ ⬜ ⬜ ⬜ ⬜ ]", "موافقة صانع العرض"
     elif status in ("CREATED", "AWAITING_USDT_DEPOSIT"):
-        return 2, "[ 🟩 🟩 ⬜ ⬜ ⬜ ⬜ ⬜ ]", "إيداع USDT"
+        return 2, "[ 🟩 🟩 ⬜ ⬜ ⬜ ⬜ ⬜ ]", "إيداع رصيد الضمان"
     elif status == "USDT_DEPOSITED":
         return 3, "[ 🟩 🟩 🟩 ⬜ ⬜ ⬜ ⬜ ]", "حساب الاستلام"
     elif status == "AWAITING_SYP_PAYMENT":
@@ -69,13 +69,13 @@ def turn_of(status: str, viewer_role: str, is_offer_owner: bool = False) -> Tupl
 
     if status in ("CREATED", "AWAITING_USDT_DEPOSIT"):
         if viewer_role == "seller":
-            return True, "تحويل USDT إلى محفظة الإيداع"
-        return False, "بانتظار إيداع USDT من البائع"
+            return True, "تحويل رصيد الضمان إلى محفظة الإيداع"
+        return False, "بانتظار إيداع رصيد الضمان من البائع"
 
     if status == "USDT_DEPOSITED":
         if viewer_role == "seller":
             return True, "تأكيد حساب الاستلام بالليرة السورية"
-        return False, "بانتظار تأكيد حساب البائع"
+        return False, "بانتظار تأكيد حساب الاستلام من البائع"
 
     if status == "AWAITING_SYP_PAYMENT":
         if viewer_role == "buyer":
@@ -85,15 +85,15 @@ def turn_of(status: str, viewer_role: str, is_offer_owner: bool = False) -> Tupl
     if status == "SYP_PAYMENT_SENT":
         if viewer_role == "seller":
             return True, "التحقق وتأكيد استلام المبلغ بالليرة السورية"
-        return False, "بانتظار تأكيد البائع للدفعة"
+        return False, "بانتظار تأكيد البائع لاستلام الدفعة"
 
     if status in ("SYP_PAYMENT_CONFIRMED", "ADMIN_APPROVAL"):
         if viewer_role == "admin":
-            return True, "اعتماد تحرير USDT للمشتري"
+            return True, "اعتماد وتحرير الرصيد للمشتري"
         return False, "بانتظار اعتماد الإدارة وتحرير الرصيد"
 
     if status in ("RELEASING", "COMPLETED"):
-        return False, "اكتملت الصفقة وتحرّر الرصيد بنجاح"
+        return False, "اكتملت الصفقة وتحرر الرصيد بنجاح"
 
     if status == "CANCELLED":
         return False, "تم إلغاء الصفقة"
@@ -102,7 +102,7 @@ def turn_of(status: str, viewer_role: str, is_offer_owner: bool = False) -> Tupl
         return False, "انتهت مهلة الصفقة"
 
     if status == "DISPUTED":
-        return False, "أُبلغ بعدم استلام المبلغ — التواصل مع الدعم الفني"
+        return False, "أُبلغ بعدم استلام المبلغ — قيد متابعة الدعم الفني"
 
     return False, "الصفقة قيد المتابعة"
 
@@ -130,7 +130,6 @@ def get_deal_action_keyboard(
                 InlineKeyboardButton(text="❌ رفض", callback_data=f"rejc_deal_{deal.id}")
             ])
         else:
-            # Taker can cancel before acceptance
             buttons.append([
                 InlineKeyboardButton(text="❌ إلغاء الطلب", callback_data=f"ask_cancel_{deal.id}")
             ])
@@ -138,14 +137,14 @@ def get_deal_action_keyboard(
     elif status == "CREATED":
         if is_seller and not is_offer_owner:
             buttons.append([
-                InlineKeyboardButton(text="🔐 إيداع USDT", callback_data=f"man_aw_dep_{deal.id}")
+                InlineKeyboardButton(text="🔐 إيداع رصيد الضمان", callback_data=f"man_aw_dep_{deal.id}")
             ])
             buttons.append([
                 InlineKeyboardButton(text="❌ إلغاء الصفقة", callback_data=f"ask_cancel_{deal.id}")
             ])
         elif is_seller and is_offer_owner:
             buttons.append([
-                InlineKeyboardButton(text="🔐 إيداع USDT", callback_data=f"man_aw_dep_{deal.id}")
+                InlineKeyboardButton(text="🔐 إيداع رصيد الضمان", callback_data=f"man_aw_dep_{deal.id}")
             ])
         elif is_buyer:
             buttons.append([
@@ -155,14 +154,14 @@ def get_deal_action_keyboard(
     elif status == "AWAITING_USDT_DEPOSIT":
         if is_seller and not is_offer_owner:
             buttons.append([
-                InlineKeyboardButton(text="✅ تأكيد إيداع USDT", callback_data=f"man_dep_{deal.id}")
+                InlineKeyboardButton(text="✅ تأكيد إيداع رصيد الضمان", callback_data=f"man_dep_{deal.id}")
             ])
             buttons.append([
                 InlineKeyboardButton(text="❌ إلغاء الصفقة", callback_data=f"ask_cancel_{deal.id}")
             ])
         elif is_seller and is_offer_owner:
             buttons.append([
-                InlineKeyboardButton(text="✅ تأكيد إيداع USDT", callback_data=f"man_dep_{deal.id}")
+                InlineKeyboardButton(text="✅ تأكيد إيداع رصيد الضمان", callback_data=f"man_dep_{deal.id}")
             ])
         elif is_buyer:
             buttons.append([
@@ -179,7 +178,7 @@ def get_deal_action_keyboard(
 
             if not seller_info_val or seller_info_val in ["PENDING", "غير محدد", "N/A"]:
                 buttons.append([
-                    InlineKeyboardButton(text="💳 حساب استلام المبلغ بالليرة السورية", callback_data=f"set_seller_info_{deal.id}")
+                    InlineKeyboardButton(text="💳 تحديد حساب استلام الليرة السورية", callback_data=f"set_seller_info_{deal.id}")
                 ])
             else:
                 buttons.append([
@@ -198,8 +197,14 @@ def get_deal_action_keyboard(
                 InlineKeyboardButton(text="✅ تأكيد استلام المبلغ بالليرة السورية", callback_data=f"ask_conf_{deal.id}")
             ])
             buttons.append([
-                InlineKeyboardButton(text="⚠️ عدم الاستلام", callback_data=f"dispute_deal_{deal.id}")
+                InlineKeyboardButton(text="⚠️ الإبلاغ عن عدم الاستلام", callback_data=f"dispute_deal_{deal.id}")
             ])
+        elif is_buyer:
+            buyer_addr = (getattr(deal, "buyer_payout_address", None) or "").strip()
+            if not buyer_addr or buyer_addr in ("PENDING", "غير محدد", "N/A"):
+                buttons.append([
+                    InlineKeyboardButton(text="📥 إدخال محفظة الاستلام", callback_data=f"set_buyer_payout_{deal.id}")
+                ])
 
     elif status == "SYP_PAYMENT_CONFIRMED":
         if is_seller:
@@ -210,7 +215,7 @@ def get_deal_action_keyboard(
     elif status == "ADMIN_APPROVAL":
         if is_admin:
             buttons.append([
-                InlineKeyboardButton(text="🚀 اعتماد وتحرير الرصيد", callback_data=f"ask_rel_{deal.id}"),
+                InlineKeyboardButton(text="☑️ اعتماد وتحرير الرصيد", callback_data=f"ask_rel_{deal.id}"),
                 InlineKeyboardButton(text="🔍 تفاصيل الصفقة", callback_data=f"adm_inspect_deal_{deal.id}")
             ])
 
@@ -261,8 +266,6 @@ def render_deal_card(
     usdt_str = format_usdt(deal.amount_usdt)
     syp_str = format_syp(deal.amount_syp)
 
-    # Effective rate
-    # Effective rate
     if deal.amount_usdt and deal.amount_usdt > 0:
         rate = deal.amount_syp / deal.amount_usdt
         rate_str = format_syp(rate)
@@ -274,29 +277,26 @@ def render_deal_card(
     ]
 
     if step_num > 0:
-        lines.append(f"📍 **المرحلة :** {progress_bar} (الخطوة {step_num} من 7)")
-        lines.append(f"📌 **المرحلة الحالية :** {step_name}")
+        lines.append(f"📍 **المرحلة:** {progress_bar} (الخطوة {step_num} من 7)")
+        lines.append(f"📌 **المرحلة الحالية:** {step_name}")
     else:
-        lines.append(f"📍 **الحالة النهائية :** {progress_bar} {step_name}")
+        lines.append(f"📍 **الحالة النهائية:** {progress_bar} {step_name}")
 
-    # Turn notification indicator
     if is_turn:
-        lines.append(f"🎯 **دورك الآن :** {turn_desc}")
+        lines.append(f"🎯 **دورك الآن:** {turn_desc}")
     else:
-        lines.append(f"⏳ **الوضع :** {turn_desc}")
+        lines.append(f"⏳ **الوضع الحالي:** {turn_desc}")
 
-    # Expiry remaining time if active
     if deal.expires_at and deal.status in ("PENDING_OWNER_APPROVAL", "AWAITING_USDT_DEPOSIT", "CREATED"):
         remaining_str = humanize_time_remaining(deal.expires_at)
-        lines.append(f"⏱️ **المهلة المتبقية :** {remaining_str}")
+        lines.append(f"⏱️ **المهلة المتبقية:** {remaining_str}")
 
-    lines.append("\n💰 **البيانات المالية :**")
-    lines.append(f"▫️ **دورك بالصفقة :** {role_label}")
-    lines.append(f"▫️ **الكمية :** `{usdt_str}` دولار")
-    lines.append(f"▫️ **الإجمالي :** `{syp_str}` ل.س")
-    lines.append(f"▫️ **سعر الصرف :** `{rate_str}` ل.س")
+    lines.append("\n💰 **البيانات المالية:**")
+    lines.append(f"▫️ **دورك في الصفقة:** {role_label}")
+    lines.append(f"▫️ **الكمية:** `{usdt_str}` دولار رقمي")
+    lines.append(f"▫️ **الإجمالي:** `{syp_str}` ل.س")
+    lines.append(f"▫️ **سعر الصرف:** `{rate_str}` ل.س")
 
-    # Commission details
     seller_fee = getattr(deal, "seller_fee_usdt", None)
     buyer_fee = getattr(deal, "buyer_fee_usdt", None)
     if seller_fee is None or buyer_fee is None:
@@ -308,20 +308,21 @@ def render_deal_card(
     if is_buyer:
         net_buyer_str = format_usdt(deal.amount_usdt - buyer_fee)
         if buyer_fee > Decimal("0"):
-            lines.append(f"▫️ **صافي استلامك :** `{net_buyer_str}` دولار (العمولة: `{format_usdt(buyer_fee)}` دولار)")
+            lines.append(f"▫️ **صافي الاستلام:** `{net_buyer_str}` دولار رقمي (العمولة: `{format_usdt(buyer_fee)}` دولار رقمي)")
         else:
-            lines.append(f"▫️ **صافي استلامك :** `{net_buyer_str}` دولار (العمولة: مجانية)")
+            lines.append(f"▫️ **صافي الاستلام:** `{net_buyer_str}` دولار رقمي (العمولة: مجانية)")
 
-    # Specific phase context
     if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and is_seller:
         total_dep = deal.amount_usdt + seller_fee
         total_dep_str = format_usdt(total_dep)
-        lines.append("\n🔐 **بيانات الإيداع :**")
+        lines.append("\n🔐 **بيانات الإيداع:**")
         if seller_fee > Decimal("0"):
-            lines.append(f"▫️ **المطلوب إيداعه :** `{total_dep_str}` دولار (العمولة: `{format_usdt(seller_fee)}` دولار)")
+            lines.append(f"▫️ **المطلوب إيداعه:** `{total_dep_str}` دولار رقمي (العمولة: `{format_usdt(seller_fee)}` دولار رقمي)")
         else:
-            lines.append(f"▫️ **المطلوب إيداعه :** `{total_dep_str}` دولار (العمولة: مجانية)")
-        lines.append(f"📥 **محفظة الإيداع :**\n`{deal.deposit_address}`")
+            lines.append(f"▫️ **المطلوب إيداعه:** `{total_dep_str}` دولار رقمي (العمولة: مجانية)")
+        lines.append("▫️ **الشبكة المعتمدة:**")
+        lines.append("`BEP-20`")
+        lines.append(f"📥 **محفظة الإيداع:**\n`{deal.deposit_address}`")
 
     elif deal.status in ("AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT", "SYP_PAYMENT_CONFIRMED", "ADMIN_APPROVAL"):
         seller_method = "غير محدد"
@@ -334,18 +335,19 @@ def render_deal_card(
         elif deal.seller_payment_info:
             seller_info_str = str(deal.seller_payment_info)
 
-        lines.append("\n💳 **بيانات استلام الدفعة :**")
-        lines.append(f"🏦 **وسيلة الدفع :** {seller_method}")
-        lines.append(f"📋 **حساب استلام البائع :** `{escape_markdown(seller_info_str)}`")
+        lines.append("\n💳 **بيانات استلام الدفعة:**")
+        lines.append(f"▫️ **وسيلة الدفع:** {seller_method}")
+        lines.append(f"▫️ **حساب استلام البائع:**\n`{escape_markdown(seller_info_str)}`")
 
     if deal.status in ("ADMIN_APPROVAL", "COMPLETED") and deal.buyer_payout_address:
-        lines.append(f"📥 **محفظة استلام المشتري (BEP-20) :**\n`{deal.buyer_payout_address}`")
+        lines.append("\n📥 **محفظة استلام المشتري:**")
+        lines.append("الشبكة: `BEP-20`")
+        lines.append(f"`{deal.buyer_payout_address}`")
 
     lines.append("")
 
-    # Final guidance message
     if deal.status == "COMPLETED":
-        lines.append("🎉 **تم اكتمال الصفقة بنجاح وإطلاق الضمان لمستحقه.**")
+        lines.append("☑️ **اكتملت الصفقة بنجاح وتم تحرير رصيد الضمان لمستحقه.**")
     elif deal.status == "CANCELLED":
         lines.append("❌ **تم إلغاء هذه الصفقة وإغلاقها.**")
     elif deal.status == "EXPIRED":
@@ -353,7 +355,7 @@ def render_deal_card(
     elif is_turn:
         lines.append("👇 **يرجى اتخاذ الإجراء المطلوب أدناه للمتابعة:**")
     else:
-        lines.append("💡 سيتم تحديث هذه البطاقة تلقائياً فور استجابة الطرف الآخر.")
+        lines.append("ℹ️ سيتم تحديث هذه البطاقة تلقائياً فور استجابة الطرف الآخر.")
 
     card_text = "\n".join(lines)
     keyboard = get_deal_action_keyboard(deal, viewer_id, is_offer_owner=is_offer_owner)

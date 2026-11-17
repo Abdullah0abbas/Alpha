@@ -3,11 +3,8 @@ from aiogram.fsm.state import State, StatesGroup
 class OfferCreateFSM(StatesGroup):
     waiting_for_type = State()
     waiting_for_rate = State()
-    confirm_rate = State()
     waiting_for_min_limit = State()
-    confirm_min_limit = State()
     waiting_for_max_limit = State()
-    confirm_max_limit = State()
     waiting_for_methods = State()
     waiting_for_payout_details = State()
     confirm_payout_details = State()
@@ -22,7 +19,6 @@ class OfferCreateFSM(StatesGroup):
 class DealCreateFSM(StatesGroup):
     waiting_for_amount = State()
     waiting_for_payment_method = State()
-    waiting_for_payout_address = State()
     waiting_for_seller_payment_info = State()
 
 class NegotiationFSM(StatesGroup):

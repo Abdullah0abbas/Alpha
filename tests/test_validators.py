@@ -91,8 +91,12 @@ class TestValidators(unittest.TestCase):
         self.assertEqual(norm, valid_addr)
         self.assertEqual(err, "")
 
-        # Uppercase
+        # Uppercase & labeled format
         ok, norm, _ = validate_sham_cash_address(valid_addr.upper())
+        self.assertTrue(ok)
+        self.assertEqual(norm, valid_addr)
+
+        ok, norm, _ = validate_sham_cash_address(f"شام كاش ليرة: {valid_addr}")
         self.assertTrue(ok)
         self.assertEqual(norm, valid_addr)
 
@@ -115,6 +119,10 @@ class TestValidators(unittest.TestCase):
         self.assertEqual(norm, phone)
 
         ok, norm, _ = validate_syriatel_cash_number("00963911111111")
+        self.assertTrue(ok)
+        self.assertEqual(norm, phone)
+
+        ok, norm, _ = validate_syriatel_cash_number("سيريتيل كاش: 0911111111")
         self.assertTrue(ok)
         self.assertEqual(norm, phone)
 

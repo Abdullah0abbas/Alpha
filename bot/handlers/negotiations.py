@@ -11,12 +11,11 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 
 from db.models import Offer, Negotiation, User, Deal
-from bot.states.flow_states import NegotiationFSM, DealCreateFSM
+from bot.states.flow_states import NegotiationFSM
 from bot.utils.formatters import (
+    PAYMENT_METHOD_ICONS,
     format_syp,
     format_usdt,
-    format_payment_methods,
-    humanize_time_remaining,
     clean_numeric_input
 )
 from bot.services.channel import update_channel_offer_message
@@ -24,6 +23,7 @@ from config.settings import settings
 from bot.utils.branding import BOT_NAME
 from bot.utils.deal_card import push_deal_card
 from bot.utils.fees import calculate_deal_fee
+from bot.utils.payment_prompts import extract_clean_account
 
 from bot.utils.transitions import can_user_interact_with_offer
 
@@ -107,7 +107,8 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
         max_limit=str(offer.max_limit),
         negotiable_type=offer.negotiable_type,
         payout_info=offer.payout_info,
-        payment_methods=offer.payment_methods
+        payout_details=offer.payout_details or {},
+        payment_methods=list(offer.payment_methods) if offer.payment_methods else []
     )
 
     rate_str = format_syp(offer.rate)
@@ -122,23 +123,30 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
     if neg_type in ["amount", "both"]:
         await callback.message.answer(
             f"🤝 **بدء جلسة تفاوض — عرض #{offer.id}**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"▫️ **سعر الصرف الحالي :** `{rate_str}` ل.س\n"
-            f"• حدود الكمية المتاحة: 📦 من `{min_str}` إلى `{max_str}` USDT\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"⌨️ أدخل الكمية المقترحة للتداول (USDT):",
+            f"▫️ **سعر الصرف الحالي:** `{rate_str}` ل.س\n"
+            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n\n"
+            f"⌨️ أدخل الكمية المقترحة للتداول (بالدولار الرقمي):",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
         await state.set_state(NegotiationFSM.waiting_for_taker_amount)
-    else: # rate only
+    elif Decimal(str(offer.min_limit)) < Decimal(str(offer.max_limit)):
+        await callback.message.answer(
+            f"🤝 **بدء جلسة تفاوض على السعر — عرض #{offer.id}**\n\n"
+            f"▫️ **سعر الصرف الحالي:** `{rate_str}` ل.س\n"
+            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n\n"
+            f"⌨️ أدخل أولاً الكمية التي ترغب بتداولها ضمن الحدود (بالدولار الرقمي):",
+            reply_markup=cancel_kb,
+            parse_mode="Markdown"
+        )
+        await state.set_state(NegotiationFSM.waiting_for_taker_amount)
+    else:
         await state.update_data(proposed_amount=str(offer.min_limit))
         await callback.message.answer(
             f"🤝 **بدء جلسة تفاوض على السعر — عرض #{offer.id}**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"▫️ **سعر الصرف الحالي :** `{rate_str}` ل.س\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"⌨️ أدخل سعر الصرف المقترح (ليرة سورية لكل 1 دولار):",
+            f"▫️ **الكمية الثابتة للعرض:** `{min_str}` دولار رقمي\n"
+            f"▫️ **سعر الصرف الحالي:** `{rate_str}` ل.س\n\n"
+            f"⌨️ أدخل سعر الصرف المقترح بالليرة السورية:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -157,25 +165,35 @@ async def process_taker_amount(message: Message, state: FSMContext):
             await message.answer("⚠️ الكمية يجب أن تكون أكبر من 0. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
             return
     except Exception:
-        await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم بوحدة USDT:", reply_markup=cancel_kb, parse_mode="Markdown")
+        await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم صحيح للكمية:", reply_markup=cancel_kb, parse_mode="Markdown")
         return
 
     data = await state.get_data()
+    min_limit = Decimal(str(data.get("min_limit", "0")))
+    max_limit = Decimal(str(data.get("max_limit", "0")))
+    if (min_limit > 0 and amount_val < min_limit) or (max_limit > 0 and amount_val > max_limit):
+        await message.answer(
+            "⚠️ **الكمية خارج حدود العرض**\n\n"
+            f"▫️ **الحدود المتاحة:** من `{format_usdt(min_limit)}` إلى `{format_usdt(max_limit)}` دولار رقمي\n\n"
+            "يرجى إدخال كمية ضمن هذا النطاق:",
+            reply_markup=cancel_kb,
+            parse_mode="Markdown"
+        )
+        return
+
     await state.update_data(proposed_amount=str(amount_val))
 
-    if data.get("negotiable_type") == "both":
+    if data.get("negotiable_type") in ("both", "rate"):
         rate_str = format_syp(Decimal(data['current_rate']))
         await message.answer(
-            f"📦 **الكمية المقترحة:** `{format_usdt(amount_val)} USDT`\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"▫️ **سعر الصرف الحالي :** `{rate_str}` ل.س\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"⌨️ أدخل الآن سعر الصرف المقترح (ليرة سورية لكل 1 دولار):",
+            f"▫️ **الكمية المقترحة:** `{format_usdt(amount_val)}` دولار رقمي\n"
+            f"▫️ **سعر الصرف الحالي:** `{rate_str}` ل.س\n\n"
+            "⌨️ أدخل الآن سعر الصرف المقترح بالليرة السورية:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
         await state.set_state(NegotiationFSM.waiting_for_taker_rate)
-    else: # amount only
+    else:
         proposed_rate = Decimal(data['current_rate'])
         await _submit_taker_negotiation(message, state, amount_val, proposed_rate)
 
@@ -277,18 +295,16 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
     rate_str = format_syp(rate_val)
     total_syp_str = format_syp(total_syp)
 
-    # Confirmation to Taker
     await message.answer(
-        f"📨 **تم إرسال طلب التفاوض بنجاح (عرض #{offer_id})**\n\n\n"
-        f"• الكمية المقترحة:  `{amount_str}` USDT\n\n"
-        f"▫️ **سعر الصرف المقترح :** `{rate_str}` ل.س\n\n"
-        f"▫️ **القيمة الإجمالية :** `{total_syp_str}` ل.س\n\n"
-        f"• مهلة الرد:  30 دقيقة\n\n\n"
-        f"تم إرسال الاقتراح لصاحب العرض. سيصلك إشعار فوري فور اتخاذ قراره.",
+        f"📨 **تم إرسال طلب التفاوض — عرض #{offer_id}**\n\n"
+        f"▫️ **الكمية المقترحة:** `{amount_str}` دولار رقمي\n"
+        f"▫️ **سعر الصرف المقترح:** `{rate_str}` ل.س\n"
+        f"▫️ **القيمة الإجمالية:** `{total_syp_str}` ل.س\n"
+        f"▫️ **مهلة الرد:** 30 دقيقة\n\n"
+        "تم إرسال المقترح إلى صاحب العرض، وسيصلك إشعار فور اتخاذ قراره.",
         parse_mode="Markdown"
     )
 
-    # Send Notification to Maker (Strict Privacy: only deal count, NO username/name)
     maker_kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ قبول", callback_data=f"neg_m_acc_{neg.id}"),
@@ -300,13 +316,13 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
     ])
 
     maker_text = (
-        f"🔔 **طلب تفاوض جديد على عرضك #{offer_id}**\n\n\n"
-        f"• الكمية المقترحة:  `{amount_str}` USDT\n\n"
-        f"▫️ **السعر المقترح :** `{rate_str}` ل.س\n\n"
-        f"▫️ **القيمة الإجمالية :** `{total_syp_str}` ل.س\n\n"
-        f"• سجل الطرف المفاوض:  `{taker_completed_count}` صفقة مكتملة\n\n"
-        f"• مهلة الرد:  30 دقيقة\n\n\n"
-        f"حدد الإجراء المطلوب لاتخاذ القرار:"
+        f"🔔 **طلب تفاوض جديد على عرضك #{offer_id}**\n\n"
+        f"▫️ **الكمية المقترحة:** `{amount_str}` دولار رقمي\n"
+        f"▫️ **السعر المقترح:** `{rate_str}` ل.س\n"
+        f"▫️ **القيمة الإجمالية:** `{total_syp_str}` ل.س\n"
+        f"▫️ **سجل الطرف المفاوض:** `{taker_completed_count}` صفقة مكتملة\n"
+        f"▫️ **مهلة الرد:** 30 دقيقة\n\n"
+        "اختر الإجراء المناسب:"
     )
 
     try:
@@ -395,23 +411,20 @@ async def maker_reject_negotiation(callback: CallbackQuery, db_session: AsyncSes
         except Exception as e:
             logger.warning(f"Failed to update channel message for reverted offer #{offer_id_val}: {e}")
 
-    await callback.answer("تم رفض عرض التفاوض.")
+    await callback.answer("تم رفض طلب التفاوض.")
     await callback.message.edit_text(
-        f"❌ **عرض #{neg.offer_id} — تم رفض التفاوض**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"تم رفض طلب التفاوض وإعادة العرض فوراً إلى السوق كعرض نشط ومتاح للجميع.",
+        f"❌ **تم رفض التفاوض — عرض #{neg.offer_id}**\n\n"
+        "تم رفض طلب التفاوض وإعادة العرض فوراً إلى السوق كعرض نشط.",
         parse_mode="Markdown"
     )
 
-    # Notify Taker
     try:
         await callback.bot.send_message(
             chat_id=neg.taker_id,
             text=(
                 f"ℹ️ **تحديث تفاوض عرض #{neg.offer_id}**\n\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"اعتذر صاحب العرض عن قبول الشروط المقترحة.\n"
-                f"يمكنك استكشاف وتصفح باقي العروض المتاحة في السوق عبر /offers."
+                "اعتذر صاحب العرض عن قبول الشروط المقترحة.\n"
+                "يمكنك استعراض باقي العروض المتاحة عبر /offers."
             ),
             parse_mode="Markdown"
         )
@@ -460,10 +473,9 @@ async def maker_start_counter(callback: CallbackQuery, db_session: AsyncSession,
     if neg_type in ["amount", "both"]:
         await callback.message.answer(
             f"🔄 **تقديم عرض مضاد — جلسة #{neg.id}**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"▫️ **اقتراح الطرف الآخر :** `{format_usdt(neg.proposed_amount)}` دولار بسعر `{format_syp(neg.proposed_rate)}` ل.س\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"⌨️ أدخل الكمية النهائية التي تقترحها (USDT):",
+            f"▫️ **الكمية المقترحة حالياً:** `{format_usdt(neg.proposed_amount)}` دولار رقمي\n"
+            f"▫️ **سعر الصرف المقترح حالياً:** `{format_syp(neg.proposed_rate)}` ل.س\n\n"
+            "⌨️ أدخل الكمية النهائية التي تقترحها (بالدولار الرقمي):",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -472,10 +484,8 @@ async def maker_start_counter(callback: CallbackQuery, db_session: AsyncSession,
         await state.update_data(counter_amount=str(neg.proposed_amount))
         await callback.message.answer(
             f"🔄 **تقديم عرض مضاد على السعر — جلسة #{neg.id}**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"▫️ **سعر الصرف المقترح :** `{format_syp(neg.proposed_rate)}` ل.س\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"⌨️ أدخل السعر النهائي الذي تقترحه (ليرة سورية لكل 1 دولار):",
+            f"▫️ **سعر الصرف المقترح حالياً:** `{format_syp(neg.proposed_rate)}` ل.س\n\n"
+            "⌨️ أدخل السعر النهائي الذي تقترحه بالليرة السورية:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -493,7 +503,7 @@ async def process_maker_counter_amount(message: Message, state: FSMContext):
             await message.answer("⚠️ الكمية يجب أن تكون أكبر من 0. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
             return
     except Exception:
-        await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم بوحدة USDT:", reply_markup=cancel_kb, parse_mode="Markdown")
+        await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم صحيح للكمية:", reply_markup=cancel_kb, parse_mode="Markdown")
         return
 
     data = await state.get_data()
@@ -501,10 +511,8 @@ async def process_maker_counter_amount(message: Message, state: FSMContext):
 
     if data.get("negotiable_type") == "both":
         await message.answer(
-            f"📦 **الكمية المسجلة:** `{format_usdt(amount_val)} USDT`\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"⌨️ أدخل السعر النهائي المقترح (ليرة سورية لكل 1 دولار):\n"
-            f"━━━━━━━━━━━━━━━",
+            f"▫️ **الكمية المسجلة:** `{format_usdt(amount_val)}` دولار رقمي\n\n"
+            "⌨️ أدخل السعر النهائي المقترح بالليرة السورية:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -560,7 +568,6 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
         neg.round = 2
         neg.expires_at = expires_at
 
-        # Maker stats
         maker_deals_res = await db_session.execute(
             select(Deal).where(
                 or_(Deal.buyer_id == neg.maker_id, Deal.seller_id == neg.maker_id),
@@ -577,18 +584,15 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
     total_syp_str = format_syp(amount_val * rate_val)
 
     await message.answer(
-        f"📨 **تم إرسال العرض المضاد بنجاح**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• الكمية المقترحة: 📦 `{amount_str} USDT`\n"
-        f"▫️ **سعر الصرف النهائي :** `{rate_str}` ل.س\n"
-        f"▫️ **الإجمالي :** `{total_syp_str}` ل.س\n"
-        f"• مهلة الرد: ⏱️ 30 دقيقة\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"القرار النهائي الآن لدى الطرف المفاوض.",
+        "📨 **تم إرسال العرض المضاد بنجاح**\n\n"
+        f"▫️ **الكمية المقترحة:** `{amount_str}` دولار رقمي\n"
+        f"▫️ **سعر الصرف النهائي:** `{rate_str}` ل.س\n"
+        f"▫️ **الإجمالي:** `{total_syp_str}` ل.س\n"
+        "▫️ **مهلة الرد:** 30 دقيقة\n\n"
+        "بانتظار قرار الطرف المفاوض.",
         parse_mode="Markdown"
     )
 
-    # Notify Taker with Final Accept / Reject
     taker_kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ قبول العرض النهائي", callback_data=f"neg_t_acc_{neg.id}"),
@@ -597,15 +601,13 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
     ])
 
     taker_text = (
-        f"🔄 **وصلك عرض مضاد على تفاوض عرض #{neg.offer_id}**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• الكمية المقترحة: 📦 `{amount_str} USDT`\n"
-        f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n"
-        f"▫️ **الإجمالي :** `{total_syp_str}` ل.س\n"
-        f"• سجل صاحب العرض: ⭐ `{maker_completed_count}` صفقة مكتملة\n"
-        f"• مهلة الرد: ⏱️ 30 دقيقة\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"هل توافق على هذا العرض النهائي لبدء تنفيذ الصفقة؟"
+        f"🔄 **وصلك عرض مضاد — عرض #{neg.offer_id}**\n\n"
+        f"▫️ **الكمية المقترحة:** `{amount_str}` دولار رقمي\n"
+        f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
+        f"▫️ **الإجمالي:** `{total_syp_str}` ل.س\n"
+        f"▫️ **سجل صاحب العرض:** `{maker_completed_count}` صفقة مكتملة\n"
+        "▫️ **مهلة الرد:** 30 دقيقة\n\n"
+        "هل توافق على هذا العرض النهائي لبدء تنفيذ الصفقة؟"
     )
 
     try:
@@ -696,21 +698,18 @@ async def taker_reject_counter(callback: CallbackQuery, db_session: AsyncSession
 
     await callback.answer("تم رفض العرض وإلغاء جلسة التفاوض.")
     await callback.message.edit_text(
-        f"❌ **تم إنهاء جلسة التفاوض**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"تم رفض العرض المضاد وإعادة العرض #{neg.offer_id} للسوق كعرض نشط ومتاح للجميع.",
+        "❌ **تم إنهاء جلسة التفاوض**\n\n"
+        f"تم رفض العرض المضاد وإعادة العرض #{neg.offer_id} إلى السوق كعرض نشط.",
         parse_mode="Markdown"
     )
 
-    # Notify Maker
     try:
         await callback.bot.send_message(
             chat_id=neg.maker_id,
             text=(
-                f"ℹ️ **تحديث جلسة التفاوض على العرض #{neg.offer_id}**\n\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"رفض الطرف المفاوض العرض المضاد.\n"
-                f"تمت إعادة عرضك إلى السوق كعرض نشط ومتاح للجميع."
+                f"ℹ️ **تحديث جلسة التفاوض — عرض #{neg.offer_id}**\n\n"
+                "رفض الطرف المفاوض العرض المضاد.\n"
+                "تمت إعادة عرضك إلى السوق كعرض نشط ومتاح."
             ),
             parse_mode="Markdown"
         )
@@ -766,8 +765,29 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
     from bot.handlers.deals import derive_escrow_address
     deposit_address, deposit_index = await derive_escrow_address(db_session)
 
-    buyer_payout = offer.payout_info if (buyer_id == offer.user_id and offer.payout_info) else "PENDING"
-    seller_info = {"info": offer.payout_info if (seller_id == offer.user_id and offer.payout_info) else "PENDING"}
+    methods = list(offer.payment_methods) if offer.payment_methods else []
+    payout_details = offer.payout_details if isinstance(offer.payout_details, dict) else {}
+    need_buyer_pm_choice = False
+
+    if offer.offer_type == 'buy':
+        # Maker = Buyer (saved BEP-20 payout), Taker = Seller (provides SYP info after USDT deposit)
+        buyer_payout = payout_details.get("usdt_bep20_address") or offer.payout_info or "PENDING"
+        seller_info = (
+            {"method": methods[0], "info": "PENDING"}
+            if len(methods) == 1
+            else {"method": "PENDING", "info": "PENDING"}
+        )
+    else:
+        # Maker = Seller (has SYP accounts in payout_details), Taker = Buyer
+        buyer_payout = "PENDING"
+        if len(methods) == 1:
+            selected_pm = methods[0]
+            raw_acc = payout_details.get(selected_pm) or offer.payout_info or "PENDING"
+            clean_acc = extract_clean_account(raw_acc, selected_pm) or "PENDING"
+            seller_info = {"method": selected_pm, "info": clean_acc}
+        else:
+            seller_info = {"method": "PENDING", "info": "PENDING"}
+            need_buyer_pm_choice = len(methods) > 1
 
     fee_breakdown = calculate_deal_fee(amount_usdt)
 
@@ -812,4 +832,94 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
     except Exception as e:
         logger.warning(f"Failed to push deal card for negotiated deal #{new_deal.id}: {e}")
 
+    # For multi-method Sell offers, let the Buyer choose their preferred SYP payment method
+    if need_buyer_pm_choice:
+        buttons = []
+        for idx, m in enumerate(methods):
+            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
+            buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"nego_pm_{new_deal.id}_{idx}")])
+        pm_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        try:
+            await bot.send_message(
+                chat_id=buyer_id,
+                text=(
+                    f"💳 **اختيار وسيلة الدفع — صفقة #{new_deal.id}**\n\n"
+                    f"تم الاتفاق على شروط التفاوض بنجاح.\n"
+                    f"يدعم هذا العرض عدة وسائل دفع بالليرة السورية. يرجى اختيار الوسيلة التي ترغب بالتحويل عبرها:"
+                ),
+                reply_markup=pm_kb,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to prompt buyer {buyer_id} for payment method on deal #{new_deal.id}: {e}")
+
     return True
+
+
+@negotiations_router.callback_query(F.data.startswith("nego_pm_"))
+async def cq_nego_choose_payment_method(callback: CallbackQuery, db_session: AsyncSession):
+    parts = callback.data.split("_")
+    try:
+        deal_id = int(parts[-2])
+        idx = int(parts[-1])
+    except (ValueError, IndexError):
+        await callback.answer("⚠️ اختيار غير صالح.", show_alert=True)
+        return
+
+    res = await db_session.execute(select(Deal).where(Deal.id == deal_id).with_for_update())
+    deal = res.scalar_one_or_none()
+    if not deal:
+        await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
+        return
+
+    if callback.from_user.id != deal.buyer_id and callback.from_user.id not in settings.ADMIN_IDS:
+        await db_session.commit()
+        await callback.answer("غير مصرح: اختيار وسيلة الدفع متاح للمشتري فقط.", show_alert=True)
+        return
+
+    if deal.status not in ("AWAITING_USDT_DEPOSIT", "CREATED", "USDT_DEPOSITED"):
+        await db_session.commit()
+        await callback.answer("لا يمكن تغيير وسيلة الدفع في هذه المرحلة من الصفقة.", show_alert=True)
+        return
+
+    existing_method = deal.seller_payment_info.get("method") if isinstance(deal.seller_payment_info, dict) else None
+    if existing_method and existing_method not in ("غير محدد", "PENDING"):
+        await db_session.commit()
+        await callback.answer(f"تم تحديد وسيلة الدفع مسبقاً ({existing_method}).", show_alert=True)
+        return
+
+    offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+    offer = offer_res.scalar_one_or_none()
+    methods = list(offer.payment_methods) if (offer and offer.payment_methods) else []
+
+    if idx < 0 or idx >= len(methods):
+        await db_session.commit()
+        await callback.answer("⚠️ وسيلة الدفع المحددة غير صالحة لهذا العرض.", show_alert=True)
+        return
+
+    chosen_pm = methods[idx]
+    payout_details = offer.payout_details if (offer and isinstance(offer.payout_details, dict)) else {}
+    raw_acc = payout_details.get(chosen_pm) or (offer.payout_info if offer else None) or "PENDING"
+    clean_acc = extract_clean_account(raw_acc, chosen_pm) or "PENDING"
+
+    deal.seller_payment_info = {"method": chosen_pm, "info": clean_acc}
+    if deal.status == "USDT_DEPOSITED" and clean_acc != "PENDING":
+        deal.status = "AWAITING_SYP_PAYMENT"
+        deal.expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+
+    await db_session.commit()
+
+    try:
+        await callback.message.edit_text(
+            f"✅ **تم اعتماد وسيلة الدفع — صفقة #{deal.id}**\n\n"
+            f"▫️ **الوسيلة المختارة:** {chosen_pm}",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+
+    await callback.answer("تم اختيار وسيلة الدفع بنجاح ✅")
+    try:
+        await push_deal_card(deal.id, callback.bot)
+    except Exception as e:
+        logger.warning(f"Failed to push deal card after buyer method selection on deal #{deal.id}: {e}")

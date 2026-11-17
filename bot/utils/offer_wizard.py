@@ -122,9 +122,9 @@ def is_wizard_data_complete(wizard_data: dict) -> Tuple[bool, str]:
 
 
 def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str:
-    """Format full, rich summary markdown for the offer owner before publication."""
+    """Format full, clean summary markdown for the offer owner before publication."""
     offer_type = wizard_data.get("offer_type", "")
-    type_ar = "🔴 بيع USDT (استلام ليرة سورية)" if offer_type == "sell" else "🟢 شراء USDT (دفع ليرة سورية)"
+    type_ar = "🔴 بيع دولار رقمي (استلام ليرة سورية)" if offer_type == "sell" else "🟢 شراء دولار رقمي (دفع ليرة سورية)"
 
     rate_val = wizard_data.get("rate", "0")
     try:
@@ -146,7 +146,6 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
     except Exception:
         max_str = str(max_val)
 
-    # Payment methods
     methods = wizard_data.get("payment_methods", []) or []
     formatted_methods = []
     for m in methods:
@@ -154,34 +153,33 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
         formatted_methods.append(f"{icon} {m}")
     methods_str = "، ".join(formatted_methods) if formatted_methods else "غير محدد"
 
-    # Payout details
     payout_details = wizard_data.get("payout_details", {}) or {}
     payout_lines = []
     if offer_type == "sell":
         for m in methods:
-            acc = payout_details.get(m, "لم يُحدد")
+            acc = str(payout_details.get(m, "غير محدد"))
+            if acc.startswith(f"{m}: "):
+                acc = acc[len(m) + 2:].strip()
             icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-            payout_lines.append(f"  • {icon} **{m}:** `{acc}`")
+            payout_lines.append(f"▫️ {icon} **{m}:**\n`{acc}`")
     else:
-        wallet = payout_details.get("usdt_bep20_address", "لم يُحدد")
-        payout_lines.append(f"  • 📥 **محفظة استلام USDT (BEP-20):** `{wallet}`")
+        wallet = payout_details.get("usdt_bep20_address", "غير محدد")
+        payout_lines.append(f"📥 **محفظة الاستلام (BEP-20):**\n`{wallet}`")
 
-    payout_section = "\n".join(payout_lines) if payout_lines else "  • غير مسجلة"
+    payout_section = "\n".join(payout_lines) if payout_lines else "▫️ غير مسجلة"
 
-    # Negotiation
     is_neg = wizard_data.get("negotiable", False)
     neg_type = wizard_data.get("negotiable_type", "none")
     if is_neg and neg_type != "none":
         neg_labels = {
-            "amount": "متاح على الكمية فقط 📦",
-            "rate": "متاح على السعر فقط 💵",
-            "both": "متاح على السعر والكمية معاً ⚖️"
+            "amount": "متاح على الكمية فقط",
+            "rate": "متاح على السعر فقط",
+            "both": "متاح على السعر والكمية معاً"
         }
-        neg_str = neg_labels.get(neg_type, "متاح 🤝")
+        neg_str = neg_labels.get(neg_type, "متاح")
     else:
-        neg_str = "شروط ثابتة فقط (غير متاح للتفاوض) 🔒"
+        neg_str = "غير متاح (شروط ثابتة)"
 
-    # Duration
     dur_val = wizard_data.get("duration_hours", 4.0)
     try:
         dur_float = float(dur_val)
@@ -190,20 +188,21 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
         dur_str = f"{dur_val} ساعات"
 
     lines = [
-        f"📋 **المراجعة النهائية وتأكيد نشر العرض**\n",
-        f"🏷️ **نوع العملية :** {type_ar}",
-        f"💵 **سعر الصرف :** `{rate_str}` ل.س",
-        f"💰 **حدود الكمية :** من `{min_str}` إلى `{max_str}` دولار",
-        f"💳 **وسائل الدفع المقبولة :** {methods_str}",
+        "📋 **المراجعة النهائية وتأكيد نشر العرض**",
         "",
-        "🔒 **بيانات الاستلام الخاصة بك (لن تظهر علناً في القناة):**",
+        f"▫️ **النوع:** {type_ar}",
+        f"▫️ **سعر الصرف:** `{rate_str}` ل.س",
+        f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي",
+        f"▫️ **وسائل الدفع:** {methods_str}",
+        f"▫️ **التفاوض:** {neg_str}",
+        f"▫️ **مدة الصلاحية:** {dur_str}",
+        "",
+        "🔒 **بيانات الاستلام الخاصة (لا تُنشر في القناة):**",
         f"{payout_section}",
         "",
-        f"🤝 **التفاوض :** {neg_str}",
-        f"⌛ **صلاحية العرض :** {dur_str}",
-        f"{FEE_RULE_LINE}",
+        f"{format_fee_rule_line()}",
         "",
-        "👇 اضغط على «تأكيد ونشر العرض» لطرحه في السوق، أو اختر أي قسم لتعديله مباشرة:"
+        "اضغط «تأكيد ونشر العرض» لطرحه في السوق، أو اختر أي بند لتعديله.",
     ]
 
     return "\n".join(lines)

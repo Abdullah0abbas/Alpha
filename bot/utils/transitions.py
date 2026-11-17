@@ -25,14 +25,14 @@ def can_expire_deal(
     return expires_at <= current_time
 
 
-def can_enter_grace_period(
+def can_expire_active_offer(
     current_status: str,
     expires_at: Optional[datetime],
     now: Optional[datetime] = None
 ) -> bool:
     """
-    Checks if an offer can transition from 'active' to 'expired_grace'.
-    Offers in 'reserved', 'negotiating', 'cancelled', 'expired', 'completed' are strictly disallowed.
+    Checks if an active offer's duration has elapsed and should be immediately deleted ('deleted').
+    Offers in 'reserved', 'negotiating', 'cancelled', 'expired', 'completed', 'deleted' are disallowed.
     """
     if current_status != "active":
         return False
@@ -42,15 +42,16 @@ def can_enter_grace_period(
     return expires_at <= current_time
 
 
-def can_permanently_expire_offer(
+def can_remind_syp_payment(
     current_status: str,
     expires_at: Optional[datetime],
     now: Optional[datetime] = None
 ) -> bool:
     """
-    Checks if an offer in 'expired_grace' has exhausted its 30-min grace period and must be archived as 'expired'.
+    Checks if a deal in AWAITING_SYP_PAYMENT has reached its 30-min reminder timestamp
+    without closing the deal (escrow funds remain safely held).
     """
-    if current_status != "expired_grace":
+    if current_status != "AWAITING_SYP_PAYMENT":
         return False
     if expires_at is None:
         return False
@@ -77,16 +78,16 @@ def can_expire_negotiation(
 def can_extend_offer(current_status: str) -> Tuple[bool, str]:
     """
     Validates if an offer can be extended.
-    Allowed only when status is 'active' or 'expired_grace'.
+    Allowed only when status is 'active'.
     Returns (can_extend, reason_ar).
     """
-    if current_status in ("active", "expired_grace"):
+    if current_status == "active":
         return True, ""
     if current_status == "reserved":
         return False, "هذا العرض مرتبط بصفقة قيد التنفيذ حالياً."
     if current_status == "negotiating":
         return False, "هذا العرض مرتبط بجلسة تفاوض نشطة حالياً."
-    if current_status in ("cancelled", "expired", "completed"):
+    if current_status in ("cancelled", "expired", "completed", "deleted", "expired_grace"):
         return False, "عذراً، هذا العرض منتهي أو تم حذفه مسبقاً ولا يمكن تمديده."
     return False, "عذراً، حالة العرض الحالية لا تسمح بتمديده."
 
@@ -94,16 +95,16 @@ def can_extend_offer(current_status: str) -> Tuple[bool, str]:
 def can_delete_offer(current_status: str) -> Tuple[bool, str]:
     """
     Validates if an offer can be cancelled/deleted by maker/admin.
-    Allowed when status is 'active' or 'expired_grace'.
+    Allowed only when status is 'active'.
     Returns (can_delete, reason_ar).
     """
-    if current_status in ("active", "expired_grace"):
+    if current_status == "active":
         return True, ""
     if current_status == "reserved":
         return False, "لا يمكن إلغاء العرض لوجود صفقة جارية عليه حالياً."
     if current_status == "negotiating":
         return False, "لا يمكن إلغاء العرض لوجود جلسة تفاوض جارية عليه حالياً."
-    if current_status in ("cancelled", "expired", "completed"):
+    if current_status in ("cancelled", "expired", "completed", "deleted", "expired_grace"):
         return False, "تم إنهاء أو حذف هذا العرض مسبقاً."
     return False, "عذراً، حالة العرض الحالية لا تسمح بإلغائه."
 

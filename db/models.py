@@ -33,7 +33,7 @@ class Offer(Base):
     min_limit: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     max_limit: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     payment_methods: Mapped[list[str] | None] = mapped_column(ARRAY(String))
-    # Status lifecycle: 'active', 'reserved', 'completed', 'expired_grace', 'expired', 'cancelled'
+    # Status lifecycle: 'active', 'reserved', 'negotiating', 'completed', 'expired', 'cancelled', 'deleted'
     status: Mapped[str | None] = mapped_column(String, server_default="active")
     channel_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payout_info: Mapped[str | None] = mapped_column(String, nullable=True)

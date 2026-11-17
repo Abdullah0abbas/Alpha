@@ -107,97 +107,98 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
 
     # Format seller payment info
     if isinstance(deal.seller_payment_info, dict):
-        seller_account_info = deal.seller_payment_info.get("info", "غير محدد")
+        seller_method = str(deal.seller_payment_info.get("method") or "").strip()
+        seller_account_info = str(deal.seller_payment_info.get("info") or "غير محدد").strip()
+        if seller_method and seller_method not in ("غير محدد", "PENDING"):
+            seller_payment_display = f"{escape_markdown(seller_method)}\n`{escape_markdown(seller_account_info)}`"
+        else:
+            seller_payment_display = f"\n`{escape_markdown(seller_account_info)}`"
     else:
         seller_account_info = str(deal.seller_payment_info or "غير محدد")
+        seller_payment_display = f"\n`{escape_markdown(seller_account_info)}`"
 
-    seller_account_escaped = escape_markdown(seller_account_info)
-    buyer_wallet_escaped = escape_markdown(deal.buyer_payout_address or "غير محدد")
+    raw_buyer_wallet = (deal.buyer_payout_address or "").strip()
+    has_buyer_wallet = bool(raw_buyer_wallet and raw_buyer_wallet not in ("PENDING", "غير محدد", "N/A"))
+    buyer_wallet_line = (
+        f"\n`{escape_markdown(raw_buyer_wallet)}`"
+        if has_buyer_wallet
+        else " غير مسجلة بعد"
+    )
 
-    # Honest verification block based on actual deal status
     current_status = deal.status
     status_label = STATUS_ARABIC_MAP.get(current_status, current_status)
 
     if current_status in ("ADMIN_APPROVAL", "SYP_PAYMENT_CONFIRMED"):
         verification_lines = (
-            f"**سجل التحقق:**\n\n"
-            f"• إيداع الضمان: مسجل ومأكد يدوياً من البائع (وضع المحاكاة) ⏳\n"
-            f"• تحويل الليرة: مؤكد استلامه من البائع ✅\n"
-            f"• عنوان المستلم: مسجل ومتحقق منه ✅\n\n\n"
-            f"الصفقة جاهزة للاعتماد النهائي وإطلاق الرصيد:"
+            "📌 **سجل التحقق**\n"
+            "⏳ إيداع الضمان: مؤكد من البائع (وضع المحاكاة)\n"
+            "✅ تحويل الليرة: مؤكد استلامه من البائع\n"
+            "✅ محفظة المستلم: مسجلة ومتحقق منها\n\n"
+            "الصفقة جاهزة للاعتماد وإطلاق الرصيد."
         )
     elif current_status == "COMPLETED":
         verification_lines = (
-            f"**سجل التحقق:**\n\n"
-            f"• إيداع الضمان: مكتمل برمجياً (وضع المحاكاة) ✅\n"
-            f"• تحويل الليرة: مؤكد ومكتمل ✅\n"
-            f"• عنوان المستلم: تم اعتماد إطلاق الرصيد إليه برمجياً ✅\n\n\n"
-            f"الصفقة مكتملة ومغلقة بنجاح."
+            "📌 **سجل التحقق**\n"
+            "✅ إيداع الضمان: مكتمل (وضع المحاكاة)\n"
+            "✅ تحويل الليرة: مؤكد ومكتمل\n"
+            "✅ محفظة المستلم: تم إطلاق الرصيد إليها"
         )
-
     elif current_status in ("PENDING_OWNER_APPROVAL", "CREATED", "AWAITING_USDT_DEPOSIT"):
-        payout_status = "مسجل ومتحقق منه ✅" if (deal.buyer_payout_address and deal.buyer_payout_address != "PENDING") else "غير مسجل بعد ⏳"
+        payout_status = "مسجلة ✅" if has_buyer_wallet else "غير مسجلة بعد ⏳"
         verification_lines = (
-            f"**سجل التحقق (الوضع الحالي: {status_label}):**\n\n"
-            f"• إيداع الضمان: بانتظار إيداع البائع ⏳\n"
-            f"• تحويل الليرة: لم يبدأ بعد ⏳\n"
-            f"• عنوان المستلم: {payout_status}\n\n\n"
-            f"الصفقة قيد انتظار إيداع الضمان."
+            "📌 **سجل التحقق**\n"
+            "⏳ إيداع الضمان: بانتظار البائع\n"
+            "⏳ تحويل الليرة: لم يبدأ بعد\n"
+            f"▫️ محفظة المستلم: {payout_status}"
         )
     elif current_status in ("USDT_DEPOSITED", "AWAITING_SYP_PAYMENT"):
-        payout_status = "مسجل ومتحقق منه ✅" if (deal.buyer_payout_address and deal.buyer_payout_address != "PENDING") else "غير مسجل بعد ⏳"
+        payout_status = "مسجلة ✅" if has_buyer_wallet else "غير مسجلة بعد ⏳"
         verification_lines = (
-            f"**سجل التحقق (الوضع الحالي: {status_label}):**\n\n"
-            f"• إيداع الضمان: مؤكد ومحجوز ✅\n"
-            f"• تحويل الليرة: بانتظار تحويل المشتري ⏳\n"
-            f"• عنوان المستلم: {payout_status}\n\n\n"
-            f"الصفقة قيد انتظار تحويل الليرة السورية."
+            "📌 **سجل التحقق**\n"
+            "✅ إيداع الضمان: مؤكد ومحجوز\n"
+            "⏳ تحويل الليرة: بانتظار المشتري\n"
+            f"▫️ محفظة المستلم: {payout_status}"
         )
     elif current_status == "SYP_PAYMENT_SENT":
-        payout_status = "مسجل ومتحقق منه ✅" if (deal.buyer_payout_address and deal.buyer_payout_address != "PENDING") else "غير مسجل بعد ⏳"
+        payout_status = "مسجلة ✅" if has_buyer_wallet else "غير مسجلة بعد ⏳"
         verification_lines = (
-            f"**سجل التحقق (الوضع الحالي: {status_label}):**\n\n"
-            f"• إيداع الضمان: مؤكد ومحجوز ✅\n"
-            f"• تحويل الليرة: أرسل المشتري الإشعار وبانتظار تأكيد البائع ⏳\n"
-            f"• عنوان المستلم: {payout_status}\n\n\n"
-            f"الصفقة بانتظار تأكيد البائع لاستلام الليرة."
+            "📌 **سجل التحقق**\n"
+            "✅ إيداع الضمان: مؤكد ومحجوز\n"
+            "⏳ تحويل الليرة: بانتظار تأكيد البائع\n"
+            f"▫️ محفظة المستلم: {payout_status}"
         )
     elif current_status == "DISPUTED":
         verification_lines = (
-            f"**سجل التحقق (الوضع الحالي: ⚠️ نزاع مفتوح):**\n\n"
-            f"• إيداع الضمان: محجوز بأمان لدى المنصة 🛡️\n"
-            f"• تحويل الليرة: محل نزاع بين الطرفين ⚠️\n"
-            f"• عنوان المستلم: مسجل `{buyer_wallet_escaped}`\n\n\n"
-            f"الصفقة تتطلب مراجعة النزاع واتخاذ قرار الإدارة."
+            "📌 **سجل التحقق**\n"
+            "🛡️ إيداع الضمان: محجوز لدى المنصة\n"
+            "⚠️ تحويل الليرة: نزاع مفتوح بين الطرفين\n\n"
+            "الصفقة تتطلب مراجعة الإدارة وحسم النزاع."
         )
     else:
         verification_lines = (
-            f"**سجل التحقق (الوضع الحالي: {status_label}):**\n\n"
-            f"• إيداع الضمان: —\n"
-            f"• تحويل الليرة: —\n"
-            f"• عنوان المستلم: `{buyer_wallet_escaped}`\n\n\n"
-            f"الصفقة بحالة: {status_label}"
+            "📌 **سجل التحقق**\n"
+            f"▫️ الوضع الحالي: {status_label}"
         )
 
     return (
-        f"🛡️ **مراجعة وتدقيق صفقة ضمان #{deal.id}**\n\n\n"
-        f"**تفاصيل الصفقة المالية:**\n\n"
-        f"• وقت الإنشاء:  `{created_date_str}`\n"
-        f"• الحالة الحالية:  `{status_label}`\n"
-        f"▫️ **الكمية :** `{usdt_str}` دولار\n"
-        f"▫️ **الإجمالي :** `{syp_str}` ل.س\n"
-        f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n"
-        f"• عمولة المنصة:  `{fee_str}` USDT (البائع: `{seller_fee_str}` | المشتري: `{buyer_fee_str}`)\n"
-        f"• مطلوب إيداع البائع:  `{seller_deposit_str}` USDT\n"
-        f"• صافي استلام المشتري:  `{buyer_receives_str}` USDT\n"
-        f"• محفظة الإيداع:  `{deal.deposit_address}`\n\n\n"
-        f"🔴 **طرف البيع:**\n\n"
-        f"• المعرف:  `{deal.seller_id}` ({seller_display})\n"
-        f"• السجل:  `{seller_deals_count}` صفقة ({seller_rep})\n"
-        f"• حساب استلام الليرة:  `{seller_account_escaped}`\n\n\n"
-        f"🟢 **طرف الشراء:**\n\n"
-        f"• المعرف:  `{deal.buyer_id}` ({buyer_display})\n"
-        f"• السجل:  `{buyer_deals_count}` صفقة ({buyer_rep})\n"
-        f"• محفظة استلام USDT:  `{buyer_wallet_escaped}`\n\n\n"
+        f"🛡️ **مراجعة الصفقة #{deal.id}**\n\n"
+        "📋 **الملخص المالي**\n"
+        f"▫️ **الحالة:** {status_label}\n"
+        f"▫️ **التاريخ:** `{created_date_str}`\n"
+        f"▫️ **الكمية:** `{usdt_str}` دولار رقمي\n"
+        f"▫️ **الإجمالي:** `{syp_str}` ل.س\n"
+        f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
+        f"▫️ **إجمالي العمولة:** `{fee_str}` (البائع `{seller_fee_str}` | المشتري `{buyer_fee_str}`)\n"
+        f"▫️ **مطلوب إيداع البائع:** `{seller_deposit_str}` دولار رقمي\n"
+        f"▫️ **صافي استلام المشتري:** `{buyer_receives_str}` دولار رقمي\n"
+        f"▫️ **محفظة الإيداع:**\n`{deal.deposit_address}`\n\n"
+        "🔴 **طرف البيع**\n"
+        f"▫️ **الحساب:** `{deal.seller_id}` ({seller_display})\n"
+        f"▫️ **السجل:** `{seller_deals_count}` صفقة ({seller_rep})\n"
+        f"▫️ **حساب الاستلام:** {seller_payment_display}\n\n"
+        "🟢 **طرف الشراء**\n"
+        f"▫️ **الحساب:** `{deal.buyer_id}` ({buyer_display})\n"
+        f"▫️ **السجل:** `{buyer_deals_count}` صفقة ({buyer_rep})\n"
+        f"▫️ **محفظة الاستلام:**{buyer_wallet_line}\n\n"
         f"{verification_lines}"
     )

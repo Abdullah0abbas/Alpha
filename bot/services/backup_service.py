@@ -266,18 +266,18 @@ async def perform_and_send_backup(bot: Bot, recipient_id: int | None = None, is_
     title_tag = "⏰ **النسخة الاحتياطية اليومية المجدولة**" if is_scheduled else "💾 **نسخة احتياطية فورية لقاعدة البيانات**"
 
     caption = (
-        f"{title_tag}\n\n\n"
-        f"• اسم الملف:  `{filename}`\n\n"
-        f"• حجم الملف:  `{file_size_kb}` KB (مضغوط)\n\n"
-        f"• توقيت النسخ:  `{now_str}`\n\n"
-        f"• حالة النسخة:  محفوظة على السيرفر بنجاح ✅\n\n\n"
-        f"📊 **سجل البيانات المضمنة:**\n\n"
-        f"• المستخدمين:  `{stats.get('users', 0)}`\n"
-        f"• الصفقات:  `{stats.get('deals', 0)}`\n"
-        f"• العروض:  `{stats.get('offers', 0)}`\n"
-        f"• المفاوضات:  `{stats.get('negotiations', 0)}`\n"
-        f"• النزاعات:  `{stats.get('disputes', 0)}`\n\n\n"
-        f"تم حفظ النسخة محلياً في مسار `/backups/` على السيرفر."
+        f"{title_tag}\n\n"
+        f"▫️ **اسم الملف:** `{filename}`\n"
+        f"▫️ **حجم الملف:** `{file_size_kb}` كيلوبايت\n"
+        f"▫️ **توقيت النسخ:** `{now_str}`\n"
+        f"▫️ **الحالة:** محفوظة على الخادم بنجاح ✅\n\n"
+        f"📊 **البيانات المضمنة:**\n"
+        f"▫️ **المستخدمون:** `{stats.get('users', 0)}`\n"
+        f"▫️ **الصفقات:** `{stats.get('deals', 0)}`\n"
+        f"▫️ **العروض:** `{stats.get('offers', 0)}`\n"
+        f"▫️ **المفاوضات:** `{stats.get('negotiations', 0)}`\n"
+        f"▫️ **النزاعات:** `{stats.get('disputes', 0)}`\n\n"
+        f"تم حفظ النسخة محلياً في مسار `/backups/`."
     )
 
     targets = [recipient_id] if recipient_id else settings.ADMIN_IDS

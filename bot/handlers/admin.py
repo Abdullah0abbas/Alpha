@@ -163,22 +163,21 @@ async def get_stats_text(db_session: AsyncSession) -> str:
     month_net_profit = profit_month_res.scalar_one() or Decimal("0")
 
     return (
-        f"📊 **إحصائيات وتقارير {BOT_NAME}**\n\n\n"
-        "👥 **إجمالي المستخدمين المسجلين:**\n"
-        f"• `{total_users:,}` مستخدم\n\n\n"
-        "💰 **صافي أرباح العمولات (الصفقات المكتملة):**\n\n"
-        f"• الإجمالي العام:  `{format_usdt(total_net_profit)}` USDT\n"
-        f"• الشهر الحالي:  `{format_usdt(month_net_profit)}` USDT\n\n\n"
-        "📅 **إحصائيات الشهر الحالي:**\n\n"
-        f"• إجمالي الصفقات:  `{total_closed_month}` صفقة\n"
-        f"  - مكتملة:  `{comp_month}` ({calc_pct(comp_month, total_closed_month)})\n"
-        f"  - ملغاة:  `{canc_month}` ({calc_pct(canc_month, total_closed_month)})\n"
-        f"  - منتهية الصلاحية:  `{exp_month}` ({calc_pct(exp_month, total_closed_month)})\n\n\n"
-        "🌐 **الإحصائيات العامة التراكمية:**\n\n"
-        f"• إجمالي الصفقات:  `{total_closed_all}` صفقة\n"
-        f"  - مكتملة:  `{comp_all}` ({calc_pct(comp_all, total_closed_all)})\n"
-        f"  - ملغاة:  `{canc_all}` ({calc_pct(canc_all, total_closed_all)})\n"
-        f"  - منتهية الصلاحية:  `{exp_all}` ({calc_pct(exp_all, total_closed_all)})"
+        f"📊 **إحصائيات وتقارير {BOT_NAME}**\n\n"
+        f"👥 **المستخدمون المسجلون:** `{total_users:,}` مستخدم\n\n"
+        "💰 **صافي أرباح العمولات (الصفقات المكتملة):**\n"
+        f"▫️ **الإجمالي العام:** `{format_usdt(total_net_profit)}` دولار رقمي\n"
+        f"▫️ **الشهر الحالي:** `{format_usdt(month_net_profit)}` دولار رقمي\n\n"
+        "📅 **إحصائيات الشهر الحالي:**\n"
+        f"▫️ **إجمالي الصفقات:** `{total_closed_month}` صفقة\n"
+        f"▫️ **مكتملة:** `{comp_month}` ({calc_pct(comp_month, total_closed_month)})\n"
+        f"▫️ **ملغاة:** `{canc_month}` ({calc_pct(canc_month, total_closed_month)})\n"
+        f"▫️ **منتهية الصلاحية:** `{exp_month}` ({calc_pct(exp_month, total_closed_month)})\n\n"
+        "🌐 **الإحصائيات التراكمية:**\n"
+        f"▫️ **إجمالي الصفقات:** `{total_closed_all}` صفقة\n"
+        f"▫️ **مكتملة:** `{comp_all}` ({calc_pct(comp_all, total_closed_all)})\n"
+        f"▫️ **ملغاة:** `{canc_all}` ({calc_pct(canc_all, total_closed_all)})\n"
+        f"▫️ **منتهية الصلاحية:** `{exp_all}` ({calc_pct(exp_all, total_closed_all)})"
     )
 
 @admin_router.message(Command("stats"))
@@ -198,7 +197,7 @@ async def cmd_admin_search(message: Message, state: FSMContext):
         return
     await state.set_state(AdminFSM.waiting_for_user_search_id)
     text = (
-        "🔍 **الاستعلام عن مستخدم**\n\n\n"
+        "🔍 **الاستعلام عن مستخدم**\n\n"
         "أرسل معرّف تيليغرام الرقمي للمستخدم:\n"
         "*(مثال: `123456789`)*"
     )
@@ -270,10 +269,10 @@ async def cmd_admin_broadcast(message: Message, state: FSMContext):
         return
     await state.set_state(AdminFSM.waiting_for_broadcast_text)
     text = (
-        "📢 **إرسال رسالة بث جماعي**\n\n\n"
-        f"أرسل الآن نص الرسالة التي ترغب بإرسالها لجميع مستخدمي {BOT_NAME}:\n\n"
-        "• تدعم الرسالة التنسيق المتقدم.\n"
-        "• سيتم الإرسال لجميع الحسابات المسجلة بشكل فردي."
+        "📢 **إرسال رسالة بث جماعي**\n\n"
+        f"أرسل الآن نص الرسالة المراد تعميمها على مستخدمي {BOT_NAME}:\n\n"
+        "▫️ تدعم الرسالة التنسيق النصي.\n"
+        "▫️ سيتم الإرسال لجميع الحسابات المسجلة تباعاً."
     )
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
@@ -311,9 +310,7 @@ async def cq_admin_search_user(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminFSM.waiting_for_user_search_id)
     text = (
         "🔍 **الاستعلام عن مستخدم**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "أرسل معرّف تيليغرام الرقمي للمستخدم (أرقام فقط):\n"
-        "━━━━━━━━━━━━━━━"
+        "أرسل معرّف تيليغرام الرقمي للمستخدم (أرقام فقط):"
     )
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
@@ -367,13 +364,13 @@ async def send_user_card(event_or_msg, user: User, is_edit: bool = False):
     reg_date = format_local_datetime(user.created_at) if user.created_at else "غير محدد"
 
     card_text = (
-        f"👤 **ملف المستخدم:**  `{user.telegram_id}`\n\n\n"
-        f"• اسم المستخدم:  {uname}\n\n"
-        f"• المعرف الرقمي:  `{user.telegram_id}`\n\n"
-        f"• تاريخ التسجيل:  `{reg_date}`\n\n"
-        f"• الصفقات المكتملة:  `{user.completed_deals_count}` صفقة\n\n"
-        f"• تقييم السمعة:  ⭐ `{user.reputation_score}` من 5.0\n\n"
-        f"• حالة الحساب:  {ban_badge}"
+        f"👤 **ملف المستخدم —** `{user.telegram_id}`\n\n"
+        f"▫️ **اسم المستخدم:** {uname}\n"
+        f"▫️ **المعرف الرقمي:** `{user.telegram_id}`\n"
+        f"▫️ **تاريخ التسجيل:** `{reg_date}`\n"
+        f"▫️ **الصفقات المكتملة:** `{user.completed_deals_count}` صفقة\n"
+        f"▫️ **تقييم السمعة:** ⭐ `{user.reputation_score if user.reputation_score is not None else 100}%`\n"
+        f"▫️ **حالة الحساب:** {ban_badge}"
     )
 
     toggle_btn_text = "✅ فك الحظر عن المستخدم" if user.is_banned else "🚫 حظر المستخدم فوراً"
@@ -446,12 +443,10 @@ async def cq_admin_broadcast(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(AdminFSM.waiting_for_broadcast_text)
     text = (
-        "📢 **إرسال رسالة بث عام عبر Alpha Bot**\n\n"
-        "━━━━━━━━━━━━━━━\n"
+        f"📢 **إرسال رسالة بث عام — {BOT_NAME}**\n\n"
         "أرسل نص الرسالة المطلوب تعميمها على مستخدمي البوت.\n\n"
-        "• تدعم الرسالة التنسيق.\n"
-        "• يتم الإرسال لكافة الحسابات المسجلة تباعاً.\n"
-        "━━━━━━━━━━━━━━━"
+        "▫️ تدعم الرسالة التنسيق النصي.\n"
+        "▫️ يتم الإرسال لكافة الحسابات المسجلة تباعاً."
     )
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
@@ -477,7 +472,7 @@ async def process_broadcast_message(message: Message, state: FSMContext, db_sess
     total_recipients = len(all_user_ids)
 
     status_msg = await message.answer(
-        f"⏳ جاري بدء إرسال البث لـ `{total_recipients}` مستخدم...\nيرجى الانتظار...",
+        f"⏳ جاري إرسال البث لـ `{total_recipients}` مستخدم...\nيرجى الانتظار.",
         parse_mode="Markdown"
     )
 
@@ -485,10 +480,8 @@ async def process_broadcast_message(message: Message, state: FSMContext, db_sess
     fail_count = 0
 
     formatted_broadcast = (
-        "📢 **تنبيه إداري — Alpha Bot**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        f"{broadcast_text}\n"
-        "━━━━━━━━━━━━━━━"
+        f"📢 **تنبيه إداري — {BOT_NAME}**\n\n"
+        f"{broadcast_text}"
     )
 
     for uid in all_user_ids:
@@ -506,11 +499,9 @@ async def process_broadcast_message(message: Message, state: FSMContext, db_sess
 
     summary_text = (
         "✅ **اكتملت عملية البث الجماعي**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        f"• إجمالي المستهدفين: `{total_recipients}`\n"
-        f"• ✅ تم الإرسال بنجاح: `{success_count}`\n"
-        f"• ❌ فشل الإرسال (حظر البوت أو حساب ملغى): `{fail_count}`\n"
-        "━━━━━━━━━━━━━━━"
+        f"▫️ **إجمالي المستهدفين:** `{total_recipients}`\n"
+        f"▫️ **تم الإرسال بنجاح:** `{success_count}`\n"
+        f"▫️ **فشل الإرسال (حظر أو حساب ملغى):** `{fail_count}`"
     )
     await status_msg.edit_text(summary_text, reply_markup=get_admin_back_kb(), parse_mode="Markdown")
 
@@ -613,15 +604,15 @@ async def cmd_admin_pending(message: Message, db_session: AsyncSession):
         return
 
     await message.answer(
-        f"🛡️ **الصفقات المعلقة بانتظار الاعتماد الإداري:**  `{len(pending_deals)}` صفقة\n\n"
-        "يمكنك مراجعة كل صفقة واعتماد إطلاق الرصيد فوراً:",
+        f"🛡️ **الصفقات المعلقة بانتظار الاعتماد الإداري:** `{len(pending_deals)}` صفقة\n\n"
+        "يمكنك مراجعة كل صفقة واعتماد إطلاق الرصيد:",
         parse_mode="Markdown"
     )
 
     for deal in pending_deals:
         admin_text = await format_admin_deal_review_text(deal, db_session)
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")],
+            [InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")],
             [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")]
         ])
         await message.answer(admin_text, reply_markup=admin_kb, parse_mode="Markdown")
@@ -651,7 +642,7 @@ async def cmd_admin_inspect_deal(message: Message, db_session: AsyncSession):
     admin_text = await format_admin_deal_review_text(deal, db_session)
     buttons = []
     if deal.status == "ADMIN_APPROVAL":
-        buttons.append([InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
+        buttons.append([InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
     buttons.append([InlineKeyboardButton(text="🔄 تحديث البيانات", callback_data=f"adm_inspect_deal_{deal.id}")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -675,7 +666,7 @@ async def cq_admin_inspect_deal(callback: CallbackQuery, db_session: AsyncSessio
     admin_text = await format_admin_deal_review_text(deal, db_session)
     buttons = []
     if deal.status == "ADMIN_APPROVAL":
-        buttons.append([InlineKeyboardButton(text="🚀 اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
+        buttons.append([InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
     buttons.append([InlineKeyboardButton(text="🔄 تحديث البيانات", callback_data=f"adm_inspect_deal_{deal.id}")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -736,24 +727,24 @@ async def cmd_admin_market(message: Message, db_session: AsyncSession):
     avg_rate_month = (month_syp_vol / month_usdt_vol).quantize(Decimal("1")) if month_usdt_vol > 0 else Decimal("0")
 
     market_text = (
-        "📈 **تحليلات وبيانات السوق المالية**\n\n\n"
-        "💵 **حجم التداول المالي المنفّذ (الصفقات المكتملة):**\n\n"
-        f"• الإجمالي التراكمي:  `{format_usdt(total_usdt_vol)}` USDT\n"
-        f"• الإجمالي بالليرة:  `{format_syp(total_syp_vol)}` ل.س\n"
-        f"• متوسط سعر التنفيذ العام:  `{format_syp(avg_rate_all)}` ل.س\n"
-        f"• عدد الصفقات المكتملة:  `{total_comp_count}` صفقة\n\n\n"
-        "📅 **حجم التداول خلال الشهر الحالي:**\n\n"
-        f"• حجم الشهر:  `{format_usdt(month_usdt_vol)}` USDT\n"
-        f"• بالليرة:  `{format_syp(month_syp_vol)}` ل.س\n"
-        f"• متوسط سعر تنفيذ الشهر:  `{format_syp(avg_rate_month)}` ل.س\n"
-        f"• صفقات هذا الشهر:  `{month_comp_count}` صفقة\n\n\n"
-        "📦 **عمق السوق والعروض النشطة حالياً:**\n\n"
-        f"• عروض البيع النشطة:  `{sell_cnt}` عرض\n"
-        f"  - حجم السيولة المعروضة للبيع:  `{format_usdt(sell_usdt_pool)}` USDT\n"
-        f"  - متوسط سعر البيع المعروض:  `{format_syp(sell_avg_rate)}` ل.س\n\n"
-        f"• عروض الشراء النشطة:  `{buy_cnt}` عرض\n"
-        f"  - حجم الطلب المعروض للشراء:  `{format_usdt(buy_usdt_pool)}` USDT\n"
-        f"  - متوسط سعر الشراء المطلوب:  `{format_syp(buy_avg_rate)}` ل.س"
+        "📈 **تحليلات السوق**\n\n"
+        "💵 **حجم التداول المنفّذ (الصفقات المكتملة):**\n"
+        f"▫️ **الإجمالي التراكمي:** `{format_usdt(total_usdt_vol)}` دولار رقمي\n"
+        f"▫️ **الإجمالي بالليرة:** `{format_syp(total_syp_vol)}` ل.س\n"
+        f"▫️ **متوسط سعر التنفيذ العام:** `{format_syp(avg_rate_all)}` ل.س\n"
+        f"▫️ **عدد الصفقات المكتملة:** `{total_comp_count}` صفقة\n\n"
+        "📅 **حجم التداول خلال الشهر الحالي:**\n"
+        f"▫️ **حجم الشهر:** `{format_usdt(month_usdt_vol)}` دولار رقمي\n"
+        f"▫️ **بالليرة:** `{format_syp(month_syp_vol)}` ل.س\n"
+        f"▫️ **متوسط سعر تنفيذ الشهر:** `{format_syp(avg_rate_month)}` ل.س\n"
+        f"▫️ **صفقات هذا الشهر:** `{month_comp_count}` صفقة\n\n"
+        "📦 **العروض النشطة حالياً:**\n"
+        f"▫️ **عروض البيع النشطة:** `{sell_cnt}` عرض\n"
+        f"▫️ **سيولة البيع المعروضة:** `{format_usdt(sell_usdt_pool)}` دولار رقمي\n"
+        f"▫️ **متوسط سعر البيع:** `{format_syp(sell_avg_rate)}` ل.س\n\n"
+        f"▫️ **عروض الشراء النشطة:** `{buy_cnt}` عرض\n"
+        f"▫️ **طلب الشراء المعروض:** `{format_usdt(buy_usdt_pool)}` دولار رقمي\n"
+        f"▫️ **متوسط سعر الشراء:** `{format_syp(buy_avg_rate)}` ل.س"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -808,24 +799,24 @@ async def cq_admin_refresh_market(callback: CallbackQuery, db_session: AsyncSess
     avg_rate_month = (month_syp_vol / month_usdt_vol).quantize(Decimal("1")) if month_usdt_vol > 0 else Decimal("0")
 
     market_text = (
-        "📈 **تحليلات وبيانات السوق المالية**\n\n\n"
-        "💵 **حجم التداول المالي المنفّذ (الصفقات المكتملة):**\n\n"
-        f"• الإجمالي التراكمي:  `{format_usdt(total_usdt_vol)}` USDT\n"
-        f"• الإجمالي بالليرة:  `{format_syp(total_syp_vol)}` ل.س\n"
-        f"• متوسط سعر التنفيذ العام:  `{format_syp(avg_rate_all)}` ل.س\n"
-        f"• عدد الصفقات المكتملة:  `{total_comp_count}` صفقة\n\n\n"
-        "📅 **حجم التداول خلال الشهر الحالي:**\n\n"
-        f"• حجم الشهر:  `{format_usdt(month_usdt_vol)}` USDT\n"
-        f"• بالليرة:  `{format_syp(month_syp_vol)}` ل.س\n"
-        f"• متوسط سعر تنفيذ الشهر:  `{format_syp(avg_rate_month)}` ل.س\n"
-        f"• صفقات هذا الشهر:  `{month_comp_count}` صفقة\n\n\n"
-        "📦 **عمق السوق والعروض النشطة حالياً:**\n\n"
-        f"• عروض البيع النشطة:  `{sell_cnt}` عرض\n"
-        f"  - حجم السيولة المعروضة للبيع:  `{format_usdt(sell_usdt_pool)}` USDT\n"
-        f"  - متوسط سعر البيع المعروض:  `{format_syp(sell_avg_rate)}` ل.س\n\n"
-        f"• عروض الشراء النشطة:  `{buy_cnt}` عرض\n"
-        f"  - حجم الطلب المعروض للشراء:  `{format_usdt(buy_usdt_pool)}` USDT\n"
-        f"  - متوسط سعر الشراء المطلوب:  `{format_syp(buy_avg_rate)}` ل.س"
+        "📈 **تحليلات السوق**\n\n"
+        "💵 **حجم التداول المنفّذ (الصفقات المكتملة):**\n"
+        f"▫️ **الإجمالي التراكمي:** `{format_usdt(total_usdt_vol)}` دولار رقمي\n"
+        f"▫️ **الإجمالي بالليرة:** `{format_syp(total_syp_vol)}` ل.س\n"
+        f"▫️ **متوسط سعر التنفيذ العام:** `{format_syp(avg_rate_all)}` ل.س\n"
+        f"▫️ **عدد الصفقات المكتملة:** `{total_comp_count}` صفقة\n\n"
+        "📅 **حجم التداول خلال الشهر الحالي:**\n"
+        f"▫️ **حجم الشهر:** `{format_usdt(month_usdt_vol)}` دولار رقمي\n"
+        f"▫️ **بالليرة:** `{format_syp(month_syp_vol)}` ل.س\n"
+        f"▫️ **متوسط سعر تنفيذ الشهر:** `{format_syp(avg_rate_month)}` ل.س\n"
+        f"▫️ **صفقات هذا الشهر:** `{month_comp_count}` صفقة\n\n"
+        "📦 **العروض النشطة حالياً:**\n"
+        f"▫️ **عروض البيع النشطة:** `{sell_cnt}` عرض\n"
+        f"▫️ **سيولة البيع المعروضة:** `{format_usdt(sell_usdt_pool)}` دولار رقمي\n"
+        f"▫️ **متوسط سعر البيع:** `{format_syp(sell_avg_rate)}` ل.س\n\n"
+        f"▫️ **عروض الشراء النشطة:** `{buy_cnt}` عرض\n"
+        f"▫️ **طلب الشراء المعروض:** `{format_usdt(buy_usdt_pool)}` دولار رقمي\n"
+        f"▫️ **متوسط سعر الشراء:** `{format_syp(buy_avg_rate)}` ل.س"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -859,18 +850,18 @@ async def cmd_admin_top_traders(message: Message, db_session: AsyncSession):
         return
 
     lines = [
-        "🏆 **قائمة كبار المتداولين الأكثر نشاطاً وموثوقية:**\n\n"
+        "🏆 **قائمة كبار المتداولين**\n"
     ]
 
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     for idx, u in enumerate(top_users):
         medal = medals[idx] if idx < len(medals) else "👤"
-        uname = f"@{u.username}" if u.username else "بدون معرف"
+        uname = f"@{escape_markdown(u.username)}" if u.username else "بدون معرف"
         ban_tag = " [محظور 🚫]" if u.is_banned else ""
         lines.append(
             f"{medal} **{uname}** (`{u.telegram_id}`){ban_tag}\n"
-            f"• الصفقات المكتملة:  `{u.completed_deals_count}` صفقة\n"
-            f"• تقييم السمعة:  ⭐ `{u.reputation_score}` / 5.0\n"
+            f"▫️ **الصفقات المكتملة:** `{u.completed_deals_count}` صفقة\n"
+            f"▫️ **تقييم السمعة:** ⭐ `{u.reputation_score if u.reputation_score is not None else 100}%`\n"
         )
 
     lines.append("لإدارة أي مستخدم، استخدم الأمر: `/search [معرف_المستخدم]`")
@@ -891,22 +882,22 @@ async def cmd_admin_disputes(message: Message, db_session: AsyncSession):
 
     if not open_disputes:
         await message.answer(
-            "🛡️ **سجل النزاعات المالية:**\n\n\n"
+            "🛡️ **سجل النزاعات**\n\n"
             "✅ لا توجد أي نزاعات مفتوحة أو معلقة حالياً.\n"
-            "كافة الصفقات تسير بشكل سلس وطبيعي.",
+            "كافة الصفقات تسير بشكل طبيعي.",
             parse_mode="Markdown"
         )
         return
 
     lines = [
-        f"⚠️ **النزاعات المفتوحة والمعلقة:**  `{len(open_disputes)}` نزاع\n\n"
+        f"⚠️ **النزاعات المفتوحة والمعلقة:** `{len(open_disputes)}` نزاع\n"
     ]
     for d in open_disputes:
         lines.append(
             f"📌 **نزاع #{d.id} — صفقة #{d.deal_id}**\n"
-            f"• فُتح بواسطة:  `{d.opened_by}`\n"
-            f"• السبب:  {d.reason or 'غير محدد'}\n"
-            f"• للفحص والتدخل: `/deal {d.deal_id}`\n"
+            f"▫️ **فُتح بواسطة:** `{d.opened_by}`\n"
+            f"▫️ **السبب:** {escape_markdown(d.reason or 'غير محدد')}\n"
+            f"▫️ **للفحص والتدخل:** `/deal {d.deal_id}`\n"
         )
 
     await message.answer("\n".join(lines), parse_mode="Markdown")
@@ -930,9 +921,8 @@ async def cmd_admin_reply_user(message: Message, bot: Bot):
     reply_content = args[2].strip()
 
     formatted_msg = (
-        "📩 **رد رسمي من فريق إدارة منصة الضمان**\n\n\n"
-        f"{reply_content}\n\n\n"
-        "نتمنى لك تجربة تداول آمنة ومريحة! 🛡️"
+        f"📩 **رد رسمي من إدارة {BOT_NAME}**\n\n"
+        f"{reply_content}"
     )
 
     try:
@@ -988,20 +978,19 @@ async def cmd_admin_audit(message: Message, db_session: AsyncSession):
 
     if not logs:
         await message.answer(
-            f"📋 **سجل التدقيق الجنائي المالي (Audit Trail)**\n\n\n"
-            f"لا توجد أي سجلات مدونة مطابقة لطلبك حتى الآن.",
+            "📋 **سجل التدقيق والعمليات**\n\n"
+            "لا توجد سجلات مطابقة لطلبك حتى الآن.",
             parse_mode="Markdown"
         )
         return
 
     lines = [
-        f"📋 **سجل التدقيق الجنائي والعمليات الحساسة (Audit Trail)**\n\n",
-        f"• الفلترة: {filter_label}\n\n",
-        "━━━━━━━━━━━━━━━\n"
+        "📋 **سجل التدقيق والعمليات**\n\n",
+        f"▫️ **الفلترة:** {filter_label}\n\n",
     ]
 
     action_names = {
-        "RELEASE_ESCROW": "🚀 إطلاق ضمان مالي",
+        "RELEASE_ESCROW": "☑️ إطلاق ضمان مالي",
         "CANCEL_DEAL": "❌ إلغاء صفقة",
         "BAN_USER": "🚫 حظر مستخدم",
         "UNBAN_USER": "✅ فك حظر مستخدم",
@@ -1016,17 +1005,16 @@ async def cmd_admin_audit(message: Message, db_session: AsyncSession):
         actor_tag = f"`{log.actor_id}`" if log.actor_id else "SYSTEM"
         lines.append(
             f"🔹 **#{log.id} — {act_title}**\n"
-            f"• المنفّذ:  {log.actor_type} ({actor_tag})\n"
-            f"• الهدف:  `{log.target_type}:{log.target_id}`\n"
-            f"• التوقيت:  `{time_str}`\n"
-            "━━━━━━━━━━━━━━━\n"
+            f"▫️ **المنفّذ:** {log.actor_type} ({actor_tag})\n"
+            f"▫️ **الهدف:** `{log.target_type}:{log.target_id}`\n"
+            f"▫️ **التوقيت:** `{time_str}`\n\n"
         )
 
-    lines.append("\n💡 للتدقيق في صفقة محددة: `/audit deal [رقم_الصفقة]`")
-    lines.append("📁 لتحميل ملف السجلات التقنية: اضغط الزر أدناه")
+    lines.append("💡 للتدقيق في صفقة محددة: `/audit deal [رقم_الصفقة]`\n")
+    lines.append("📁 لتحميل ملف السجلات التقنية، استخدم الزر أدناه.")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📁 تحميل ملف السجلات (escrow_system.log)", callback_data="adm_dl_system_log")],
+        [InlineKeyboardButton(text="📁 تحميل ملف السجلات", callback_data="adm_dl_system_log")],
         [InlineKeyboardButton(text="🔄 تحديث السجل", callback_data="adm_refresh_audit")]
     ])
 
@@ -1048,7 +1036,7 @@ async def cq_admin_refresh_audit(callback: CallbackQuery, db_session: AsyncSessi
         return
 
     action_names = {
-        "RELEASE_ESCROW": "🚀 إطلاق ضمان مالي",
+        "RELEASE_ESCROW": "☑️ إطلاق ضمان مالي",
         "CANCEL_DEAL": "❌ إلغاء صفقة",
         "BAN_USER": "🚫 حظر مستخدم",
         "UNBAN_USER": "✅ فك حظر مستخدم",
@@ -1058,9 +1046,8 @@ async def cq_admin_refresh_audit(callback: CallbackQuery, db_session: AsyncSessi
     }
 
     lines = [
-        "📋 **سجل التدقيق الجنائي والعمليات الحساسة (Audit Trail)**\n\n",
-        "• الفلترة: آخر العمليات الإدارية والمالية المسجلة\n\n",
-        "━━━━━━━━━━━━━━━\n"
+        "📋 **سجل التدقيق والعمليات**\n\n",
+        "▫️ **الفلترة:** آخر العمليات الإدارية والمالية المسجلة\n\n",
     ]
     for log in logs:
         time_str = format_local_datetime(log.created_at) if log.created_at else "—"
@@ -1068,17 +1055,16 @@ async def cq_admin_refresh_audit(callback: CallbackQuery, db_session: AsyncSessi
         actor_tag = f"`{log.actor_id}`" if log.actor_id else "SYSTEM"
         lines.append(
             f"🔹 **#{log.id} — {act_title}**\n"
-            f"• المنفّذ:  {log.actor_type} ({actor_tag})\n"
-            f"• الهدف:  `{log.target_type}:{log.target_id}`\n"
-            f"• التوقيت:  `{time_str}`\n"
-            "━━━━━━━━━━━━━━━\n"
+            f"▫️ **المنفّذ:** {log.actor_type} ({actor_tag})\n"
+            f"▫️ **الهدف:** `{log.target_type}:{log.target_id}`\n"
+            f"▫️ **التوقيت:** `{time_str}`\n\n"
         )
 
-    lines.append("\n💡 للتدقيق في صفقة محددة: `/audit deal [رقم_الصفقة]`")
-    lines.append("📁 لتحميل ملف السجلات التقنية: اضغط الزر أدناه")
+    lines.append("💡 للتدقيق في صفقة محددة: `/audit deal [رقم_الصفقة]`\n")
+    lines.append("📁 لتحميل ملف السجلات التقنية، استخدم الزر أدناه.")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📁 تحميل ملف السجلات (escrow_system.log)", callback_data="adm_dl_system_log")],
+        [InlineKeyboardButton(text="📁 تحميل ملف السجلات", callback_data="adm_dl_system_log")],
         [InlineKeyboardButton(text="🔄 تحديث السجل", callback_data="adm_refresh_audit")]
     ])
 

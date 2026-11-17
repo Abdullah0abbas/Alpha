@@ -3,8 +3,8 @@ from datetime import datetime, timezone, timedelta
 
 from bot.utils.transitions import (
     can_expire_deal,
-    can_enter_grace_period,
-    can_permanently_expire_offer,
+    can_expire_active_offer,
+    can_remind_syp_payment,
     can_expire_negotiation,
     can_extend_offer,
     can_delete_offer,
@@ -42,24 +42,21 @@ class TestTransitions(unittest.TestCase):
         # Missing expires_at
         self.assertFalse(can_expire_deal("PENDING_OWNER_APPROVAL", None, self.now))
 
-    def test_can_enter_grace_period(self):
-        # Active offer expired -> allowed
-        self.assertTrue(can_enter_grace_period("active", self.past, self.now))
+    def test_can_expire_active_offer(self):
+        # Active offer expired -> immediate deletion allowed
+        self.assertTrue(can_expire_active_offer("active", self.past, self.now))
         # Time not expired
-        self.assertFalse(can_enter_grace_period("active", self.future, self.now))
-        # Race condition: Offer was reserved for a deal before lock -> strictly forbidden
-        self.assertFalse(can_enter_grace_period("reserved", self.past, self.now))
-        # Race condition: Offer is in negotiation -> strictly forbidden
-        self.assertFalse(can_enter_grace_period("negotiating", self.past, self.now))
-        # Already cancelled, expired, or completed
-        self.assertFalse(can_enter_grace_period("cancelled", self.past, self.now))
-        self.assertFalse(can_enter_grace_period("expired", self.past, self.now))
+        self.assertFalse(can_expire_active_offer("active", self.future, self.now))
+        # Race condition: Offer reserved, negotiating, cancelled, expired, or deleted -> disallowed
+        for status in ("reserved", "negotiating", "cancelled", "expired", "deleted"):
+            self.assertFalse(can_expire_active_offer(status, self.past, self.now))
 
-    def test_can_permanently_expire_offer(self):
-        self.assertTrue(can_permanently_expire_offer("expired_grace", self.past, self.now))
-        self.assertFalse(can_permanently_expire_offer("expired_grace", self.future, self.now))
-        # Not in expired_grace (e.g. was extended back to active)
-        self.assertFalse(can_permanently_expire_offer("active", self.past, self.now))
+    def test_can_remind_syp_payment(self):
+        self.assertTrue(can_remind_syp_payment("AWAITING_SYP_PAYMENT", self.past, self.now))
+        self.assertFalse(can_remind_syp_payment("AWAITING_SYP_PAYMENT", self.future, self.now))
+        self.assertFalse(can_remind_syp_payment("AWAITING_SYP_PAYMENT", None, self.now))
+        for status in ("USDT_DEPOSITED", "SYP_PAYMENT_SENT", "COMPLETED", "CANCELLED"):
+            self.assertFalse(can_remind_syp_payment(status, self.past, self.now))
 
     def test_can_expire_negotiation(self):
         self.assertTrue(can_expire_negotiation("PENDING_MAKER", self.past, self.now))
@@ -73,11 +70,9 @@ class TestTransitions(unittest.TestCase):
         self.assertFalse(can_expire_negotiation("EXPIRED", self.past, self.now))
 
     def test_can_extend_offer(self):
-        # Allowed statuses
+        # Allowed status: active only
         can_ext_active, _ = can_extend_offer("active")
         self.assertTrue(can_ext_active)
-        can_ext_grace, _ = can_extend_offer("expired_grace")
-        self.assertTrue(can_ext_grace)
 
         # Race conditions & disallowed statuses
         can_ext_res, reason_res = can_extend_offer("reserved")
@@ -88,23 +83,21 @@ class TestTransitions(unittest.TestCase):
         self.assertFalse(can_ext_neg)
         self.assertIn("تفاوض", reason_neg)
 
-        for invalid in ("cancelled", "expired", "completed"):
+        for invalid in ("cancelled", "expired", "completed", "deleted", "expired_grace"):
             can_ext_inv, _ = can_extend_offer(invalid)
             self.assertFalse(can_ext_inv)
 
     def test_can_delete_offer(self):
-        # Allowed statuses
+        # Allowed status: active only
         can_del_active, _ = can_delete_offer("active")
         self.assertTrue(can_del_active)
-        can_del_grace, _ = can_delete_offer("expired_grace")
-        self.assertTrue(can_del_grace)
 
         # Disallowed statuses
         can_del_res, _ = can_delete_offer("reserved")
         self.assertFalse(can_del_res)
         can_del_neg, _ = can_delete_offer("negotiating")
         self.assertFalse(can_del_neg)
-        for invalid in ("cancelled", "expired", "completed"):
+        for invalid in ("cancelled", "expired", "completed", "deleted", "expired_grace"):
             can_del_inv, _ = can_delete_offer(invalid)
             self.assertFalse(can_del_inv)
 

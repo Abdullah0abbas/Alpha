@@ -165,8 +165,13 @@ def validate_sham_cash_address(raw: str | None) -> Tuple[bool, str, str]:
         cleaned = cleaned.replace(ch, "")
     cleaned = cleaned.strip()
 
-    # Strip common prefix labels (e.g. "شام كاش:", "حساب:", "العنوان:", "cham cash:")
-    cleaned = re.sub(r"^(?:شام\s*كاش|حساب|العنوان|cham\s*cash)[\s:\-—]*", "", cleaned, flags=re.IGNORECASE).strip()
+    # Strip common prefix labels (e.g. "شام كاش ليرة:", "شام كاش:", "حساب:", "العنوان:", "cham cash:")
+    cleaned = re.sub(
+        r"^(?:(?:شام\s*كاش(?:\s*(?:ليرة|دولار))?)|حساب|العنوان|cham\s*cash)[\s:\-—]*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
 
     if not SHAM_CASH_HEX_PATTERN.match(cleaned):
         return (
@@ -187,6 +192,12 @@ def validate_syriatel_cash_number(raw: str | None) -> Tuple[bool, str, str]:
     cleaned = str(raw).strip()
     for ch in INVISIBLE_CHARS:
         cleaned = cleaned.replace(ch, "")
+    cleaned = re.sub(
+        r"^(?:سيريت[يي]ل\s*كاش|رقم|الهاتف|الموبايل)[\s:\-—]*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
     cleaned = re.sub(r"[\s\-\.\(\)]+", "", cleaned)
 
     # Normalize international Syrian prefixes: +9639..., 009639..., 9639... -> 09...

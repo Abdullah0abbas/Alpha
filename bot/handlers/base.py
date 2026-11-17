@@ -85,7 +85,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
             result = await db_session.execute(select(Offer).where(Offer.id == offer_id))
             offer = result.scalar_one_or_none()
             if offer and offer.status == "active":
-                offer_type_label = "🔴 بيع USDT (المعلن يبيع)" if offer.offer_type == 'sell' else "🟢 شراء USDT (المعلن يشتري)"
+                offer_type_label = "🔴 بيع (المعلن يبيع)" if offer.offer_type == 'sell' else "🟢 شراء (المعلن يشتري)"
                 rate_str = format_syp(offer.rate)
                 min_str = format_usdt(offer.min_limit)
                 max_str = format_usdt(offer.max_limit)
@@ -111,24 +111,22 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
 
                 await message.answer(
                     f"🏷️ **تفاصيل العرض #{offer.id}**\n\n"
-                    f"▫️ المعاملة : {offer_type_label}\n"
-                    f"💵 سعر الصرف : `{rate_str}` ل.س\n"
-                    f"💰 حدود الكمية : من `{min_str}` إلى `{max_str}` USDT\n"
-                    f"💳 طرق الدفع : {methods_str}\n"
-                    f"🤝 التفاوض : {neg_str}\n\n"
+                    f"▫️ **نوع العرض:** {offer_type_label}\n"
+                    f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
+                    f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+                    f"▫️ **وسائل الدفع:** {methods_str}\n"
+                    f"▫️ **التفاوض:** {neg_str}\n\n"
                     f"{format_fee_rule_line()}\n\n"
-                    f"اختر الإجراء المطلوب للمتابعة أدناه:",
+                    f"اختر الإجراء المطلوب للمتابعة:",
                     reply_markup=kb,
                     parse_mode="Markdown"
                 )
                 return
             else:
                 await message.answer(
-                    f"⚠️ **تنبيه حول العرض**\n\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"هذا العرض لم يعد متاحاً للتداول حالياً (قد يكون محجوزاً أو مكتملاً).\n"
-                    f"يمكنك استعراض العروض النشطة عبر اللوحة الرئيسية.\n"
-                    f"━━━━━━━━━━━━━━━",
+                    "⚠️ **تنبيه حول العرض**\n\n"
+                    "هذا العرض لم يعد متاحاً للتداول حالياً (قد يكون محجوزاً أو مكتملاً).\n"
+                    "يمكنك استعراض العروض النشطة عبر القائمة الرئيسية.",
                     reply_markup=get_back_to_menu_kb(),
                     parse_mode="Markdown"
                 )
@@ -137,7 +135,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
     user_label = f"@{username}" if username else f"ID: {user_id}"
     welcome_text = (
         f"\u200f🛡️ **{BOT_NAME}**\n\n"
-        "تداول مباشر لعملة USDT مقابل الليرة السورية عبر آلية ضمان تحتجز الرصيد حتى اكتمال الصفقة.\n\n"
+        "منصة تداول مباشر للدولار الرقمي مقابل الليرة السورية عبر آلية ضمان تحفظ الرصيد حتى اكتمال الصفقة.\n\n"
         f"👤 **الحساب:** `{user_label}`\n\n"
         "اختر من القائمة أدناه:"
     )
@@ -176,23 +174,25 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
         return
 
     await state.clear()
+    await state.update_data(
+        step_history=[],
+        payout_details={},
+        payment_methods=[]
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🟢 أريد شراء USDT", callback_data="offer_type_buy"),
-            InlineKeyboardButton(text="🔴 أريد بيع USDT", callback_data="offer_type_sell")
+            InlineKeyboardButton(text="🟢 عرض شراء", callback_data="offer_type_buy"),
+            InlineKeyboardButton(text="🔴 عرض بيع", callback_data="offer_type_sell")
         ],
         [
             InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")
         ]
     ])
     text = (
-        f"➕ **إنشاء عرض تداول جديد**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"حدد نوع العرض الذي ترغب بطرحه في السوق:\n\n"
-        f"• 🟢 **أريد شراء USDT**: تدفع ليرة سورية وتستلم USDT.\n"
-        f"• 🔴 **أريد بيع USDT**: تقدم USDT وتستلم ليرة سورية (SYP).\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"اختر نوع العملية للبدء:"
+        "➕ **إنشاء عرض تداول جديد**\n\n"
+        "حدد نوع العرض الذي ترغب بطرحه في السوق:\n\n"
+        "▫️ 🟢 **شراء دولار رقمي:** تدفع ليرة سورية وتستلم الدولار الرقمي.\n"
+        "▫️ 🔴 **بيع دولار رقمي:** تقدم الدولار الرقمي وتستلم ليرة سورية."
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -208,25 +208,22 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
 async def cq_menu_browse_offers(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🟢 أريد الشراء (عروض البيع)", callback_data="browse_type_sell_0"),
-            InlineKeyboardButton(text="🔴 أريد البيع (عروض الشراء)", callback_data="browse_type_buy_0")
+            InlineKeyboardButton(text="🟢 أريد الشراء", callback_data="browse_type_sell_0"),
+            InlineKeyboardButton(text="🔴 أريد البيع", callback_data="browse_type_buy_0")
         ],
         [
-            InlineKeyboardButton(text="🌐 استعراض كافة العروض", callback_data="browse_type_all_0")
+            InlineKeyboardButton(text="🌐 كافة العروض", callback_data="browse_type_all_0")
         ],
         [
             InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")
         ]
     ])
     text = (
-        f"🔍 **تصفح العروض المتاحة بالسوق**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"حدد فئة العروض التي تبحث عنها:\n\n"
-        f"• 🟢 **أريد الشراء**: استعراض البائعين المعلنين (عروض بيع USDT).\n"
-        f"• 🔴 **أريد البيع**: استعراض المشترين المعلنين (عروض شراء USDT).\n"
-        f"• 🌐 **الكل**: تصفح كامل عروض السوق النشطة.\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"حدد الفئة المطلوبة:"
+        "🔍 **تصفح العروض المتاحة**\n\n"
+        "حدد فئة العروض التي تبحث عنها:\n\n"
+        "▫️ 🟢 **أريد الشراء:** استعراض البائعين المعلنين لشراء الدولار الرقمي منهم.\n"
+        "▫️ 🔴 **أريد البيع:** استعراض المشترين المعلنين لبيع الدولار الرقمي لهم.\n"
+        "▫️ 🌐 **كافة العروض:** استعراض جميع العروض النشطة في السوق."
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -239,9 +236,8 @@ PAGE_SIZE = 4
 
 @base_router.callback_query(F.data.startswith("browse_type_"))
 async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSession):
-    # data: browse_type_{target}_{page}
     parts = callback.data.split("_")
-    target = parts[2] # 'sell', 'buy', or 'all'
+    target = parts[2]
     page = int(parts[3])
 
     query = select(Offer).where(Offer.status == "active")
@@ -251,7 +247,6 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         query = query.where(Offer.offer_type == target)
         count_query = count_query.where(Offer.offer_type == target)
 
-    # Total count
     total_res = await db_session.execute(count_query)
     total_count = total_res.scalar() or 0
 
@@ -267,9 +262,9 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
     offers = result.scalars().all()
 
     target_titles = {
-        "sell": "🟢 عروض بيع USDT (المعلنون يبيعون)",
-        "buy": "🔴 عروض شراء USDT (المعلنون يشترون)",
-        "all": "🌐 كافة عروض السوق النشطة"
+        "sell": "🟢 عروض البيع (الشراء من المعلنين)",
+        "buy": "🔴 عروض الشراء (البيع للمعلنين)",
+        "all": "🌐 كافة العروض النشطة"
     }
     header = target_titles.get(target, "سوق العروض")
 
@@ -280,10 +275,8 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         ])
         await callback.message.edit_text(
             f"🔍 **{header}**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
             f"لا توجد عروض نشطة متوفرة في هذا القسم حالياً.\n"
-            f"يمكنك إنشاء عرضك الخاص أو إعادة الفحص لاحقاً.\n"
-            f"━━━━━━━━━━━━━━━",
+            f"يمكنك إنشاء عرضك الخاص أو إعادة المحاولة لاحقاً.",
             reply_markup=empty_kb,
             parse_mode="Markdown"
         )
@@ -291,10 +284,9 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         return
 
     text_lines = [
-        f"🔍 **{header}**\n",
-        f"📄 صفحة `{page + 1}` من `{total_pages}` (إجمالي العروض: `{total_count}`)\n",
-        f"{format_fee_rule_line()}\n",
-        f"━━━━━━━━━━━━━━━\n"
+        f"🔍 **{header}**",
+        f"📄 صفحة `{page + 1}` من `{total_pages}` | الإجمالي: `{total_count}`\n",
+        f"{format_fee_rule_line()}\n"
     ]
 
     inline_buttons = []
@@ -302,18 +294,18 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         rate_str = format_syp(off.rate)
         min_str = format_usdt(off.min_limit)
         max_str = format_usdt(off.max_limit)
-        off_type = "🔴 بيع USDT" if off.offer_type == 'sell' else "🟢 شراء USDT"
+        off_type = "🔴 بيع" if off.offer_type == 'sell' else "🟢 شراء"
         methods = format_payment_methods(off.payment_methods)
         remaining = humanize_time_remaining(off.expires_at, "4 ساعات")
-        neg = "متاح 🤝" if off.negotiable and off.negotiable_type != "none" else "ثابت 🔒"
+        neg = "متاح" if off.negotiable and off.negotiable_type != "none" else "ثابت"
 
         text_lines.append(
-            f"🏷️ **عرض #{off.id}** ({off_type})\n"
-            f"💵 سعر الصرف : `{rate_str}` ل.س\n"
-            f"💰 حدود الكمية : من `{min_str}` إلى `{max_str}` USDT\n"
-            f"💳 طرق الدفع : {methods}\n"
-            f"🤝 التفاوض : {neg} • ⏱️ الصلاحية : {remaining}\n"
-            f"~~~~~~~~~~~~~~~~"
+            f"🏷️ **عرض #{off.id}** — {off_type}\n"
+            f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
+            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+            f"▫️ **وسائل الدفع:** {methods}\n"
+            f"▫️ **التفاوض:** {neg}\n"
+            f"▫️ **الصلاحية المتبقية:** {remaining}\n"
         )
 
         rows = build_offer_action_buttons(
@@ -327,7 +319,6 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         if rows:
             inline_buttons.extend(rows)
 
-    # Navigation pagination bar
     nav_row = []
     if page > 0:
         nav_row.append(InlineKeyboardButton(text="◀️ السابق", callback_data=f"browse_type_{target}_{page - 1}"))
@@ -336,7 +327,6 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         nav_row.append(InlineKeyboardButton(text="التالي ▶️", callback_data=f"browse_type_{target}_{page + 1}"))
     inline_buttons.append(nav_row)
 
-    # Back to filter & Main menu
     inline_buttons.append([
         InlineKeyboardButton(text="🔄 تغيير الفلتر", callback_data="menu_browse_offers"),
         InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
@@ -371,11 +361,9 @@ async def cq_menu_my_offers(callback: CallbackQuery, db_session: AsyncSession):
             [InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")]
         ])
         await callback.message.edit_text(
-            f"📋 **إدارة عروضي الشخصية**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"لم تقم بنشر أي عروض في السوق حتى الآن.\n"
-            f"يمكنك إنشاء عرض جديد للبيع أو الشراء فوراً عبر الزر أدناه.\n"
-            f"━━━━━━━━━━━━━━━",
+            "📋 **إدارة عروضي**\n\n"
+            "لم تقم بنشر أي عروض في السوق حتى الآن.\n"
+            "يمكنك إنشاء عرض جديد من الزر أدناه.",
             reply_markup=kb,
             parse_mode="Markdown"
         )
@@ -386,35 +374,34 @@ async def cq_menu_my_offers(callback: CallbackQuery, db_session: AsyncSession):
         "active": "🟢 نشط في السوق",
         "reserved": "🟡 محجوز بصفقة",
         "negotiating": "🔵 قيد التفاوض",
-        "expired_grace": "⏳ فترة سماح",
         "expired": "⚪ منتهي الصلاحية",
+        "deleted": "🗑️ محذوف",
         "completed": "✅ مكتمل",
         "cancelled": "❌ ملغى"
     }
 
     text_lines = [
-        "📋 **إدارة عروضي الشخصية**\n\n",
-        "إليك أحدث العروض التي قمت بإنشائها:\n\n"
+        "📋 **إدارة عروضي**\n",
+        "أحدث العروض التي قمت بإنشائها:\n"
     ]
 
     buttons = []
     for off in my_offers_list:
         badge = status_badges.get(off.status, off.status)
-        type_str = "🔴 بيع USDT" if off.offer_type == 'sell' else "🟢 شراء USDT"
+        type_str = "🔴 بيع" if off.offer_type == 'sell' else "🟢 شراء"
         rate_str = format_syp(off.rate)
         min_str = format_usdt(off.min_limit)
         max_str = format_usdt(off.max_limit)
 
         text_lines.append(
-            f"🏷️ **عرض #{off.id}** — {type_str}\n\n"
-            f"• الحالة:  **{badge}**\n"
-            f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n"
-            f"• حدود الكمية:  `{min_str}` إلى `{max_str}` USDT\n\n\n"
+            f"🏷️ **عرض #{off.id}** — {type_str}\n"
+            f"▫️ **الحالة:** {badge}\n"
+            f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
+            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
         )
 
-        # Actions for active or grace offers
         row = []
-        if off.status in ["active", "negotiating", "expired_grace"]:
+        if off.status == "active":
             row.append(InlineKeyboardButton(text=f"❌ حذف #{off.id}", callback_data=f"del_off_{off.id}"))
             row.append(InlineKeyboardButton(text=f"⏱️ تمديد #{off.id}", callback_data=f"ext_off_{off.id}"))
         if row:
@@ -450,14 +437,11 @@ async def cq_menu_support(callback: CallbackQuery):
         ]
     ])
     text = (
-        f"💬 **مركز الدعم والمساعدة**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"يسعدنا خدمتك والإجابة عن جميع استفساراتك. يرجى اختيار القسم المطلوب:\n\n"
-        f"• **الأسئلة الشائعة**: دليلك لفهم آلية الضمان والتداول والمدد الزمنية.\n"
-        f"• **المساعدة والدعم**: معرفات التواصل المباشر مع إدارة الضمان.\n"
-        f"• **تقديم اقتراح أو شكوى**: إرسال تذكرة أو رسالة فورية للإدارة.\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"اختر القسم المطلوب:"
+        "💬 **مركز الدعم والمساعدة**\n\n"
+        "اختر القسم المطلوب أدناه:\n\n"
+        "▫️ **الأسئلة الشائعة:** دليل آلية الضمان والتداول والمدد الزمنية.\n"
+        "▫️ **المساعدة والدعم:** قنوات التواصل المباشر مع إدارة المنصة.\n"
+        "▫️ **تقديم اقتراح أو شكوى:** إرسال رسالة مباشرة لفريق الإدارة."
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -596,9 +580,7 @@ async def cq_faq_item(callback: CallbackQuery):
     s_idx, q_title, q_text = target_item
     text = (
         f"💡 **الأسئلة الشائعة**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"{q_text.strip()}\n"
-        f"━━━━━━━━━━━━━━━"
+        f"{q_text.strip()}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 قائمة الأسئلة", callback_data="supp_faq")],
@@ -628,12 +610,10 @@ async def cq_supp_feedback_start(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
     ])
     await callback.message.edit_text(
-        f"✍️ **تقديم اقتراح أو شكوى**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"يرجى كتابة رسالتك بالتفصيل، وتوضيح رقم الصفقة إن وجدت شكوى مالية.\n"
-        f"سيتم تحويل رسالتك مباشرة إلى فريق الإدارة.\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"*(أرسل النص الآن أو اضغط إلغاء)*",
+        "✍️ **تقديم اقتراح أو شكوى**\n\n"
+        "يرجى كتابة رسالتك بالتفصيل، مع ذكر رقم الصفقة في حال وجود ملاحظة مالية.\n"
+        "سيتم تحويل رسالتك مباشرة إلى فريق الإدارة.\n\n"
+        "أرسل النص الآن أو اضغط إلغاء:",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -652,30 +632,25 @@ async def process_user_feedback(message: Message, state: FSMContext, bot: Bot):
     username_str = f"@{user.username}" if user.username else "بدون معرف"
 
     admin_alert = (
-        f"📩 **رسالة اقتراح / شكوى جديدة**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• المستخدم: {user.full_name} (`{user.id}`)\n"
-        f"• المعرف: {username_str}\n"
-        f"━━━━━━━━━━━━━━━\n\n"
+        "📩 **رسالة اقتراح أو شكوى جديدة**\n\n"
+        f"▫️ **المستخدم:** {user.full_name}\n"
+        f"▫️ **الرقم التعريفي:** `{user.id}`\n"
+        f"▫️ **المعرف:** {username_str}\n\n"
         f"**نص الرسالة:**\n{feedback_text}"
     )
 
-    # Dispatch to all admins
     for admin_id in settings.ADMIN_IDS:
         try:
             await bot.send_message(chat_id=admin_id, text=admin_alert, parse_mode="Markdown")
-        except Exception as e:
+        except Exception:
             pass
 
     success_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏠 العودة للرئيسية", callback_data="menu_back_main")]
     ])
     await message.answer(
-        f"✅ **تم استلام رسالتك بنجاح**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"تم تحويل الاقتراح / الشكوى للإدارة لمراجعتها ومتابعتها.\n"
-        f"شكراً لتواصلك وحرصك على تحسين الخدمة.\n"
-        f"━━━━━━━━━━━━━━━",
+        "✅ **تم استلام رسالتك بنجاح**\n\n"
+        "تم تحويل رسالتك إلى فريق الإدارة لمراجعتها ومتابعتها.",
         reply_markup=success_kb,
         parse_mode="Markdown"
     )
@@ -686,13 +661,11 @@ async def process_user_feedback(message: Message, state: FSMContext, bot: Bot):
 @base_router.callback_query(F.data == "main_browse_offers")
 async def cq_browse_offers(callback: CallbackQuery, db_session: AsyncSession):
     await callback.answer()
-    # Route directly to the new visual browse
     await cq_menu_browse_offers(callback)
 
 @base_router.callback_query(F.data == "main_create_offer")
-async def cq_create_offer(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await cq_menu_create_offer(callback, state)
+async def cq_create_offer(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
+    await cq_menu_create_offer(callback, state, db_session)
 
 @base_router.callback_query(F.data == "main_my_deals")
 async def cq_my_deals(callback: CallbackQuery, db_session: AsyncSession):
@@ -712,9 +685,8 @@ async def cq_cancel_fsm(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer("تم إلغاء العملية.")
     cancel_text = (
-        f"❌ **تم إلغاء العملية**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"يمكنك اختيار الإجراء المطلوب من القائمة الرئيسية:"
+        "❌ **تم إلغاء العملية**\n\n"
+        "يمكنك اختيار الإجراء المطلوب من القائمة الرئيسية:"
     )
     try:
         await callback.message.edit_text(
@@ -734,16 +706,15 @@ async def cmd_cancel(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state is None:
         await message.answer(
-            f"ℹ️ **لا توجد عملية نشطة لإلغائها حالياً**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"يمكنك تصفح السوق أو العودة عبر /start.",
+            "ℹ️ **لا توجد عملية نشطة لإلغائها حالياً**\n\n"
+            "يمكنك تصفح السوق أو العودة عبر /start.",
             reply_markup=get_main_menu_kb(),
             parse_mode="Markdown"
         )
         return
     await state.clear()
     await message.answer(
-        f"❌ **تم إلغاء العملية والعودة للحالة الرئيسية**",
+        "❌ **تم إلغاء العملية والعودة للقائمة الرئيسية**",
         reply_markup=get_main_menu_kb(),
         parse_mode="Markdown"
     )

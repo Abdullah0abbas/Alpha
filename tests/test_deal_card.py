@@ -191,6 +191,14 @@ class TestDealCardPureFunctions(unittest.TestCase):
         self.assertIsNotNone(kb_seller_conf)
         callbacks_conf = [btn.callback_data for row in kb_seller_conf.inline_keyboard for btn in row]
         self.assertIn("ask_conf_42", callbacks_conf)
+        self.assertIsNone(get_deal_action_keyboard(deal, viewer_id=2002))
+
+        deal.buyer_payout_address = "PENDING"
+        kb_buyer_fallback = get_deal_action_keyboard(deal, viewer_id=2002)
+        self.assertIsNotNone(kb_buyer_fallback)
+        callbacks_buyer = [btn.callback_data for row in kb_buyer_fallback.inline_keyboard for btn in row]
+        self.assertIn("set_buyer_payout_42", callbacks_buyer)
+        deal.buyer_payout_address = "0xBuyerAddress"
 
         deal.status = "COMPLETED"
         self.assertIsNone(get_deal_action_keyboard(deal, viewer_id=1001))

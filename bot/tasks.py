@@ -51,28 +51,29 @@ async def start_daily_backup_scheduler(bot: Bot, target_hour_utc: int = 0, targe
 from bot.utils.deal_card import push_deal_card
 from bot.utils.transitions import (
     can_expire_deal,
-    can_enter_grace_period,
-    can_permanently_expire_offer,
+    can_expire_active_offer,
+    can_remind_syp_payment,
     can_expire_negotiation,
     resolve_deal_parties,
     should_release_orphan_offer,
 )
 
-async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
+async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
     """
-    Unified watcher handling 4 expiry types item-by-item:
+    Unified watcher handling timeouts and reminders item-by-item:
     1. Deals in PENDING_OWNER_APPROVAL, AWAITING_USDT_DEPOSIT, CREATED where expires_at <= now.
-    2. Offers in active status where expires_at <= now (Offer entering 30-min grace period).
-    3. Offers in expired_grace where expires_at <= now (Offer permanent expiry).
+    2. Offers in active status where expires_at <= now (immediate permanent deletion).
+    3. Deals in AWAITING_SYP_PAYMENT where expires_at <= now (one-time 30-min buyer reminder, deal stays open).
     4. Negotiations in PENDING_MAKER, PENDING_TAKER where expires_at <= now.
+    5. Orphan reserved/negotiating offers older than 10 minutes.
 
     Uses atomic item-by-item transactions with FOR UPDATE SKIP LOCKED and pure transitions.
     Max 100 items processed per cycle per type.
     """
     now = datetime.now(timezone.utc)
     expired_deals_count = 0
-    grace_offers_count = 0
-    final_offers_count = 0
+    deleted_offers_count = 0
+    syp_reminders_count = 0
     expired_negs_count = 0
 
     # ----------------------------------------------------
@@ -160,8 +161,8 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                         try:
                             await bot.send_message(
                                 resolved_taker_id,
-                                f"⌛ **تنبيه إلغاء الطلب — صفقة #{deal_id_val}**\n\n"
-                                f"تم إلغاء طلب الصفقة وحذف العرض من القناة والسوق نهائياً لعدم استجابة صاحب العرض خلال مهلة الـ 30 دقيقة.\n"
+                                f"⌛ **إلغاء الطلب — صفقة #{deal_id_val}**\n\n"
+                                f"تم إلغاء طلب الصفقة وحذف العرض من القناة والسوق لعدم استجابة صاحب العرض خلال مهلة 30 دقيقة.\n"
                                 f"يمكنك تصفح العروض الأخرى المتاحة عبر /offers.",
                                 parse_mode="Markdown"
                             )
@@ -172,9 +173,9 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                         try:
                             await bot.send_message(
                                 resolved_maker_id,
-                                f"🗑️ **تم حذف عرضك رقم #{offer_id_val} وإلغاء الطلب نهائياً**\n\n"
-                                f"انقضت مهلة الـ 30 دقيقة دون اتخاذ قرار (موافقة أو رفض) على طلب الصفقة رقم #{deal_id_val}.\n"
-                                f"تم إلغاء الطلب وحذف عرضك من القناة ومن السوق نهائياً لعدم الاستجابة.",
+                                f"🗑️ **تم حذف عرضك رقم #{offer_id_val} وإلغاء الطلب**\n\n"
+                                f"انقضت مهلة 30 دقيقة دون اتخاذ قرار (موافقة أو رفض) على طلب الصفقة #{deal_id_val}.\n"
+                                f"تم إلغاء الطلب وحذف عرضك من القناة والسوق لعدم الاستجابة.",
                                 parse_mode="Markdown"
                             )
                         except Exception as e:
@@ -183,7 +184,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                     # Rule 2: 15-min USDT Deposit timeout notifications
                     deposit_text = (
                         f"⌛ **انتهت مهلة الإيداع — صفقة #{deal_id_val}**\n\n"
-                        f"تم إلغاء الصفقة تلقائياً لعدم إيداع الـ USDT في محفظة الوساطة خلال مهلة الـ 15 دقيقة.\n"
+                        f"تم إلغاء الصفقة تلقائياً لعدم إيداع رصيد الضمان في المحفظة خلال مهلة 15 دقيقة.\n"
                         f"تمت إعادة العرض إلى قائمة العروض النشطة في السوق."
                     )
                     if buyer_id_val:
@@ -199,14 +200,13 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
 
                     # Admin alert detailing both counterparties & deal ID
                     admin_alert_text = (
-                        f"🚨 **تنبيه إلغاء صفقة — انقضاء مهلة إيداع USDT (15 دقيقة)**\n\n"
-                        f"━━━━━━━━━━━━━━━\n"
-                        f"• **رقم الصفقة:** #{deal_id_val}\n"
-                        f"• **البائع:** `{seller_id_val}`\n"
-                        f"• **المشتري:** `{buyer_id_val}`\n"
-                        f"▫️ **المبلغ :** `{format_usdt(amount_usdt_val)}` دولار مقابل `{format_syp(amount_syp_val)}` ل.س\n"
-                        f"━━━━━━━━━━━━━━━\n"
-                        f"تم إلغاء الصفقة تلقائياً لعدم إيداع USDT خلال 15 دقيقة، وتفريغ العرض وإعادته متاحاً في القناة."
+                        f"🚨 **إلغاء صفقة — انقضاء مهلة الإيداع**\n\n"
+                        f"▫️ **رقم الصفقة:** #{deal_id_val}\n"
+                        f"▫️ **البائع:** `{seller_id_val}`\n"
+                        f"▫️ **المشتري:** `{buyer_id_val}`\n"
+                        f"▫️ **الكمية:** `{format_usdt(amount_usdt_val)}` دولار رقمي\n"
+                        f"▫️ **المقابل:** `{format_syp(amount_syp_val)}` ل.س\n\n"
+                        f"تم إلغاء الصفقة لعدم إيداع الضمان خلال 15 دقيقة، وإعادة العرض متاحاً في القناة."
                     )
                     for admin_id in settings.ADMIN_IDS:
                         try:
@@ -242,7 +242,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                 if not offer:
                     continue
 
-                if offer.status != "active" or not offer.expires_at or offer.expires_at > now:
+                if not can_expire_active_offer(offer.status, offer.expires_at, now):
                     continue
 
                 # Rule 1: Delete offer immediately when duration expires without applicants
@@ -252,7 +252,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                 user_id_val = offer.user_id
 
                 await item_session.commit()
-                grace_offers_count += 1
+                deleted_offers_count += 1
                 logger.info(f"Offer #{offer_id_val} deleted automatically as duration expired at {now.isoformat()}")
 
                 try:
@@ -262,8 +262,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
 
                 deleted_text = (
                     f"🗑️ **تم حذف عرضك رقم #{offer_id_val} تلقائياً**\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"انتهت المدة المحددة لعرضك في السوق دون أن يتقدم أحد عليه، وتم حذفه من القناة ومن السوق نهائياً.\n"
+                    f"انتهت المدة المحددة لعرضك في السوق دون أن يتقدم أحد عليه، وتم حذفه من القناة والسوق نهائياً.\n"
                     f"يمكنك إنشاء عرض جديد في أي وقت عبر البوت."
                 )
                 try:
@@ -278,61 +277,69 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
             logger.error(f"Error deleting offer #{offer_id}: {item_err}", exc_info=True)
 
     # ----------------------------------------------------
-    # Branch 3: Expired Grace Period -> Final Expired Archive (Max 100 per cycle)
+    # Branch 3: SYP Payment 30-Minute Reminder (Buyer Only, Deal Stays Open)
     # ----------------------------------------------------
-    final_candidate_ids = []
+    syp_reminder_ids = []
     try:
         async with AsyncSessionLocal() as read_session:
-            offer_expired_stmt = select(Offer.id).where(
-                Offer.status == "expired_grace",
-                Offer.expires_at.is_not(None),
-                Offer.expires_at <= now
+            syp_stmt = select(Deal.id).where(
+                Deal.status == "AWAITING_SYP_PAYMENT",
+                Deal.expires_at.is_not(None),
+                Deal.expires_at <= now
             ).limit(100)
-            offer_expired_res = await read_session.execute(offer_expired_stmt)
-            final_candidate_ids = list(offer_expired_res.scalars().all())
+            syp_res = await read_session.execute(syp_stmt)
+            syp_reminder_ids = list(syp_res.scalars().all())
     except Exception as e:
-        logger.error(f"Error querying candidate final expired offer IDs: {e}", exc_info=True)
+        logger.error(f"Error querying candidate SYP payment reminder deal IDs: {e}", exc_info=True)
 
-    for offer_id in final_candidate_ids:
+    support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip("@")
+    for deal_id in syp_reminder_ids:
         try:
             async with AsyncSessionLocal() as item_session:
-                offer_res = await item_session.execute(
-                    select(Offer).where(Offer.id == offer_id).with_for_update(skip_locked=True)
+                deal_res = await item_session.execute(
+                    select(Deal).where(Deal.id == deal_id).with_for_update(skip_locked=True)
                 )
-                offer = offer_res.scalar_one_or_none()
-                if not offer:
+                deal = deal_res.scalar_one_or_none()
+                if not deal:
                     continue
 
-                if not can_permanently_expire_offer(offer.status, offer.expires_at, now):
+                if not can_remind_syp_payment(deal.status, deal.expires_at, now):
                     continue
 
-                offer.status = "expired"
-                offer.status_changed_at = now
-                offer_id_val = offer.id
-                user_id_val = offer.user_id
+                # Clear expires_at so the reminder sends strictly once while keeping the deal open
+                deal.expires_at = None
+                deal_id_val = deal.id
+                buyer_id_val = deal.buyer_id
+                amount_usdt_val = deal.amount_usdt
+                amount_syp_val = deal.amount_syp
 
                 await item_session.commit()
-                final_offers_count += 1
-                logger.info(f"Offer #{offer_id_val} permanently expired at {now.isoformat()}")
+                syp_reminders_count += 1
+                logger.info(f"Sent 30-min SYP payment reminder to buyer for deal #{deal_id_val}")
 
-                try:
-                    await update_channel_offer_message(bot, offer)
-                except Exception as e:
-                    logger.warning(f"Failed to update channel message for final expired offer #{offer_id_val}: {e}")
-
-                try:
-                    await bot.send_message(
-                        user_id_val,
-                        f"⌛ **انتهت صلاحية عرضك رقم #{offer_id_val} نهائياً**\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"انتهت فترة السماح (30 دقيقة) دون اتخاذ أي إجراء، وتم إغلاق العرض وأرشفته نهائياً.\n"
-                        f"يمكنك إنشاء عرض جديد في أي وقت عبر /create_offer.",
-                        parse_mode="Markdown"
+                if buyer_id_val:
+                    reminder_kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="📸 تأكيد تحويل المبلغ وإرفاق الإشعار", callback_data=f"man_syp_{deal_id_val}")]
+                    ])
+                    reminder_text = (
+                        f"⏰ **تذكير مهلة التحويل — صفقة #{deal_id_val}**\n\n"
+                        f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)}` دولار رقمي\n"
+                        f"▫️ **المبلغ المطلوب بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n\n"
+                        f"مرت 30 دقيقة على مرحلة بانتظار تحويل الليرة السورية، ولا تزال الصفقة قائمة والضمان محجوزاً بأمان.\n"
+                        f"⚠️ **يرجى التواصل مع فريق الدعم الفني:** @{support_username}\n"
+                        f"قبل تنفيذ التحويل، أو إرفاق إشعار التحويل أدناه إذا قمت بالتحويل بالفعل."
                     )
-                except Exception as e:
-                    logger.warning(f"Failed to notify user {user_id_val} of permanent offer #{offer_id_val} expiry: {e}")
+                    try:
+                        await bot.send_message(
+                            chat_id=buyer_id_val,
+                            text=reminder_text,
+                            reply_markup=reminder_kb,
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to notify buyer {buyer_id_val} of 30-min SYP reminder for deal #{deal_id_val}: {e}")
         except Exception as item_err:
-            logger.error(f"Error permanently expiring offer #{offer_id}: {item_err}", exc_info=True)
+            logger.error(f"Error sending SYP payment reminder for deal #{deal_id}: {item_err}", exc_info=True)
 
     # ----------------------------------------------------
     # Branch 4: Expired Negotiations (Max 100 per cycle)
@@ -396,8 +403,8 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                 try:
                     await bot.send_message(
                         taker_id_val,
-                        f"⌛ **انتهت مهلة جلسة التفاوض على العرض رقم #{neg_offer_id_val}**\n\n"
-                        f"تم إنهاء الجلسة لعدم الرد خلال مهلة الـ 30 دقيقة المحددة.\n"
+                        f"⌛ **انتهت مهلة جلسة التفاوض — عرض #{neg_offer_id_val}**\n\n"
+                        f"تم إنهاء الجلسة لعدم الرد خلال مهلة 30 دقيقة.\n"
                         f"تمت إعادة العرض إلى السوق كعرض نشط ومتاح.",
                         parse_mode="Markdown"
                     )
@@ -407,8 +414,8 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
                 try:
                     await bot.send_message(
                         maker_id_val,
-                        f"⌛ **انتهت مهلة جلسة التفاوض على العرض رقم #{neg_offer_id_val}**\n\n"
-                        f"تم إنهاء الجلسة تلقائياً بسبب انقضاء مهلة الـ 30 دقيقة.\n"
+                        f"⌛ **انتهت مهلة جلسة التفاوض — عرض #{neg_offer_id_val}**\n\n"
+                        f"تم إنهاء الجلسة تلقائياً لانقضاء مهلة 30 دقيقة.\n"
                         f"تمت إعادة عرضك #{neg_offer_id_val} كعرض نشط ومتاح في السوق.",
                         parse_mode="Markdown"
                     )
@@ -481,7 +488,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int]:
         except Exception as item_err:
             logger.error(f"Error releasing orphan offer #{offer_id}: {item_err}", exc_info=True)
 
-    return expired_deals_count, grace_offers_count, final_offers_count, expired_negs_count, orphan_released_count
+    return expired_deals_count, deleted_offers_count, syp_reminders_count, expired_negs_count, orphan_released_count
 
 
 async def run_startup_recovery(bot: Bot):
@@ -493,15 +500,11 @@ async def run_startup_recovery(bot: Bot):
     logger.info("Initiating startup recovery audit for pending timers and expiries...")
     try:
         counts = await process_expiries(bot)
-        if len(counts) == 5:
-            expired_deals, grace_offers, final_offers, expired_negs, orphan_offers = counts
-        else:
-            expired_deals, grace_offers, final_offers, expired_negs = counts[:4]
-            orphan_offers = 0
+        expired_deals, deleted_offers, syp_reminders, expired_negs, orphan_offers = counts
         logger.info(
             f"Startup recovery completed successfully: "
-            f"{expired_deals} expired deals, {grace_offers} grace offers, "
-            f"{final_offers} final offers, {expired_negs} expired negotiations, "
+            f"{expired_deals} expired deals, {deleted_offers} deleted offers, "
+            f"{syp_reminders} SYP reminders sent, {expired_negs} expired negotiations, "
             f"{orphan_offers} orphan offers released."
         )
     except Exception as e:

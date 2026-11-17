@@ -14,6 +14,7 @@ from db.models import Offer, User
 from bot.states.flow_states import OfferCreateFSM
 from config.settings import settings
 from bot.middlewares.rate_limit import check_and_record_rate_limit
+from bot.services.channel import update_channel_offer_message, build_channel_offer_message
 from bot.utils.formatters import (
     format_syp,
     format_usdt,
@@ -28,6 +29,10 @@ from bot.utils.validators import (
     validate_bep20_address,
     validate_payment_method_info
 )
+from bot.utils.payment_prompts import (
+    extract_clean_account,
+    match_saved_payment_info,
+)
 from bot.utils.offer_wizard import (
     push_wizard_step,
     pop_wizard_step,
@@ -36,7 +41,6 @@ from bot.utils.offer_wizard import (
     format_wizard_summary,
     FEE_RULE_LINE
 )
-from bot.utils.fees import format_fee_rule_line, format_fee_rule_html
 from bot.utils.branding import BOT_NAME, CHANNEL_NAME
 
 logger = logging.getLogger(__name__)
@@ -137,9 +141,7 @@ async def ask_cancel_wizard(callback: CallbackQuery, state: FSMContext):
     await state.set_state(OfferCreateFSM.confirm_cancel)
     await callback.message.edit_text(
         "⚠️ **تأكيد إلغاء إنشاء العرض**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "هل أنت متأكد من رغبتك في إلغاء عملية إنشاء العرض وحذف كافة البيانات المدخلة؟\n"
-        "━━━━━━━━━━━━━━━",
+        "هل أنت متأكد من رغبتك في إلغاء عملية إنشاء العرض وحذف كافة البيانات المدخلة؟",
         reply_markup=get_cancel_confirm_kb(),
         parse_mode="Markdown"
     )
@@ -151,8 +153,8 @@ async def process_cancel_confirm_yes(callback: CallbackQuery, state: FSMContext)
     """Discard wizard draft data and clear FSM state."""
     await state.clear()
     await callback.message.edit_text(
-        "❌ **تم إلغاء عملية إنشاء العرض.**\n\n"
-        "تم مسح كافة البيانات المؤقتة. يمكنك البدء من جديد عبر الأمر /create_offer أو من القائمة الرئيسية.",
+        "❌ **تم إلغاء عملية إنشاء العرض**\n\n"
+        "تم مسح كافة البيانات المؤقتة. يمكنك البدء من جديد عبر /create_offer أو من القائمة الرئيسية.",
         parse_mode="Markdown"
     )
     await callback.answer("تم إلغاء العملية.")
@@ -176,49 +178,40 @@ async def _render_current_step(message: Message, state: FSMContext, db_session: 
     if cur_state == OfferCreateFSM.waiting_for_type.state:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔴 بيع USDT", callback_data="offer_type_sell"),
-                InlineKeyboardButton(text="🟢 شراء USDT", callback_data="offer_type_buy")
+                InlineKeyboardButton(text="🔴 عرض بيع", callback_data="offer_type_sell"),
+                InlineKeyboardButton(text="🟢 عرض شراء", callback_data="offer_type_buy")
             ],
             [InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")]
         ])
         await message.edit_text(
             "📝 **إنشاء عرض تداول جديد**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "حدد نوع العملية التي ترغب بطرحها في السوق:\n\n"
-            "• 🔴 **بيع USDT**: تقديم USDT واستلام ليرة سورية.\n"
-            "• 🟢 **شراء USDT**: دفع ليرة سورية واستلام USDT.\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "اختر النوع للمتابعة:",
+            "حدد نوع العملية التي ترغب بنشرها في السوق:\n\n"
+            "▫️ 🔴 **بيع دولار رقمي:** تقديم الدولار الرقمي واستلام ليرة سورية.\n"
+            "▫️ 🟢 **شراء دولار رقمي:** دفع ليرة سورية واستلام الدولار الرقمي.",
             reply_markup=kb,
             parse_mode="Markdown"
         )
-    elif cur_state in (OfferCreateFSM.waiting_for_rate.state, OfferCreateFSM.confirm_rate.state):
-        offer_type_ar = "🔴 بيع USDT" if data.get("offer_type") == "sell" else "🟢 شراء USDT"
+    elif cur_state == OfferCreateFSM.waiting_for_rate.state:
+        offer_type_ar = "🔴 بيع دولار رقمي" if data.get("offer_type") == "sell" else "🟢 شراء دولار رقمي"
         await message.edit_text(
             f"📝 **إنشاء عرض جديد — {offer_type_ar}**\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"💵 أدخل سعر الصرف بالليرة السورية مقابل 1 USDT:\n"
-            f"━━━━━━━━━━━━━━━",
+            f"💵 أدخل سعر الصرف بالليرة السورية مقابل وحدة واحدة من الدولار الرقمي:",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
             parse_mode="Markdown"
         )
-    elif cur_state in (OfferCreateFSM.waiting_for_min_limit.state, OfferCreateFSM.confirm_min_limit.state):
+    elif cur_state == OfferCreateFSM.waiting_for_min_limit.state:
         await message.edit_text(
-            "📝 **إنشاء عرض**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
-            "━━━━━━━━━━━━━━━",
+            "📝 **إنشاء عرض جديد — الحد الأدنى**\n\n"
+            "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة الواحدة (بالدولار الرقمي):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
             parse_mode="Markdown"
         )
-    elif cur_state in (OfferCreateFSM.waiting_for_max_limit.state, OfferCreateFSM.confirm_max_limit.state):
+    elif cur_state == OfferCreateFSM.waiting_for_max_limit.state:
         min_str = format_usdt(Decimal(str(data.get("min_limit", "0"))))
         await message.edit_text(
-            f"📝 **إنشاء عرض** | الحد الأدنى: 📦 `{min_str} USDT`\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة:\n"
-            f"*(يجب أن يكون أكبر من أو يساوي `{min_str}` USDT)*\n"
-            f"━━━━━━━━━━━━━━━",
+            f"📝 **إنشاء عرض جديد — الحد الأقصى**\n"
+            f"▫️ **الحد الأدنى المسجل:** `{min_str}` دولار رقمي\n\n"
+            f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة (بالدولار الرقمي):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
             parse_mode="Markdown"
         )
@@ -226,9 +219,7 @@ async def _render_current_step(message: Message, state: FSMContext, db_session: 
         selected = data.get("payment_methods", [])
         await message.edit_text(
             "💳 **وسائل الدفع المقبولة**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "اضغط على وسائل الدفع المقبولة لديك لتحديدها (يمكنك اختيار أكثر من وسيلة)، ثم اضغط على زر التأكيد:\n"
-            "━━━━━━━━━━━━━━━",
+            "اختر وسائل الدفع المعتمدة لديك (يمكنك تحديد أكثر من وسيلة)، ثم اضغط على زر التأكيد:",
             reply_markup=get_payment_methods_kb(selected),
             parse_mode="Markdown"
         )
@@ -255,8 +246,8 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
     user = user_res.scalar_one_or_none()
     if user and user.is_banned:
         await message.answer(
-            "🚫 **تم تقييد حسابك!**\n\n"
-            f"عذراً، حسابك محظور من إنشاء عروض جديدة على {BOT_NAME}.\n"
+            "🚫 **تم تقييد حسابك**\n\n"
+            f"عذراً، حسابك مقيد حالياً من إنشاء عروض جديدة على {BOT_NAME}.\n"
             "يرجى التواصل مع الدعم الفني لمزيد من التفاصيل.",
             parse_mode="Markdown"
         )
@@ -271,19 +262,16 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔴 بيع USDT", callback_data="offer_type_sell"),
-            InlineKeyboardButton(text="🟢 شراء USDT", callback_data="offer_type_buy")
+            InlineKeyboardButton(text="🔴 عرض بيع", callback_data="offer_type_sell"),
+            InlineKeyboardButton(text="🟢 عرض شراء", callback_data="offer_type_buy")
         ],
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")]
     ])
     await message.answer(
         "📝 **إنشاء عرض تداول جديد**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "حدد نوع العملية التي ترغب بطرحها في السوق:\n\n"
-        "• 🔴 **بيع USDT**: تقديم USDT واستلام ليرة سورية.\n"
-        "• 🟢 **شراء USDT**: دفع ليرة سورية واستلام USDT.\n"
-        "━━━━━━━━━━━━━━━\n\n"
-        "اختر النوع للمتابعة:",
+        "حدد نوع العملية التي ترغب بنشرها في السوق:\n\n"
+        "▫️ 🔴 **بيع دولار رقمي:** تقديم الدولار الرقمي واستلام ليرة سورية.\n"
+        "▫️ 🟢 **شراء دولار رقمي:** دفع ليرة سورية واستلام الدولار الرقمي.",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -294,7 +282,7 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
 async def process_offer_type(callback: CallbackQuery, state: FSMContext):
     """Capture offer type and advance to rate input."""
     offer_type = callback.data.split("_")[-1]
-    offer_type_ar = "🔴 بيع USDT" if offer_type == "sell" else "🟢 شراء USDT"
+    offer_type_ar = "🔴 بيع دولار رقمي" if offer_type == "sell" else "🟢 شراء دولار رقمي"
     data = await state.get_data()
     history = push_wizard_step(data.get("step_history", []), "type", {"offer_type": offer_type})
 
@@ -304,9 +292,7 @@ async def process_offer_type(callback: CallbackQuery, state: FSMContext):
     )
     await callback.message.edit_text(
         f"📝 **إنشاء عرض جديد — {offer_type_ar}**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"💵 أدخل سعر الصرف بالليرة السورية مقابل 1 USDT:\n"
-        f"━━━━━━━━━━━━━━━",
+        f"💵 أدخل سعر الصرف بالليرة السورية مقابل وحدة واحدة من الدولار الرقمي:",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
         parse_mode="Markdown"
     )
@@ -315,7 +301,7 @@ async def process_offer_type(callback: CallbackQuery, state: FSMContext):
 
 
 # ==============================================================================
-# STEP 2: EXCHANGE RATE & CONFIRMATION
+# STEP 2: EXCHANGE RATE
 # ==============================================================================
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_rate, F.data == "wiz_back_rate")
@@ -323,19 +309,16 @@ async def back_to_offer_type(callback: CallbackQuery, state: FSMContext):
     """Navigate back from Rate input to Offer Type."""
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔴 بيع USDT", callback_data="offer_type_sell"),
-            InlineKeyboardButton(text="🟢 شراء USDT", callback_data="offer_type_buy")
+            InlineKeyboardButton(text="🔴 عرض بيع", callback_data="offer_type_sell"),
+            InlineKeyboardButton(text="🟢 عرض شراء", callback_data="offer_type_buy")
         ],
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")]
     ])
     await callback.message.edit_text(
         "📝 **إنشاء عرض تداول جديد**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "حدد نوع العملية التي ترغب بطرحها في السوق:\n\n"
-        "• 🔴 **بيع USDT**: تقديم USDT واستلام ليرة سورية.\n"
-        "• 🟢 **شراء USDT**: دفع ليرة سورية واستلام USDT.\n"
-        "━━━━━━━━━━━━━━━\n\n"
-        "اختر النوع للمتابعة:",
+        "حدد نوع العملية التي ترغب بنشرها في السوق:\n\n"
+        "▫️ 🔴 **بيع دولار رقمي:** تقديم الدولار الرقمي واستلام ليرة سورية.\n"
+        "▫️ 🟢 **شراء دولار رقمي:** دفع ليرة سورية واستلام الدولار الرقمي.",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -368,33 +351,29 @@ async def process_offer_rate(message: Message, state: FSMContext):
 
         rate_str = format_syp(rate)
         await message.answer(
-            f"📝 **إنشاء عرض** | سعر الصرف المعتمد: `{rate_str}` ل.س\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
-            f"━━━━━━━━━━━━━━━",
+            f"📝 **إنشاء عرض جديد — الحد الأدنى**\n"
+            f"▫️ **سعر الصرف المعتمد:** `{rate_str}` ل.س\n\n"
+            f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة الواحدة (بالدولار الرقمي):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
             parse_mode="Markdown"
         )
         await state.set_state(OfferCreateFSM.waiting_for_min_limit)
     except Exception:
         await message.answer(
-            "⚠️ **سعر الصرف غير صالح!**\n\n"
+            "⚠️ **سعر الصرف غير صالح**\n\n"
             "يرجى إدخال رقم صحيح وموجب لسعر الصرف:",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
             parse_mode="Markdown"
         )
 
 
-@offers_router.callback_query(OfferCreateFSM.confirm_rate, F.data == "wiz_edit_rate")
 async def edit_rate_input(callback: CallbackQuery, state: FSMContext):
     """Prompt user to re-enter exchange rate."""
     data = await state.get_data()
-    offer_type_ar = "🔴 بيع USDT" if data.get("offer_type") == "sell" else "🟢 شراء USDT"
+    offer_type_ar = "🔴 بيع دولار رقمي" if data.get("offer_type") == "sell" else "🟢 شراء دولار رقمي"
     await callback.message.edit_text(
         f"📝 **تعديل السعر — {offer_type_ar}**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"💵 أدخل سعر الصرف الجديد بالليرة السورية مقابل 1 USDT:\n"
-        f"━━━━━━━━━━━━━━━",
+        f"💵 أدخل سعر الصرف الجديد بالليرة السورية مقابل وحدة واحدة من الدولار الرقمي:",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
         parse_mode="Markdown"
     )
@@ -402,51 +381,18 @@ async def edit_rate_input(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@offers_router.callback_query(OfferCreateFSM.confirm_rate, F.data == "wiz_confirm_rate")
-async def confirm_rate_and_advance(callback: CallbackQuery, state: FSMContext):
-    """Commit rate and proceed to Min Limit or return to Summary if jump-editing."""
-    data = await state.get_data()
-    rate_val = data.get("candidate_rate") or data.get("rate")
-    history = push_wizard_step(data.get("step_history", []), "rate", {"rate": rate_val})
-
-    await state.update_data(
-        rate=rate_val,
-        step_history=history
-    )
-
-    if data.get("return_to_summary"):
-        await state.update_data(return_to_summary=False)
-        await _show_wizard_summary(callback.message, state)
-        await callback.answer("تم تحديث السعر.")
-        return
-
-    rate_str = format_syp(Decimal(str(rate_val)))
-    await callback.message.edit_text(
-        f"📝 **إنشاء عرض** | سعر الصرف المعتمد: `{rate_str}` ل.س\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
-        f"━━━━━━━━━━━━━━━",
-        reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
-        parse_mode="Markdown"
-    )
-    await state.set_state(OfferCreateFSM.waiting_for_min_limit)
-    await callback.answer()
-
-
 # ==============================================================================
-# STEP 3: MIN LIMIT & CONFIRMATION
+# STEP 3: MIN LIMIT
 # ==============================================================================
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_min_limit, F.data == "wiz_back_min")
 async def back_to_rate(callback: CallbackQuery, state: FSMContext):
     """Navigate back from Min Limit to Rate input."""
     data = await state.get_data()
-    offer_type_ar = "🔴 بيع USDT" if data.get("offer_type") == "sell" else "🟢 شراء USDT"
+    offer_type_ar = "🔴 بيع دولار رقمي" if data.get("offer_type") == "sell" else "🟢 شراء دولار رقمي"
     await callback.message.edit_text(
         f"📝 **إنشاء عرض جديد — {offer_type_ar}**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"💵 أدخل سعر الصرف بالليرة السورية مقابل 1 USDT:\n"
-        f"━━━━━━━━━━━━━━━",
+        f"💵 أدخل سعر الصرف بالليرة السورية مقابل وحدة واحدة من الدولار الرقمي:",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_rate"),
         parse_mode="Markdown"
     )
@@ -483,32 +429,27 @@ async def process_min_limit(message: Message, state: FSMContext):
 
         min_str = format_usdt(min_limit)
         await message.answer(
-            f"📝 **إنشاء عرض** | الحد الأدنى: 📦 `{min_str} USDT`\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة:\n"
-            f"*(يجب أن يكون أكبر من أو يساوي `{min_str}` USDT)*\n"
-            f"━━━━━━━━━━━━━━━",
+            f"📝 **إنشاء عرض جديد — الحد الأقصى**\n"
+            f"▫️ **الحد الأدنى المسجل:** `{min_str}` دولار رقمي\n\n"
+            f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة (يجب أن يكون أكبر من أو يساوي `{min_str}` دولار رقمي):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
             parse_mode="Markdown"
         )
         await state.set_state(OfferCreateFSM.waiting_for_max_limit)
     except Exception:
         await message.answer(
-            "⚠️ **قيمة غير صالحة!**\n\n"
-            "يرجى إدخال رقم موجب وصحيح بوحدة USDT:",
+            "⚠️ **قيمة غير صالحة**\n\n"
+            "يرجى إدخال رقم صحيح وموجب للحد الأدنى (بالدولار الرقمي):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
             parse_mode="Markdown"
         )
 
 
-@offers_router.callback_query(OfferCreateFSM.confirm_min_limit, F.data == "wiz_edit_min")
 async def edit_min_limit_input(callback: CallbackQuery, state: FSMContext):
     """Prompt user to re-enter min limit."""
     await callback.message.edit_text(
         "📝 **تعديل الحد الأدنى**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
-        "━━━━━━━━━━━━━━━",
+        "📦 أدخل الحد الأدنى الجديد للكمية المسموح بها في الصفقة (بالدولار الرقمي):",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
         parse_mode="Markdown"
     )
@@ -516,54 +457,16 @@ async def edit_min_limit_input(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@offers_router.callback_query(OfferCreateFSM.confirm_min_limit, F.data == "wiz_confirm_min")
-async def confirm_min_limit_and_advance(callback: CallbackQuery, state: FSMContext):
-    """Commit min limit and advance to Max Limit or return to Summary if jump-editing."""
-    data = await state.get_data()
-    min_val = data.get("candidate_min_limit") or data.get("min_limit")
-    history = push_wizard_step(data.get("step_history", []), "min_limit", {"min_limit": min_val})
-
-    await state.update_data(
-        min_limit=min_val,
-        step_history=history
-    )
-
-    if data.get("return_to_summary"):
-        max_val = data.get("max_limit")
-        if max_val and Decimal(str(max_val)) < Decimal(str(min_val)):
-            await state.update_data(return_to_summary=False)
-        else:
-            await state.update_data(return_to_summary=False)
-            await _show_wizard_summary(callback.message, state)
-            await callback.answer("تم تحديث الحد الأدنى.")
-            return
-
-    min_str = format_usdt(Decimal(str(min_val)))
-    await callback.message.edit_text(
-        f"📝 **إنشاء عرض** | الحد الأدنى: 📦 `{min_str} USDT`\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📦 أدخل الحد الأقصى للكمية الإجمالية المعروضة:\n"
-        f"*(يجب أن يكون أكبر من أو يساوي `{min_str}` USDT)*\n"
-        f"━━━━━━━━━━━━━━━",
-        reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
-        parse_mode="Markdown"
-    )
-    await state.set_state(OfferCreateFSM.waiting_for_max_limit)
-    await callback.answer()
-
-
 # ==============================================================================
-# STEP 4: MAX LIMIT & CONFIRMATION
+# STEP 4: MAX LIMIT
 # ==============================================================================
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_max_limit, F.data == "wiz_back_max")
 async def back_to_min_limit(callback: CallbackQuery, state: FSMContext):
     """Navigate back from Max Limit to Min Limit input."""
     await callback.message.edit_text(
-        "📝 **إنشاء عرض**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة (USDT):\n"
-        "━━━━━━━━━━━━━━━",
+        "📝 **إنشاء عرض جديد — الحد الأدنى**\n\n"
+        "📦 أدخل الحد الأدنى للكمية المسموح بها في الصفقة الواحدة (بالدولار الرقمي):",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
         parse_mode="Markdown"
     )
@@ -584,8 +487,8 @@ async def process_max_limit(message: Message, state: FSMContext):
 
         if max_limit < min_limit:
             await message.answer(
-                f"⚠️ **الحد الأقصى غير متطابق!**\n\n"
-                f"يجب أن يكون أكبر من أو يساوي الحد الأدنى (`{format_usdt(min_limit)}` USDT).\n"
+                f"⚠️ **الحد الأقصى غير متطابق**\n\n"
+                f"يجب أن يكون أكبر من أو يساوي الحد الأدنى (`{format_usdt(min_limit)}` دولار رقمي).\n"
                 f"يرجى إعادة إدخال الحد الأقصى:",
                 reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
                 parse_mode="Markdown"
@@ -609,69 +512,32 @@ async def process_max_limit(message: Message, state: FSMContext):
         selected = data.get("payment_methods", [])
         await message.answer(
             "💳 **وسائل الدفع المقبولة**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "اضغط على وسائل الدفع المقبولة لديك لتحديدها (يمكنك اختيار أكثر من وسيلة)، ثم اضغط على زر التأكيد:\n"
-            "━━━━━━━━━━━━━━━",
+            "اختر وسائل الدفع المعتمدة لديك (يمكنك تحديد أكثر من وسيلة)، ثم اضغط على زر التأكيد:",
             reply_markup=get_payment_methods_kb(selected),
             parse_mode="Markdown"
         )
         await state.set_state(OfferCreateFSM.waiting_for_methods)
     except Exception:
         await message.answer(
-            "⚠️ **قيمة غير صالحة!**\n\n"
-            "يرجى إدخال رقم صحيح وموجب للحد الأقصى بوحدة USDT:",
+            "⚠️ **قيمة غير صالحة**\n\n"
+            "يرجى إدخال رقم صحيح وموجب للحد الأقصى (بالدولار الرقمي):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
             parse_mode="Markdown"
         )
 
 
-
-@offers_router.callback_query(OfferCreateFSM.confirm_max_limit, F.data == "wiz_edit_max")
 async def edit_max_limit_input(callback: CallbackQuery, state: FSMContext):
     """Prompt user to re-enter max limit."""
     data = await state.get_data()
     min_str = format_usdt(Decimal(str(data.get("min_limit", "0"))))
     await callback.message.edit_text(
-        f"📝 **تعديل الحد الأقصى** | الحد الأدنى: 📦 `{min_str} USDT`\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📦 أدخل الحد الأقصى الجديد للكمية بوحدة USDT:\n"
-        f"━━━━━━━━━━━━━━━",
+        f"📝 **تعديل الحد الأقصى**\n"
+        f"▫️ **الحد الأدنى المسجل:** `{min_str}` دولار رقمي\n\n"
+        f"📦 أدخل الحد الأقصى الجديد للكمية (بالدولار الرقمي):",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_max"),
         parse_mode="Markdown"
     )
     await state.set_state(OfferCreateFSM.waiting_for_max_limit)
-    await callback.answer()
-
-
-@offers_router.callback_query(OfferCreateFSM.confirm_max_limit, F.data == "wiz_confirm_max")
-async def confirm_max_limit_and_advance(callback: CallbackQuery, state: FSMContext):
-    """Commit max limit and advance to Payment Methods or return to Summary if jump-editing."""
-    data = await state.get_data()
-    max_val = data.get("candidate_max_limit") or data.get("max_limit")
-    history = push_wizard_step(data.get("step_history", []), "max_limit", {"max_limit": max_val})
-
-    await state.update_data(
-        max_limit=max_val,
-        step_history=history
-    )
-
-    if data.get("return_to_summary"):
-        await state.update_data(return_to_summary=False)
-        await _show_wizard_summary(callback.message, state)
-        await callback.answer("تم تحديث الحد الأقصى.")
-        return
-
-    selected_methods = data.get("payment_methods", [])
-    kb = get_payment_methods_kb(selected_methods)
-    await callback.message.edit_text(
-        "💳 **وسائل الدفع المقبولة**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "اضغط على وسائل الدفع المقبولة لديك لتحديدها (يمكنك اختيار أكثر من وسيلة)، ثم اضغط على زر التأكيد:\n"
-        "━━━━━━━━━━━━━━━",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
-    await state.set_state(OfferCreateFSM.waiting_for_methods)
     await callback.answer()
 
 
@@ -744,28 +610,30 @@ async def confirm_payment_methods(callback: CallbackQuery, state: FSMContext, db
 # ==============================================================================
 
 def _extract_saved_payment_info(user_obj: User | None, cur_method: str) -> str | None:
-    """Helper to extract saved payment method info from User.saved_payment_info whether dict, JSON, or string."""
+    """Helper to extract method-compatible saved payment info from User.saved_payment_info."""
     if not user_obj or not user_obj.saved_payment_info:
         return None
     raw = user_obj.saved_payment_info
+    candidate = None
     if isinstance(raw, dict):
         val = raw.get(cur_method)
         if val:
-            return str(val)
+            candidate = str(val)
     elif isinstance(raw, str):
         raw_str = raw.strip()
         try:
             parsed = json.loads(raw_str)
             if isinstance(parsed, dict) and parsed.get(cur_method):
-                return str(parsed[cur_method])
+                candidate = str(parsed[cur_method])
         except Exception:
-            pass
-        # Check if the plain string is valid for this method or contains the method name
-        is_val, norm_info, _ = validate_payment_method_info(cur_method, raw_str)
-        if is_val:
-            return norm_info
-        if cur_method in raw_str:
-            return raw_str
+            candidate = raw_str
+
+    if not candidate:
+        return None
+
+    is_usable, _, clean_acc, _ = match_saved_payment_info(candidate, target_method=cur_method)
+    if is_usable and clean_acc:
+        return clean_acc
     return None
 
 
@@ -793,12 +661,12 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
         text = (
-            "💼 **عنوان محفظة استلام USDT**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "⚠️ **تنبيه شبكة الاستلام:** يجب أن يكون العنوان على شبكة **BNB Smart Chain (BEP-20)** حصراً.\n"
-            "إرسال عنوان من شبكة أخرى قد تؤدي إلى فقدان أموالك نهائياً.\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "أدخل عنوان محفظتك لاستلام أرباحك عند اكتمال الصفقات:"
+            "💼 **عنوان محفظة الاستلام**\n\n"
+            "⚠️ **تنبيه شبكة الاستلام:**\n"
+            "يجب أن يكون العنوان على الشبكة المعتمدة حصراً:\n"
+            "`BNB Smart Chain (BEP-20)`\n\n"
+            "إرسال عنوان من شبكة أخرى قد يؤدي إلى فقدان أموالك نهائياً.\n\n"
+            "أدخل عنوان محفظتك لاستلام الرصيد عند اكتمال الصفقات:"
         )
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -810,19 +678,16 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         await state.set_state(OfferCreateFSM.waiting_for_payout_details)
 
     else:
-        # Sell offer: sequential collection for each selected method
         methods = data.get("pending_payout_methods") or data.get("payment_methods", [])
         idx = data.get("current_payout_index", 0)
 
         if idx >= len(methods):
-            # All methods gathered, show confirmation screen
             await _show_payout_confirmation(message, state)
             return
 
         cur_method = methods[idx]
         buttons = []
 
-        # Check for saved info matching this method
         saved_info_str = _extract_saved_payment_info(user, cur_method)
 
         if saved_info_str:
@@ -839,9 +704,7 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
 
         text = (
             f"💳 **بيانات استلام: {icon} {cur_method}** {step_str}\n\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"أدخل بيانات حسابك المعتمد لاستلام المبالغ بالليرة السورية عبر **{cur_method}**:\n"
-            f"━━━━━━━━━━━━━━━"
+            f"أدخل بيانات حسابك المعتمد لاستلام المبالغ بالليرة السورية عبر **{cur_method}**:"
         )
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -978,13 +841,16 @@ async def _show_payout_confirmation(message: Message, state: FSMContext):
     lines = []
     if offer_type == "buy":
         wallet = payout_details.get("usdt_bep20_address", "")
-        lines.append(f"• **محفظة استلام USDT (BEP-20):**\n  `{wallet}`")
+        lines.append("▫️ **محفظة الاستلام:**")
+        lines.append("الشبكة: `BEP-20`")
+        lines.append(f"`{wallet}`")
     else:
         methods = data.get("payment_methods", [])
         for m in methods:
-            acc = payout_details.get(m, "غير محدد")
+            raw_acc = payout_details.get(m, "غير محدد")
+            acc = extract_clean_account(str(raw_acc), m) or str(raw_acc)
             icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-            lines.append(f"• **{icon} {m}:**\n  `{acc}`")
+            lines.append(f"▫️ **{icon} {m}:**\n`{acc}`")
 
     details_text = "\n\n".join(lines) if lines else "لا توجد بيانات مسجلة."
 
@@ -994,11 +860,9 @@ async def _show_payout_confirmation(message: Message, state: FSMContext):
         back_cb="wiz_back_payout"
     )
     text = (
-        "💼 **تأكيد بيانات الاستلام الخاصة بك**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        f"{details_text}\n"
-        "━━━━━━━━━━━━━━━\n"
-        "🔒 *ملاحظة:* هذه البيانات تظهر فقط لأطراف الصفقات التنفيذية ولا تُنشر في القناة العامة.\n\n"
+        "💼 **تأكيد بيانات الاستلام**\n\n"
+        f"{details_text}\n\n"
+        "🔒 **ملاحظة:** هذه البيانات تظهر فقط لأطراف الصفقات التنفيذية ولا تُنشر في القناة العامة.\n\n"
         "هل ترغب باعتماد هذه البيانات والمتابعة؟"
     )
     if isinstance(message, CallbackQuery):
@@ -1019,26 +883,21 @@ async def back_from_payout(callback: CallbackQuery, state: FSMContext, db_sessio
     cur_state = await state.get_state()
 
     if cur_state == OfferCreateFSM.confirm_payout_details.state:
-        # Return to editing payout details
         await edit_payout_details(callback, state, db_session)
         return
 
     if offer_type == "sell":
         idx = data.get("current_payout_index", 0)
         if idx > 0:
-            # Step back one payment method
             await state.update_data(current_payout_index=idx - 1)
             await _show_payout_prompt(callback.message, state, db_session, user_id=callback.from_user.id)
             await callback.answer()
             return
 
-    # Otherwise return to payment methods selection
     selected = data.get("payment_methods", [])
     await callback.message.edit_text(
         "💳 **وسائل الدفع المقبولة**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "اضغط على وسائل الدفع المقبولة لديك لتحديدها (يمكنك اختيار أكثر من وسيلة)، ثم اضغط على زر التأكيد:\n"
-        "━━━━━━━━━━━━━━━",
+        "اختر وسائل الدفع المعتمدة لديك (يمكنك تحديد أكثر من وسيلة)، ثم اضغط على زر التأكيد:",
         reply_markup=get_payment_methods_kb(selected),
         parse_mode="Markdown"
     )
@@ -1097,10 +956,7 @@ async def _show_negotiation_decision(message: Message):
     ])
     text = (
         "⚙️ **خيارات التفاوض على العرض**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "هل ترغب بالسماح للمتداولين بتقديم اقتراحات تفاوض على السعر أو الكمية؟\n"
-        "━━━━━━━━━━━━━━━\n\n"
-        "اختر الإعداد المناسب:"
+        "هل ترغب بالسماح للمتداولين بتقديم مقترحات تفاوض على السعر أو الكمية؟"
     )
     if hasattr(message, "edit_text"):
         await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -1132,9 +988,7 @@ async def process_negotiable_decision(callback: CallbackQuery, state: FSMContext
         ])
         await callback.message.edit_text(
             "⚙️ **تحديد نطاق التفاوض**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "حدد البنود التي تسمح للطرف الآخر بالتفاوض عليها:\n"
-            "━━━━━━━━━━━━━━━",
+            "حدد البنود التي تسمح للطرف الآخر بالتفاوض عليها:",
             reply_markup=kb,
             parse_mode="Markdown"
         )
@@ -1200,7 +1054,7 @@ async def _show_duration_choice(message: Message):
     """Render duration options with Back and Cancel buttons."""
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏱️ 4 ساعات (الافتراضي)", callback_data="dur_default_4")],
-        [InlineKeyboardButton(text="⚙️ تحديد مدة مخصصة (1-4 ساعات)", callback_data="dur_custom")],
+        [InlineKeyboardButton(text="⚙️ تحديد مدة مخصصة (من 1 إلى 4 ساعات)", callback_data="dur_custom")],
         [
             InlineKeyboardButton(text="🔙 رجوع", callback_data="wiz_back_duration"),
             InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")
@@ -1208,9 +1062,7 @@ async def _show_duration_choice(message: Message):
     ])
     text = (
         "⏱️ **مدة صلاحية العرض في السوق**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "اختر مدة بقاء عرضك متاحاً ونشطاً في السوق قبل انتهاء صلاحيته آلياً:\n"
-        "━━━━━━━━━━━━━━━"
+        "اختر مدة بقاء عرضك متاحاً ونشطاً في السوق قبل انتهاء صلاحيته آلياً:"
     )
     if hasattr(message, "edit_text"):
         await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -1241,9 +1093,7 @@ async def prompt_custom_duration(callback: CallbackQuery, state: FSMContext):
     """Prompt user for custom duration input."""
     await callback.message.edit_text(
         "⏱️ **تحديد مدة العرض المخصصة**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "أدخل عدد الساعات المطلوب لبقاء العرض نشطاً (رقم من 1 إلى 4):\n"
-        "━━━━━━━━━━━━━━━",
+        "أدخل عدد الساعات المطلوب لبقاء العرض نشطاً (رقم من 1 إلى 4):",
         reply_markup=get_step_nav_kb(back_cb="wiz_back_custom_dur"),
         parse_mode="Markdown"
     )
@@ -1276,18 +1126,16 @@ async def process_custom_duration(message: Message, state: FSMContext):
         )
         await message.answer(
             "⏱️ **تأكيد مدة الصلاحية**\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            f"• مدة بقاء العرض في السوق: `{dur_str}`\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "هل ترغب باعتماد هذه المدة والمتابعة إلى الملخص النهائي؟",
+            f"▫️ **مدة بقاء العرض في السوق:** `{dur_str}`\n\n"
+            "هل ترغب باعتماد هذه المدة والمتابعة إلى المراجعة النهائية؟",
             reply_markup=kb,
             parse_mode="Markdown"
         )
         await state.set_state(OfferCreateFSM.confirm_custom_duration)
     except Exception:
         await message.answer(
-            "⚠️ **قيمة غير صالحة!**\n\n"
-            "يرجى إرسال رقم صحيح لعدد الساعات (بين 1 و 4):",
+            "⚠️ **قيمة غير صالحة**\n\n"
+            "يرجى إدخال رقم صحيح لعدد الساعات (بين 1 و 4):",
             reply_markup=get_step_nav_kb(back_cb="wiz_back_custom_dur"),
             parse_mode="Markdown"
         )
@@ -1357,9 +1205,7 @@ async def jump_edit_methods(callback: CallbackQuery, state: FSMContext):
     selected = data.get("payment_methods", [])
     await callback.message.edit_text(
         "💳 **وسائل الدفع المقبولة**\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "اضغط على وسائل الدفع المقبولة لديك لتحديدها (يمكنك اختيار أكثر من وسيلة)، ثم اضغط على زر التأكيد:\n"
-        "━━━━━━━━━━━━━━━",
+        "اختر وسائل الدفع المعتمدة لديك (يمكنك تحديد أكثر من وسيلة)، ثم اضغط على زر التأكيد:",
         reply_markup=get_payment_methods_kb(selected),
         parse_mode="Markdown"
     )
@@ -1420,7 +1266,7 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         count_res = await db_session.execute(
             select(func.count(Offer.id)).where(
                 Offer.user_id == user_id,
-                Offer.status.in_(['active', 'reserved', 'negotiating', 'expired_grace'])
+                Offer.status.in_(['active', 'reserved', 'negotiating'])
             )
         )
         active_offers_count = count_res.scalar() or 0
@@ -1475,7 +1321,7 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
     rate_str = format_syp(new_offer.rate)
     min_str = format_usdt(new_offer.min_limit)
     max_str = format_usdt(new_offer.max_limit)
-    offer_type_ar = "🔴 بيع USDT" if new_offer.offer_type == 'sell' else "🟢 شراء USDT"
+    offer_type_ar = "🔴 بيع دولار رقمي" if new_offer.offer_type == 'sell' else "🟢 شراء دولار رقمي"
     methods_str = format_payment_methods(new_offer.payment_methods)
 
     neg_type_labels = {
@@ -1487,48 +1333,23 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
     neg_status_ar = neg_type_labels.get(new_offer.negotiable_type, "غير متاح 🔒")
 
     await callback.message.edit_text(
-        f"🎉 **تم نشر العرض بنجاح — عرض #{new_offer.id}** ✅\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• النوع: {offer_type_ar}\n"
-        f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n"
-        f"• حدود الكمية: 📦 من `{min_str}` إلى `{max_str}` USDT\n"
-        f"• وسائل الدفع: 💳 {methods_str}\n"
-        f"• حالة التفاوض: {neg_status_ar}\n"
-        f"• {FEE_RULE_LINE}\n"
-        f"• مدة الصلاحية: ⏱️ {duration_str}\n"
-        f"━━━━━━━━━━━━━━━\n\n"
+        f"✅ **تم نشر العرض بنجاح — عرض #{new_offer.id}**\n\n"
+        f"▫️ **النوع:** {offer_type_ar}\n"
+        f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
+        f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+        f"▫️ **وسائل الدفع:** {methods_str}\n"
+        f"▫️ **التفاوض:** {neg_status_ar}\n"
+        f"▫️ **مدة الصلاحية:** {duration_str}\n\n"
+        f"{FEE_RULE_LINE}\n\n"
         f"تم إدراج العرض بنجاح في سوق {BOT_NAME} وقناة {CHANNEL_NAME}.",
         parse_mode="Markdown"
     )
     await state.clear()
-    await callback.answer("تم النشر بنجاح!")
+    await callback.answer("تم النشر بنجاح.")
 
-    # 6. Broadcast to Channel (Notice: No payout details in public channel!)
+    # 6. Broadcast to Channel using unified renderer (no payout details in public channel!)
     if settings.CHANNEL_ID and settings.BOT_USERNAME:
-        offer_type_chan = "🔴 بيع (المعلن يبيع)" if new_offer.offer_type == 'sell' else "🟢 شراء (المعلن يشتري)"
-        action_ar = "💸 تنفيذ هذا العرض" if new_offer.offer_type == 'sell' else "💸 البيع لهذا الزبون"
-        neg_line = f"\n▫️ <b>التفاوض :</b> {neg_status_ar}" if new_offer.negotiable else ""
-
-        channel_text = (
-            f"📢 <b>{CHANNEL_NAME} | عرض #{new_offer.id} [متاح للتداول]</b>\n\n"
-            f"▫️ <b>النوع :</b> {offer_type_chan}\n"
-            f"────────────────\n"
-            f"▫️ <b>سعر الصرف :</b> {rate_str} ل.س\n"
-            f"▫️ <b>حدود الكمية :</b> من {min_str} إلى {max_str} دولار\n"
-            f"▫️ <b>طرق الدفع :</b> {methods_str}{neg_line}\n"
-            f"▫️ <b>مدة المعاملة :</b> {duration_str}\n"
-            f"────────────────\n"
-            f"{format_fee_rule_html()}"
-        )
-
-        deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offer_{new_offer.id}"
-        kb_chan = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text=action_ar, url=deep_link),
-                InlineKeyboardButton(text="🔍 تصفح عروض أخرى", url=f"https://t.me/{settings.BOT_USERNAME}?start=offers")
-            ]
-        ])
-
+        channel_text, kb_chan = build_channel_offer_message(new_offer, duration_override=duration_str)
         try:
             msg = await bot.send_message(
                 chat_id=settings.CHANNEL_ID,
@@ -1552,10 +1373,8 @@ async def list_offers(message: Message, db_session: AsyncSession):
     if not offers:
         await message.answer(
             "🏪 **سوق التداول المباشر**\n\n"
-            "━━━━━━━━━━━━━━━\n"
             "لا توجد عروض نشطة في السوق حالياً.\n"
-            "يمكنك إنشاء أول عرض الآن عبر الأمر /create_offer أو من القائمة الرئيسية.\n"
-            "━━━━━━━━━━━━━━━",
+            "يمكنك إنشاء عرض جديد عبر /create_offer أو من القائمة الرئيسية.",
             parse_mode="Markdown"
         )
         return
@@ -1573,25 +1392,25 @@ async def list_offers(message: Message, db_session: AsyncSession):
         rate_str = format_syp(offer.rate)
         min_str = format_usdt(offer.min_limit)
         max_str = format_usdt(offer.max_limit)
-        offer_type_ar = "🔴 بيع USDT" if offer.offer_type == 'sell' else "🟢 شراء USDT"
+        offer_type_ar = "🔴 بيع دولار رقمي" if offer.offer_type == 'sell' else "🟢 شراء دولار رقمي"
         methods_str = format_payment_methods(offer.payment_methods)
         remaining_str = humanize_time_remaining(offer.expires_at, "4 ساعات")
         
         neg_type_labels = {
             "none": "غير متاح 🔒",
-            "amount": "متاح (على الكمية) 📦",
-            "rate": "متاح (على السعر) 💵",
-            "both": "متاح (على السعر والكمية) ⚖️"
+            "amount": "متاح على الكمية 📦",
+            "rate": "متاح على السعر 💵",
+            "both": "متاح على السعر والكمية ⚖️"
         }
         neg_str = neg_type_labels.get(offer.negotiable_type, "غير متاح 🔒") if offer.negotiable else "غير متاح 🔒"
 
         text = (
-            f"🏷️ **عرض #{offer.id}** — {offer_type_ar}\n\n\n"
-            f"▫️ **سعر الصرف :** `{rate_str}` ل.س\n\n"
-            f"• حدود الكمية:  من `{min_str}` إلى `{max_str}` USDT\n\n"
-            f"• طرق الدفع:  {methods_str}\n\n"
-            f"• حالة التفاوض:  {neg_str}\n\n"
-            f"• الصلاحية المتبقية:  {remaining_str}"
+            f"🏷️ **عرض #{offer.id} — {offer_type_ar}**\n\n"
+            f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
+            f"▫️ **حدود الكمية:** من `{min_str}` إلى `{max_str}` دولار رقمي\n"
+            f"▫️ **وسائل الدفع:** {methods_str}\n"
+            f"▫️ **التفاوض:** {neg_str}\n"
+            f"▫️ **الصلاحية المتبقية:** {remaining_str}"
         )
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
@@ -1622,7 +1441,6 @@ async def handle_delete_offer(callback: CallbackQuery, db_session: AsyncSession)
     offer.status_changed_at = datetime.now(timezone.utc)
     await db_session.commit()
 
-    from bot.handlers.deals import update_channel_offer_message
     try:
         await update_channel_offer_message(callback.bot, offer)
     except Exception as e:
@@ -1630,8 +1448,7 @@ async def handle_delete_offer(callback: CallbackQuery, db_session: AsyncSession)
 
     await callback.answer("تم إلغاء العرض بنجاح.")
     await callback.message.edit_text(
-        f"❌ **عرض #{offer.id} — تم إلغاء العرض**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
+        f"❌ **تم إلغاء العرض #{offer.id}**\n\n"
         f"تم إلغاء العرض بنجاح وإزالته من السوق النشط والقناة الرسمية.",
         parse_mode="Markdown"
     )
@@ -1659,7 +1476,6 @@ async def handle_extend_offer_prompt(callback: CallbackQuery, db_session: AsyncS
         await callback.answer(reason, show_alert=True)
         return
 
-    # Release row lock before Telegram UI call without expiring attributes
     await db_session.commit()
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1677,10 +1493,8 @@ async def handle_extend_offer_prompt(callback: CallbackQuery, db_session: AsyncS
     ])
 
     await callback.message.edit_text(
-        f"⏱️ **تمديد صلاحية عرض #{offer.id}**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"اختر المدة الإضافية التي ترغب ببقاء العرض نشطاً خلالها في السوق:\n"
-        f"━━━━━━━━━━━━━━━",
+        f"⏱️ **تمديد صلاحية العرض #{offer.id}**\n\n"
+        f"اختر المدة الإضافية لإبقاء العرض نشطاً في السوق:",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -1688,7 +1502,6 @@ async def handle_extend_offer_prompt(callback: CallbackQuery, db_session: AsyncS
 
 @offers_router.callback_query(F.data.startswith("ext_dur_"))
 async def handle_extend_offer_duration(callback: CallbackQuery, db_session: AsyncSession):
-    # format: ext_dur_{offer_id}_{hours}
     parts = callback.data.split("_")
     offer_id = int(parts[2])
     hours = int(parts[3])
@@ -1719,7 +1532,6 @@ async def handle_extend_offer_duration(callback: CallbackQuery, db_session: Asyn
     offer.expires_at = now + timedelta(hours=hours)
     await db_session.commit()
 
-    from bot.handlers.deals import update_channel_offer_message
     try:
         await update_channel_offer_message(callback.bot, offer)
     except Exception as e:
@@ -1728,11 +1540,9 @@ async def handle_extend_offer_duration(callback: CallbackQuery, db_session: Asyn
     expires_str = format_local_datetime(offer.expires_at)
     await callback.answer("تم تمديد صلاحية العرض بنجاح.")
     await callback.message.edit_text(
-        f"✅ **عرض #{offer.id} — تم تمديد الصلاحية بنجاح**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"• المدة الإضافية:  `{hours}` ساعة\n"
-        f"• الصلاحية حتى:  `{expires_str}`\n"
-        f"━━━━━━━━━━━━━━━\n\n"
+        f"✅ **تم تمديد صلاحية العرض #{offer.id}**\n\n"
+        f"▫️ **المدة الإضافية:** `{hours}` ساعة\n"
+        f"▫️ **الصلاحية حتى:**\n`{expires_str}`\n\n"
         f"العرض نشط ومتاح حالياً في السوق والقناة الرسمية.",
         parse_mode="Markdown"
     )
@@ -1740,19 +1550,19 @@ async def handle_extend_offer_duration(callback: CallbackQuery, db_session: Asyn
 @offers_router.callback_query(F.data.startswith("ext_cancel_"))
 async def handle_extend_cancel(callback: CallbackQuery):
     offer_id = int(callback.data.split("_")[-1])
-    grace_kb = InlineKeyboardMarkup(inline_keyboard=[
+    action_kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="⏱️ تمديد الصلاحية", callback_data=f"ext_off_{offer_id}"),
-            InlineKeyboardButton(text="❌ إلغاء العرض", callback_data=f"del_off_{offer_id}")
+            InlineKeyboardButton(text="❌ حذف العرض", callback_data=f"del_off_{offer_id}")
+        ],
+        [
+            InlineKeyboardButton(text="📋 إدارة عروضي", callback_data="menu_my_offers")
         ]
     ])
     await callback.message.edit_text(
-        f"⚠️ **عرض #{offer_id} في فترة السماح**\n\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"العرض مخفي مؤقتاً من السوق (مهلة سماح 30 دقيقة).\n"
-        f"اختر الإجراء المطلوب لمتابعته:\n"
-        f"━━━━━━━━━━━━━━━",
-        reply_markup=grace_kb,
+        f"📋 **إدارة العرض #{offer_id}**\n\n"
+        f"تم التراجع عن تعديل الصلاحية. اختر الإجراء المطلوب للعرض من الأزرار أدناه:",
+        reply_markup=action_kb,
         parse_mode="Markdown"
     )
     await callback.answer()

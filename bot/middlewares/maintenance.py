@@ -65,13 +65,13 @@ class MaintenanceMiddleware(BaseMiddleware):
 
         if is_maintenance:
             maintenance_text = (
-                "⚠️ **Alpha Bot | صيانة مجدولة**\n\n"
+                "🛠️ **صيانة مجدولة — Alpha Bot**\n\n"
                 "النظام متوقف مؤقتاً لإجراء تحديثات وتحسينات دورية.\n"
-                "يرجى المحاولة بعد قليل. 🛠️"
+                "يرجى المحاولة بعد قليل."
             )
             if isinstance(actual_event, CallbackQuery):
                 try:
-                    await actual_event.answer("⚠️ Alpha Bot في وضع الصيانة المجدولة حالياً.", show_alert=True)
+                    await actual_event.answer("⚠️ البوت في وضع الصيانة المجدولة حالياً.", show_alert=True)
                 except Exception:
                     pass
                 return
