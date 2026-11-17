@@ -297,11 +297,11 @@ async def my_deals(message: Message, db_session: AsyncSession):
         )
         admin_pending_deals = admin_res.scalars().all()
 
-    # 2. Fetch user's own deals
+    # 2. Fetch user's own active deals (excluding terminal statuses)
     result = await db_session.execute(
         select(Deal).where(
             or_(Deal.buyer_id == user_id, Deal.seller_id == user_id),
-            Deal.status.notin_(["COMPLETED", "CANCELLED"])
+            Deal.status.notin_(["COMPLETED", "CANCELLED", "EXPIRED", "DISPUTED"])
         ).order_by(Deal.created_at.desc())
     )
     deals = result.scalars().all()

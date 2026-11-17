@@ -53,7 +53,7 @@ def step_of(status: str) -> Tuple[int, str, str]:
     elif status == "EXPIRED":
         return 0, "[ ⌛ ⌛ ⌛ ⌛ ⌛ ⌛ ⌛ ]", "منتهية"
     elif status == "DISPUTED":
-        return 0, "[ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ]", "أُبلغ بعدم الاستلام (متابعة الدعم الفني)"
+        return 0, "[ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ⚠️ ]", "مغلقة — متابعة يدوية عبر الدعم الفني"
     return 0, "[ ⬜ ⬜ ⬜ ⬜ ⬜ ⬜ ⬜ ]", status
 
 
@@ -102,7 +102,7 @@ def turn_of(status: str, viewer_role: str, is_offer_owner: bool = False) -> Tupl
         return False, "انتهت مهلة الصفقة"
 
     if status == "DISPUTED":
-        return False, "أُبلغ بعدم استلام المبلغ — قيد متابعة الدعم الفني"
+        return False, "أُغلقت الصفقة آلياً — قيد المتابعة اليدوية مع الدعم الفني"
 
     return False, "الصفقة قيد المتابعة"
 
@@ -354,6 +354,8 @@ def render_deal_card(
         lines.append("❌ **تم إلغاء الصفقة.**")
     elif deal.status == "EXPIRED":
         lines.append("⌛ **انتهت مهلة الصفقة وتم إلغاؤها تلقائياً.**")
+    elif deal.status == "DISPUTED":
+        lines.append("⚠️ **أُغلقت الصفقة آلياً وتم تحويل الملف للمتابعة اليدوية عبر الدعم الفني.**")
 
     card_text = "\n".join(lines)
     keyboard = get_deal_action_keyboard(deal, viewer_id, is_offer_owner=is_offer_owner)
@@ -398,6 +400,9 @@ async def push_deal_card(
                 if role == "seller" and deal.status == "SYP_PAYMENT_SENT":
                     # The seller receives a single dedicated photo message with payment proof and confirmation buttons.
                     # Skip sending or editing text deal card to avoid duplicate messages.
+                    continue
+                if deal.status == "DISPUTED" and current_msg_id is None:
+                    # Seller's photo caption (or direct notice) was already updated with the closure notice.
                     continue
 
                 is_offer_owner = (maker_id is not None and user_id == maker_id)

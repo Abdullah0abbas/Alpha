@@ -1,6 +1,6 @@
 # Project Specification: Alpha Bot (USDT/SYP Escrow)
 
-**Version:** 3.5
+**Version:** 3.7
 **Document Type:** Technical Architecture & Implementation Reference
 **Purpose:** This document is the authoritative technical reference for Alpha Bot. It must be provided as context at the start of any development session. All architectural decisions are final unless explicitly revised in Section 17 (Change Log).
 
@@ -90,11 +90,11 @@ CREATED
 - **Rule 4 (Approval Timeout):** If the offer owner fails to approve/reject a deal request within 30 minutes, the deal is cancelled AND the offer is **deleted** for non-responsiveness.
 - **Cancellation Restriction:** The offer owner cannot cancel the deal once approved (in `CREATED` or `AWAITING_USDT_DEPOSIT` states). If no deposit is made, the deal expires automatically.
 
-### 4.1 Dispute handling: Reporting Non-Receipt (v3.4)
-The term "فتح نزاع" is replaced with **"⚠️ عدم الاستلام"**. When a seller reports non-receipt:
-1. Deal status becomes `DISPUTED`.
-2. Both parties receive a formal notification to contact technical support: `@AlphaSupport`.
-3. Admins are notified for manual verification of the transfer proof.
+### 4.1 Dispute handling: Reporting Non-Receipt & Immediate Bot-Side Closure (v3.7)
+The button **"⚠️ لم أستلم"** (`dispute_deal_`) allows the seller to report non-receipt of the local SYP transfer:
+1. Deal status transitions to **`DISPUTED`**, which is treated as a **terminal state on the bot** (excluded from `/continue` active deals and from the 5-active-deals user cap, and included in the closed statuses of `uq_open_deal_per_offer`).
+2. The associated offer is closed (`offer.status = 'cancelled'`) and removed from the public channel so it does not remain stuck in `reserved` or get re-activated by the orphan watcher.
+3. A `Dispute` record is persisted for `/disputes`, and both parties + all admins receive a formal closure notice routing the case to manual resolution via `@AlphaSupport`.
 
 ### 4.2 Deposit Window Expiry Policy (revised in v2.6 / v3.4)
 Deals in `CREATED` or `AWAITING_USDT_DEPOSIT` (before funds enter escrow) expire automatically **15 minutes** after entering `AWAITING_USDT_DEPOSIT` if no on-chain deposit is detected. This matches the validity window of the temporary deposit address.
@@ -114,17 +114,19 @@ The happy-path progression `AWAITING_USDT_DEPOSIT → USDT_DEPOSITED → AWAITIN
 ### 4.3.1 Unified Interactive Deal Card (v3.3)
 Each deal counterparty receives a dedicated interactive card (`deals.seller_card_msg_id` / `deals.buyer_card_msg_id`). Upon state transitions or turn handoffs, the system updates the message in-place or re-sends it with a notification alert, rendering current step, turn status, countdown timer, and contextual action buttons.
 
-### 4.4 Offer-Level Expiry Policy & Orphan Safety Net (v3.3)
-An **offer itself** (before any deal is requested against it) has a maker-defined validity period.
+### 4.4 Offer-Level Expiry Policy, 3-Stage Duration Picker & Orphan Safety Net (v3.7)
+An **offer itself** (before any deal is requested against it) has a maker-defined validity period configured during Step 8 of the Offer Creation Wizard:
 
-**Duration Options:**
-- Short minutes: `15`, `30`, or `45` minutes.
-- Full hours: `1`, `2`, `3`, or `4` hours (capped at 4 hours, default 4 hours).
+**Duration Options (3-Stage Button Picker):**
+- **Stage 1:** Default `4 hours` (`dur_default_4`) OR Custom Duration (`dur_custom`).
+- **Stage 2 (Custom Hours — 2×2 Grid):** `0`, `1`, `2`, or `3` hours (`dur_hr_0` .. `dur_hr_3`).
+- **Stage 3 (Custom Minutes — 2×3 Grid):** `5`, `10`, `15`, `20`, `30`, or `45` minutes (`dur_min_5` .. `dur_min_45`), plus `0` additional minutes (`dur_min_0`) when hours > 0.
+- Valid range: `5 minutes` (`5/60` hours) up to `4 hours` (`4.0`). Formatted uniformly in Arabic across the wizard summary, publish confirmation, and channel broadcast via `format_duration_hours_minutes` (e.g., `1 ساعة و 5 دقيقة`, `30 دقيقة`, `4 ساعات`).
 
-**Grace Period & Deletion:**
-When an offer's duration elapses, it enters `expired_grace`. A notification is sent to the maker with options to extend (`ext_off_`) or delete (`del_off_`). If no action is taken within 30 minutes, the offer status becomes `expired` and it is removed from public channels/listings. Extension and deletion actions are available to the maker or admin (`ADMIN_IDS`).
+**Immediate Deletion on Expiry (No Grace Period):**
+When an `active` offer's `expires_at` timestamp elapses without an active applicant, the background task in `bot/tasks.py` transitions its status directly to `deleted`, removes its public channel post, and notifies the offer maker.
 
-**Orphan Offers Safety Net (v3.3):**
+**Orphan Offers Safety Net (v3.3+):**
 If an offer is stuck in `reserved` or `negotiating` status without an active deal (`deals.status NOT IN ('CANCELLED','EXPIRED','COMPLETED')`) or open negotiation (`negotiations.status IN ('PENDING_MAKER','PENDING_TAKER')`), and more than **10 minutes** have passed since `offers.status_changed_at`, a background task in `bot/tasks.py` automatically reverts `offers.status` to `"active"` and updates the channel message.
 
 ---
@@ -137,10 +139,10 @@ users
   username             TEXT
   nickname             VARCHAR(60) NULLABLE    -- trader custom alias
   saved_usdt_address   VARCHAR(100) NULLABLE   -- default BEP-20 (BNB Smart Chain) payout address
-  saved_payment_info   VARCHAR(200) NULLABLE   -- default Syrian local payment account info
+  saved_payment_info   VARCHAR(200) NULLABLE   -- default Syrian local payment account info (JSON or string)
   kyc_status           VARCHAR(20) DEFAULT 'unverified' -- 'unverified' | 'pending' | 'verified'
   reward_points        INTEGER DEFAULT 0       -- Golden Points rewards system balance
-  reputation_score      NUMERIC DEFAULT 5.0     -- Rating scale from 5.0 stars (default 5.0)
+  reputation_score      NUMERIC DEFAULT 100     -- Percentage rating scale 0%–100% (default 100%)
   completed_deals_count INTEGER DEFAULT 0
   is_banned             BOOLEAN DEFAULT FALSE
   created_at            TIMESTAMPTZ DEFAULT now()
@@ -152,14 +154,15 @@ offers
   rate                  NUMERIC NOT NULL
   min_limit             NUMERIC NOT NULL
   max_limit             NUMERIC NOT NULL
-  payment_methods        TEXT[]                  -- Allowed: 'شام كاش ليرة', 'شام كاش دولار', 'سيريتيل كاش', 'حوالة بنكية (الهرم)', 'حوالة بنكية (الفؤاد)'
+  payment_methods        TEXT[]                  -- Approved 4 rails: 'شام كاش ليرة', 'سيريتيل كاش', 'حوالة بنكية (الهرم)', 'حوالة بنكية (الفؤاد)'
   negotiable            BOOLEAN DEFAULT FALSE
   negotiable_type        VARCHAR(20) DEFAULT 'none' CHECK (negotiable_type IN ('none', 'amount', 'rate', 'both'))
-  status                TEXT DEFAULT 'active' CHECK (status IN ('active', 'reserved', 'negotiating', 'completed', 'expired_grace', 'expired', 'cancelled'))
+  status                TEXT DEFAULT 'active'   -- 'active', 'reserved', 'negotiating', 'completed', 'expired', 'cancelled', 'deleted'
   status_changed_at     TIMESTAMPTZ DEFAULT now()
   channel_message_id     INTEGER NULLABLE
-  payout_info            TEXT NULLABLE DEFAULT '' -- For backwards compatibility; detailed payment data is collected during deal execution
-  expires_at             TIMESTAMPTZ NULLABLE    -- Maker-defined expiry (15m/30m/45m or 1h/2h/3h/4h)
+  payout_info            TEXT NULLABLE           -- Legacy/primary payout string for backwards compatibility
+  payout_details         JSONB DEFAULT '{}'      -- Confidential per-method payout map (or {"usdt_bep20_address": "..."} for buy offers)
+  expires_at             TIMESTAMPTZ NULLABLE    -- Maker-defined expiry (5m up to 4h)
   created_at            TIMESTAMPTZ DEFAULT now()
 
 deals
@@ -169,7 +172,9 @@ deals
   buyer_id              BIGINT REFERENCES users(telegram_id)
   amount_usdt            NUMERIC NOT NULL
   amount_syp             NUMERIC NOT NULL
-  fee_usdt               NUMERIC NOT NULL DEFAULT 0.002 -- Proportional dual fee: 0.1% seller surcharge + 0.1% buyer deduction = 0.2% total
+  fee_usdt               NUMERIC NOT NULL DEFAULT 0.0   -- Total platform fee (seller_fee_usdt + buyer_fee_usdt)
+  seller_fee_usdt        NUMERIC NOT NULL DEFAULT 0.0   -- 0.1% seller surcharge (> 25 USDT)
+  buyer_fee_usdt         NUMERIC NOT NULL DEFAULT 0.0   -- 0.1% buyer deduction (> 25 USDT)
   deposit_address        TEXT NOT NULL UNIQUE
   deposit_index          INTEGER NOT NULL UNIQUE
   buyer_payout_address    TEXT NOT NULL DEFAULT 'PENDING'
@@ -262,7 +267,7 @@ SEQUENCE:
 The system enforces two independent protection layers against spam and automated abuse:
 
 ### 6.1.1 — Active Elements Fixed Ceiling:
-- **Active Offers per user:** Maximum 5 (`offers.status IN ('active', 'reserved', 'negotiating', 'expired_grace')`).
+- **Active Offers per user:** Maximum 5 (`offers.status IN ('active', 'reserved', 'negotiating')`).
 - **Active Operations per user (Deals & Negotiations):** Maximum 5 (`deals.status NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')` + `negotiations.status IN ('PENDING_MAKER', 'PENDING_TAKER')`).
 - Applies to **both counterparties (Maker & Taker)**.
 
@@ -302,7 +307,7 @@ The system enforces two independent protection layers against spam and automated
 |---|---|
 | False "USDT sent" claims | On-chain verification (Section 6 item 2) |
 | False "SYP sent/received" claims | Accepted risk, mutual acknowledgment (Section 9.1) |
-| Wash trading | Minimum deal sizes and 5.0 star reputation tracking |
+| Wash trading | Minimum deal sizes and percentage reputation tracking (0%–100%) |
 | Unilateral post-custody cancellation | State-machine invariant — post-`USDT_DEPOSITED` requires admin intervention |
 | Address reuse | Per-deal unique derivation (Section 3.3, 5.1) |
 
@@ -353,8 +358,8 @@ Managed via `negotiations` table. Statuses: `PENDING_MAKER` → (maker accepts |
 **Offer Locking & Proposal Submission:**
 When the taker submits a negotiation proposal, the offer status flips to `negotiating` (excluded from `/offers` and channel). On rejection, expiry, or cancellation, the offer reverts to `active`.
 
-**Privacy-by-Design Payment Flow:**
-Both standard and negotiated deals are created with `buyer_payout_address = "PENDING"` and `seller_payment_info = {"info": "PENDING"}`. Seller payment details are collected after `USDT_DEPOSITED`, and Buyer wallet is collected during `AWAITING_SYP_PAYMENT`.
+**Privacy-by-Design Payment Flow (v3.6+):**
+During Offer Creation (Step 6), the maker privately provides payout details (`offers.payout_details`): a `USDT (BEP-20)` address for buy offers, or per-method local receiving accounts for sell offers. These details are never exposed in the public channel or `/offers`. When a deal is initiated or a negotiation is accepted, the corresponding payout account is automatically linked (or selected by the buyer via `nego_pm_` if multiple payment rails are enabled on a sell offer).
 
 **Operational Admin Intervention:**
 Admin accounts (`settings.ADMIN_IDS`) can execute approval/rejection/counter-offer actions (`neg_m_acc_`, `neg_m_rej_`, `neg_m_cnt_`, `neg_t_acc_`, `neg_t_rej_`) on behalf of stalled parties.
@@ -384,20 +389,29 @@ Accessible to `ADMIN_IDS` via `/admin`:
 
 ---
 
-## 14. System Resilience & Production Hardening (v2.9)
+## 14. System Resilience, Bot Commands & Production Hardening (v2.9 / v3.7)
 
-1. **Smart Critical Error Alerting (`error_alert.py`):** Deduplicated alerts dispatched to admins; full logs written to `escrow_system.log`.
+1. **Smart Critical Error Alerting (`error_alert.py`):** Deduplicated alerts dispatched to admins with deep project-frame traceback extraction (filtering out `site-packages` frames to pinpoint the exact project handler line); full logs written to `escrow_system.log`.
 2. **Connection Pool Resilience:** `pool_pre_ping=True`, `pool_recycle=1800`.
 3. **Supervisor Pattern:** Background tasks in `bot/tasks.py` restart automatically on exception.
-4. **Rate-limited Broadcast & Safe Markdown:** Safe entity escaping and throttled dispatch.
+4. **Rate-limited Broadcast & Safe Entity Escaping:** Strict Markdown (`escape_markdown`, `safe_username`) and HTML (`html.escape`) escaping across all user inputs, usernames, support handles, dispute reasons, and feedback notes.
 5. **Seamless FSM Interruption (`command_cancel.py`):** Intercepts slash commands and clears stale dialog state.
+6. **Official Bot Menu Commands & Deep Linking (`bot/main.py`, `bot/handlers/base.py`):**
+   - `/start`: Main menu and deep-link router (`?start=offer_<id>` for direct offer interaction, `?start=offers` for opening the market browser from channel cards, and `?start=ref_<id>` for referrals).
+   - `/continue`: Resumes the user's active deal by re-sending the live interactive deal card while automatically deleting previous card messages (`seller_card_msg_id` / `buyer_card_msg_id`) to prevent stale duplicate buttons; also surfaces pending owner approvals and active negotiations.
+   - `/support`: Displays the unified technical support card (`@AlphaSupport`) with instructions for submitting inquiries or dispute evidence.
 
 ---
 
-## 15. User Profile & Loyalty System (v3.0 / v3.3)
+## 15. User Profile, Offer Creation Wizard & Loyalty System (v3.0 / v3.7)
 
-1. **Profile Card & 5.0 Star Reputation:** Trader badge, completed deal count, and `reputation_score` on a 5.0 star scale (default 5.0).
-2. **Saved Rails Confirmation Gate:** Confirmation gate for saved BEP-20 wallet (`users.saved_usdt_address`) and local payment accounts (`users.saved_payment_info`).
+1. **Profile Card & 100% Reputation Scale:** Trader badge, completed deal count, and `reputation_score` on a `0%–100%` percentage scale (default `100%`, updated via post-deal ratings).
+2. **Offer Creation Wizard UX (`bot/handlers/offers.py`, `bot/utils/offer_wizard.py`):**
+   - **Progressive Draft Header (`format_wizard_draft_header`):** Displays accumulated choices (`offer_type`, `rate`, `min_limit`, `max_limit`, `payment_methods`) at the top of each wizard step.
+   - **2×2 Payment Methods Grid (`get_payment_methods_kb`):** Arranges the 4 approved payment methods in a clean 2-column grid.
+   - **Saved Rails Validation & Confirmation Gate:** Validates saved BEP-20 wallet (`users.saved_usdt_address`) and method-specific local payment accounts (`users.saved_payment_info`) before offering one-tap reuse.
+   - **3-Stage Custom Duration Picker:** Buttons for Default (`4 hours`) or Custom (`0–3 hours` × `5–45 minutes`).
+   - **Final Summary & Jump-Edit:** Full summary screen (`format_wizard_summary`) with individual jump-edit buttons (`✏️ السعر`, `✏️ الكمية`, `✏️ الدفع`, `✏️ الحساب`, `✏️ التفاوض`, `✏️ المدة`) that return directly to the summary after editing.
 3. **Golden Points Loyalty Program:** Operational flag `REWARDS_ENABLED` (default `false`). Points for deals (+10) and referrals (+25). Tiered claims (500/1500/3000 pts).
 4. **Approved Local Payment Methods:** `شام كاش ليرة`, `سيريتيل كاش`, `حوالة بنكية (الهرم)`, `حوالة بنكية (الفؤاد)`.
 
@@ -418,5 +432,7 @@ To keep scope bounded, the following are intentionally excluded from MVP:
 | Date | Change |
 |---|---|
 | v1.0 - v3.3 | See previous version history. |
+| v3.7 | **Wizard UX, Bot Menu Commands & Hardening Update v3.7:**<br>• **Progressive Draft Header (`format_wizard_draft_header`)**: Added live accumulated draft header at the top of each step in the Offer Creation Wizard.<br>• **3-Stage Button-Based Custom Duration Picker**: Replaced text-based custom duration input with a 3-stage interactive button flow (`Default 4h` vs `Custom` → `0–3 Hours` 2×2 grid → `5–45 Minutes` 2×3 grid) and unified duration formatting (`format_duration_hours_minutes`) across wizard summary, publish confirmation, and channel cards.<br>• **2×2 Payment Methods Grid**: Arranged the 4 approved payment methods in a compact 2×2 grid.<br>• **Official Bot Menu Commands & Deep Links**: Configured `/start`, `/continue` (with automatic cleanup of old deal cards), and `/support` (`@AlphaSupport`), plus `?start=offers` deep-link handling.<br>• **Entity Escaping & Error Alert Hardening**: Escaped all dynamic usernames, support handles, dispute reasons, and feedback notes (`escape_markdown` / `html.escape`), and enhanced `error_alert.py` to extract the deepest project-level stack frame. |
+| v3.6 | **Confidential Payout Collection & Reputation Unification v3.6:**<br>• Added Step 6 confidential payout collection (`offers.payout_details` JSONB) and buyer payment method selection in negotiations (`nego_pm_`).<br>• Unified reputation scale to `0%–100%` (default `100%`) across all user and admin views.<br>• Removed legacy `expired_grace` state in favor of immediate deletion upon expiry. |
 | v3.5 | **Technical & UX Overhaul v3.5:**<br>• **Dynamic Payment Method Selection & Collection in Deals**:<br>  - For Buy Offers (Maker=Buyer, Taker=Seller), Taker selects from Maker's supported payment rails and immediately inputs their valid account info (Sham Cash 32-hex address, Syriatel Cash 09xx number, or Bank transfer details). The deal is created with `seller_payment_info` fully populated.<br>  - For Sell Offers (Maker=Seller, Taker=Buyer), Taker picks from Maker's supported rails and the corresponding account from `payout_details` is automatically linked.<br>• **Comprehensive BiDi & UI Overhaul**:<br>  - Total eradication of Arabic/English/symbol inline BiDi inversion.<br>  - Replaced `SYP` with `ل.س` and `USDT` with `دولار` across all bot interfaces, deal cards, and channel posts.<br>  - Rewrote platform fee line into clean, human-readable Arabic: `⚡ عمولة المنصة : مجاناً حتى 25 دولار • 0.1% لما فوق ذلك`.<br>  - Unified payment proof dispatch to the seller into a single dedicated photo message with action buttons. |
 | v3.4 | **Official Technical Update v3.4:**<br>• Renamed to **Alpha Bot**.<br>• Adopted **New Syrian Lira Scale** (1:100 conversion).<br>• Implemented **Mandatory SYP Photo Proof**: Buyer must upload a screenshot/photo of the transfer to advance to `SYP_PAYMENT_SENT`.<br>• Refined **Timeout Rules**:<br>  - Offer duration expiry -> Immediate deletion.<br>  - Deal approval timeout (30m) -> Deal cancel + Offer deletion.<br>  - USDT deposit timeout (15m) -> Deal cancel + Offer revert to active + Admin alert.<br>  - SYP payment timeout (30m) -> Soft warning to contact support before paying.<br>• Replaced "Dispute" button text with **"⚠️ عدم الاستلام"** (Non-Receipt) and unified support routing to `@AlphaSupport`.<br>• Enforced professional, formal Arabic terminology throughout. |

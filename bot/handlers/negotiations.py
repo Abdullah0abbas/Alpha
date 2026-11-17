@@ -52,7 +52,7 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
         deals_count_res = await db_session.execute(
             select(func.count(Deal.id)).where(
                 or_(Deal.seller_id == taker_id, Deal.buyer_id == taker_id),
-                Deal.status.not_in(['COMPLETED', 'CANCELLED', 'EXPIRED'])
+                Deal.status.not_in(['COMPLETED', 'CANCELLED', 'EXPIRED', 'DISPUTED'])
             )
         )
         active_deals_count = deals_count_res.scalar() or 0

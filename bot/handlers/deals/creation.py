@@ -52,7 +52,7 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
         deals_count_res = await db_session.execute(
             select(func.count(Deal.id)).where(
                 or_(Deal.seller_id == user_id, Deal.buyer_id == user_id),
-                Deal.status.not_in(['COMPLETED', 'CANCELLED', 'EXPIRED'])
+                Deal.status.not_in(['COMPLETED', 'CANCELLED', 'EXPIRED', 'DISPUTED'])
             )
         )
         active_deals_count = deals_count_res.scalar() or 0

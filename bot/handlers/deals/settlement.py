@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from db.models import Deal, Offer, User, PaymentProof
+from db.models import Deal, Offer, User, PaymentProof, Dispute
 from bot.states.flow_states import DealPaymentFSM
 from bot.services.audit_service import add_audit
 from bot.services.channel import update_channel_offer_message
@@ -648,10 +648,39 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
         await callback.answer(err_msg, show_alert=True)
         return
 
+    now = datetime.now(timezone.utc)
     deal.status = "DISPUTED"
+    deal.expires_at = None
     if getattr(callback.message, "photo", None):
         # Detach seller_card_msg_id from the proof photo so push_deal_card keeps the photo in chat history
         deal.seller_card_msg_id = None
+
+    target_offer = None
+    offer_id_val = getattr(deal, "offer_id", None)
+    if offer_id_val and hasattr(db_session, "execute"):
+        try:
+            offer_res = await db_session.execute(
+                select(Offer).where(Offer.id == offer_id_val).with_for_update()
+            )
+            offer = offer_res.scalar_one_or_none()
+            if offer and offer.status == "reserved":
+                offer.status = "cancelled"
+                offer.status_changed_at = now
+                target_offer = offer
+        except Exception as e:
+            logger.warning(f"Failed to close associated offer #{offer_id_val} on dispute for deal #{deal.id}: {e}")
+
+    if hasattr(db_session, "add"):
+        try:
+            new_dispute = Dispute(
+                deal_id=deal.id,
+                opened_by=callback.from_user.id,
+                reason="إبلاغ البائع بعدم استلام الدفعة بالليرة السورية (متابعة يدوية)"
+            )
+            db_session.add(new_dispute)
+        except Exception as e:
+            logger.warning(f"Failed to add Dispute row for deal #{deal.id}: {e}")
+
     add_audit(
         session=db_session,
         action="REPORT_NON_RECEIPT",
@@ -663,15 +692,22 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
     )
     await db_session.commit()
 
+    if target_offer:
+        try:
+            await update_channel_offer_message(callback.bot, target_offer)
+        except Exception as e:
+            logger.warning(f"Failed to update channel offer message on dispute for deal #{deal.id}: {e}")
+
     support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip('@')
     support_link = f"https://t.me/{support_username}"
     escaped_support = escape_markdown(support_username)
 
     notice_text = (
-        f"⚠️ **صفقة #{deal.id} — إبلاغ بعدم استلام الليرة السورية**\n\n"
-        f"أبلغ البائع بعدم استلام الدفعة بالليرة السورية حتى الآن.\n\n"
-        f"يرجى التواصل مع فريق الدعم الفني لمراجعة إشعار التحويل:\n"
-        f"👨‍💻 **الدعم الفني:** @{escaped_support}"
+        f"⚠️ **صفقة #{deal.id} — إغلاق آلي وتحويل للمتابعة اليدوية**\n"
+        f"〰️〰️〰️〰️〰️〰️〰️\n"
+        f"أبلغ البائع بعدم استلام الدفعة بالليرة السورية.\n"
+        f"تم إغلاق الصفقة آلياً على البوت وتحويل الملف إلى الإدارة للمتابعة والفصل اليدوي بين الطرفين.\n\n"
+        f"👨‍💻 **يرجى التواصل المباشر مع الدعم الفني:** @{escaped_support}"
     )
 
     support_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -697,12 +733,13 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
         logger.warning(f"Failed to send non-receipt notice to buyer {deal.buyer_id}: {e}")
 
     admin_notice = (
-        f"🚨 **إبلاغ عدم استلام — صفقة #{deal.id}**\n\n"
+        f"🚨 **إبلاغ عدم استلام (متابعة يدوية) — صفقة #{deal.id}**\n"
+        f"〰️〰️〰️〰️〰️〰️〰️\n"
         f"▫️ **البائع:** `{deal.seller_id}`\n"
         f"▫️ **المشتري:** `{deal.buyer_id}`\n"
         f"▫️ **الكمية:** `{format_usdt(deal.amount_usdt)} USDT`\n"
         f"▫️ **المبلغ المقابل:** `{format_syp(deal.amount_syp)}` ل.س\n\n"
-        f"أبلغ البائع عن عدم استلام المبلغ بالليرة السورية."
+        f"أبلغ البائع عن عدم استلام المبلغ بالليرة السورية. تم إغلاق الصفقة آلياً على البوت لتتم متابعتها وتسويتها يدوياً بين الطرفين والإدارة."
     )
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")]
@@ -718,7 +755,7 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
     except Exception as e:
         logger.warning(f"Failed to push deal card on dispute for deal #{deal.id}: {e}")
 
-    await callback.answer("تم تسجيل إبلاغك بعدم استلام المبلغ وتحويل الحالة إلى الدعم الفني.")
+    await callback.answer("تم إغلاق الصفقة آلياً وتحويل الملف للمتابعة اليدوية مع الدعم الفني.")
 
 
 # ================= ADMIN REVIEW & ESCROW RELEASE =================

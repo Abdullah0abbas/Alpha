@@ -88,7 +88,7 @@ class Deal(Base):
             "uq_open_deal_per_offer",
             "offer_id",
             unique=True,
-            postgresql_where=text("status NOT IN ('CANCELLED','EXPIRED','COMPLETED')")
+            postgresql_where=text("status NOT IN ('CANCELLED','EXPIRED','COMPLETED','DISPUTED')")
         ),
     )
 
