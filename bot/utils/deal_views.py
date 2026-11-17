@@ -22,27 +22,27 @@ def build_offer_action_buttons(
     """
     if offer_user_id == viewer_id:
         if context == "start":
-            return [[InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")]]
+            return [[InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")]]
         return []
 
     buttons = []
     if context == "browse":
-        row = [InlineKeyboardButton(text=f"⚡ صفقة #{offer_id}", callback_data=f"start_deal_{offer_id}")]
+        row = [InlineKeyboardButton(text=f"⚡ تنفيذ #{offer_id}", callback_data=f"start_deal_{offer_id}")]
         if negotiable and negotiable_type != "none":
             row.append(InlineKeyboardButton(text=f"🤝 تفاوض #{offer_id}", callback_data=f"start_neg_{offer_id}"))
         return [row]
 
     if context == "start":
-        buttons.append([InlineKeyboardButton(text="⚡ تنفيذ الصفقة فوراً", callback_data=f"start_deal_{offer_id}")])
+        buttons.append([InlineKeyboardButton(text="⚡ تنفيذ العرض", callback_data=f"start_deal_{offer_id}")])
         if negotiable and negotiable_type != "none":
-            buttons.append([InlineKeyboardButton(text="🤝 تقديم طلب تفاوض", callback_data=f"start_neg_{offer_id}")])
-        buttons.append([InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")])
+            buttons.append([InlineKeyboardButton(text="🤝 تفاوض", callback_data=f"start_neg_{offer_id}")])
+        buttons.append([InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")])
         return buttons
 
     # Default context == "offers"
-    buttons.append([InlineKeyboardButton(text="⚡ تنفيذ فوري بالسعر الحالي", callback_data=f"start_deal_{offer_id}")])
+    buttons.append([InlineKeyboardButton(text="⚡ تنفيذ العرض", callback_data=f"start_deal_{offer_id}")])
     if negotiable and negotiable_type != "none":
-        buttons.append([InlineKeyboardButton(text="🤝 تقديم طلب تفاوض", callback_data=f"start_neg_{offer_id}")])
+        buttons.append([InlineKeyboardButton(text="🤝 تفاوض", callback_data=f"start_neg_{offer_id}")])
     return buttons
 
 STATUS_ARABIC_MAP = {

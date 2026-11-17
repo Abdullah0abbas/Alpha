@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.models import Offer
@@ -14,22 +15,50 @@ from bot.utils.formatters import (
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_trader_stats(offer: Offer, trader=None) -> tuple[str, int, str, str]:
+    user_obj = trader or getattr(offer, "trader", None) or getattr(offer, "user", None)
+    completed = int(
+        getattr(user_obj, "completed_deals_count", None)
+        or getattr(user_obj, "completed_deals", None)
+        or 0
+    ) if user_obj else 0
+    rep_raw = getattr(user_obj, "reputation_score", Decimal("100.0")) if user_obj else Decimal("100.0")
+    try:
+        rep_val = float(rep_raw)
+    except Exception:
+        rep_val = 100.0
+
+    tier_raw = getattr(user_obj, "tier", None) if user_obj else None
+    if tier_raw == "Gold" or completed >= 50:
+        tier_label = "ذهبي🥇"
+    elif tier_raw == "Silver" or completed >= 10:
+        tier_label = "فضي🥈"
+    else:
+        tier_label = "برونزي🥉"
+
+    stars_5 = round((rep_val / 100.0) * 5.0, 1)
+    rep_str = f"⭐️ {stars_5}"
+    rate_pct = f"{rep_val:.1f}%"
+    return tier_label, completed, rate_pct, rep_str
+
+
 def build_channel_offer_message(
     offer: Offer,
     duration_override: str | None = None,
+    trader=None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """
     Builds clean, formal HTML message text and inline keyboard for public channel offer posts.
     Reused across initial broadcast and status updates so formatting never drifts.
     """
-    offer_type_ar = "🔴 بيع (المعلن يبيع)" if offer.offer_type == "sell" else "🟢 شراء (المعلن يشتري)"
-    action_ar = "🤝 تنفيذ هذا العرض"
+    is_sell = offer.offer_type == "sell"
+    header_action = '🔴 التاجر يريد بيع "USDT"' if is_sell else '🟢 التاجر يريد شراء "USDT"'
 
     methods_str = format_payment_methods(offer.payment_methods)
     rate_str = format_syp(offer.rate)
     min_str = format_usdt(offer.min_limit)
     max_str = format_usdt(offer.max_limit)
-    fee_line = format_fee_rule_html()
 
     if duration_override:
         dur_str = duration_override
@@ -48,65 +77,61 @@ def build_channel_offer_message(
     }
     if getattr(offer, "negotiable", False):
         neg_text = neg_labels.get(getattr(offer, "negotiable_type", "none"), "متاح")
-        neg_line = f"\n▫️ <b>التفاوض:</b> {neg_text}"
+        neg_line = f"\n🤝 التفاوض : {neg_text}"
     else:
         neg_line = ""
 
+    tier_label, completed_deals, rate_pct, rep_str = _resolve_trader_stats(offer, trader=trader)
+
+    core_card = (
+        f"فرصة رقم : {offer.id} (عرض #{offer.id})\n"
+        f"{header_action}\n"
+        f"〰️〰️〰️〰️〰️〰️〰️\n"
+        f"💰 الكمية : من <code>{min_str}</code> إلى <code>{max_str} USDT</code>\n"
+        f"📊 سعر الصرف : {rate_str} ل.س\n"
+        f"🏦 طرق الدفع : {methods_str}{neg_line}\n"
+        f"⏳ مدة المعاملة : {dur_str} (الصلاحية المتبقية)\n"
+        f"〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+        f"التاجر :\n"
+        f"👤 المستوى : {tier_label}\n"
+        f"📈 نسبة الإتمام: {rate_pct} ({completed_deals} صفقات)\n"
+        f"🧐 السمعة : {rep_str}\n"
+        f"📉 عمولة الوسيط: مجانية ≤ 25$ | 0.1% لما فوق"
+    )
+
     if offer.status == "active":
-        channel_text = (
-            f"📢 <b>{CHANNEL_NAME} | عرض #{offer.id}</b>\n"
-            f"▫️ <b>الحالة:</b> متاح للتداول\n\n"
-            f"▫️ <b>نوع العرض:</b> {offer_type_ar}\n"
-            f"▫️ <b>سعر الصرف:</b> {rate_str} ل.س\n"
-            f"▫️ <b>حدود الكمية:</b> من <code>{min_str} USDT</code> إلى <code>{max_str} USDT</code>\n"
-            f"▫️ <b>وسائل الدفع:</b> {methods_str}{neg_line}\n"
-            f"▫️ <b>الصلاحية المتبقية:</b> {dur_str}\n\n"
-            f"{fee_line}"
-        )
         deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offer_{offer.id}"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text=action_ar, url=deep_link),
-                InlineKeyboardButton(text="🔍 تصفح العروض", url=f"https://t.me/{settings.BOT_USERNAME}?start=offers"),
+                InlineKeyboardButton(text="⚡ تنفيذ العرض", url=deep_link),
+                InlineKeyboardButton(text="📊 السوق", url=f"https://t.me/{settings.BOT_USERNAME}?start=offers"),
             ]
         ])
-        return channel_text, kb
+        return core_card, kb
 
-    details_text = (
-        f"<s>▫️ نوع العرض: {offer_type_ar}</s>\n"
-        f"<s>▫️ سعر الصرف: {rate_str} ل.س</s>\n"
-        f"<s>▫️ حدود الكمية: من {min_str} USDT إلى {max_str} USDT</s>\n"
-        f"<s>▫️ وسائل الدفع: {methods_str}</s>"
-    )
     deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offers"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 تصفح العروض المتاحة", url=deep_link)]
+        [InlineKeyboardButton(text="📊 العروض المتاحة", url=deep_link)]
     ])
 
     if offer.status == "reserved":
-        status_header = f"🔒 <b>{CHANNEL_NAME} | عرض #{offer.id}</b>"
-        action_section = "⏳ <b>الحالة:</b> العرض محجوز حالياً — قيد التنفيذ والتسوية."
+        action_section = "🔒 <b>الحالة:</b> العرض محجوز حالياً — قيد التنفيذ."
     elif offer.status == "negotiating":
-        status_header = f"🤝 <b>{CHANNEL_NAME} | عرض #{offer.id}</b>"
-        action_section = "💬 <b>الحالة:</b> تجري مفاوضات حالياً على هذا العرض."
+        action_section = "🤝 <b>الحالة:</b> تجري مفاوضات حالياً على هذا العرض."
     elif offer.status == "completed":
-        status_header = f"✅ <b>{CHANNEL_NAME} | عرض #{offer.id}</b>"
-        action_section = "☑️ <b>الحالة:</b> تم تنفيذ الصفقة وإغلاق العرض بنجاح."
+        action_section = "✅ <b>الحالة:</b> تم إتمام الصفقة وإغلاق العرض بنجاح."
     elif offer.status == "expired":
-        status_header = f"⏱️ <b>{CHANNEL_NAME} | عرض #{offer.id}</b>"
-        action_section = "⌛ <b>الحالة:</b> انتهت صلاحية العرض وتم إغلاقه."
+        action_section = "⏱️ <b>الحالة:</b> انتهت صلاحية العرض."
     elif offer.status in ["cancelled", "deleted"]:
-        status_header = f"🚫 <b>{CHANNEL_NAME} | عرض #{offer.id}</b>"
-        action_section = "🗑️ <b>الحالة:</b> تم إلغاء العرض وإزالته من السوق."
+        action_section = "🚫 <b>الحالة:</b> تم إلغاء العرض."
     else:
-        status_header = f"ℹ️ <b>{CHANNEL_NAME} | عرض #{offer.id}</b>"
-        action_section = f"📊 <b>الحالة:</b> {offer.status}"
+        action_section = f"ℹ️ <b>الحالة:</b> {offer.status}"
 
-    channel_text = f"{status_header}\n\n{details_text}\n\n{action_section}"
+    channel_text = f"<s>{core_card}</s>\n\n{action_section}"
     return channel_text, kb
 
 
-async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
+async def update_channel_offer_message(bot: Bot, offer: Offer, trader=None) -> None:
     """
     Updates the public Telegram channel broadcast message for an offer based on its status.
     """
@@ -120,7 +145,7 @@ async def update_channel_offer_message(bot: Bot, offer: Offer) -> None:
         except Exception as delete_err:
             logger.warning(f"Failed to delete channel message for offer {offer.id}, falling back to edit: {delete_err}")
 
-    channel_text, kb = build_channel_offer_message(offer)
+    channel_text, kb = build_channel_offer_message(offer, trader=trader)
 
     try:
         await bot.edit_message_text(

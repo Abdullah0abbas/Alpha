@@ -92,18 +92,19 @@ async def forward_proof_photo_to_seller(deal: Deal, photo_file_id: str, bot: Bot
     )
 
     seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تأكيد استلام المبلغ بالليرة السورية", callback_data=f"ask_conf_{deal.id}")],
-        [InlineKeyboardButton(text="⚠️ عدم الاستلام (اعتراض)", callback_data=f"dispute_deal_{deal.id}")]
+        [
+            InlineKeyboardButton(text="✅ تأكيد الاستلام", callback_data=f"ask_conf_{deal.id}"),
+            InlineKeyboardButton(text="⚠️ لم أستلم", callback_data=f"dispute_deal_{deal.id}")
+        ]
     ])
     caption = (
-        f"🧾 **إشعار تحويل الليرة السورية — صفقة #{deal.id}**\n\n"
-        f"📍 **المرحلة:** الخطوة 5 من 7 — تأكيد استلام المبلغ\n\n"
-        f"▫️ **دورك بالصفقة:** 🔴 بائع\n"
-        f"▫️ **المبلغ المطلوب استلامه:** `{syp_str}` ل.س\n"
-        f"▫️ **رصيد الضمان المقابل:** `{usdt_str} USDT`\n"
-        f"▫️ **حساب الاستلام:**\n{payment_info_str}\n\n"
-        f"📸 **المرفق:** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
-        f"⚠️ **تنبيه:** يرجى التحقق من وصول كامل المبلغ إلى حسابك قبل الضغط على زر التأكيد."
+        f"📸 **إشعار تحويل الليرة — صفقة #{deal.id}**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"👤 **دورك :** 🔴 بائع\n"
+        f"💴 **المبلغ المطلوب استلامه :** `{syp_str}` ل.س\n"
+        f"💰 **رصيد الضمان :** `{usdt_str} USDT`\n"
+        f"💳 **حساب الاستلام :**\n{payment_info_str}\n\n"
+        f"⚠️ تحقق من وصول المبلغ فعلياً إلى حسابك قبل الضغط على **تأكيد الاستلام**."
     )
     try:
         sent_msg = await bot.send_photo(
@@ -147,12 +148,12 @@ async def apply_buyer_payout_wallet(
 
         if isinstance(event, CallbackQuery):
             try:
-                await event.answer("✅ تم تأكيد إرسال الدفعة وإشعار التحويل بنجاح.")
+                await event.answer("✅ تم إرسال الإشعار بنجاح.")
             except Exception:
                 pass
         elif isinstance(event, Message):
             try:
-                await event.answer("✅ تم تأكيد إرسال الدفعة وإشعار التحويل بنجاح.")
+                await event.answer("✅ تم إرسال البيانات بانتظار التحقق.")
             except Exception:
                 pass
 
@@ -167,11 +168,9 @@ async def apply_buyer_payout_wallet(
 
         escaped_wallet = escape_markdown(normalized_address)
         buyer_text = (
-            f"✅ **صفقة #{deal.id} — تم تسجيل عنوان محفظة الاستلام**\n\n"
-            f"▫️ **الشبكة:** `BEP-20`\n"
-            f"📥 **عنوان محفظة الاستلام:**\n"
+            f"📝 **تأكيد معلومات USDT (تم تسجيل عنوان محفظة الاستلام):**\n"
             f"`{escaped_wallet}`\n\n"
-            f"بانتظار تأكيد البائع استلام المبلغ بالليرة ثم اعتماد الإدارة لإطلاق الرصيد."
+            f"تم إرسال البيانات بانتظار التحقق."
         )
 
         if isinstance(event, CallbackQuery):
@@ -180,7 +179,7 @@ async def apply_buyer_payout_wallet(
             except Exception:
                 await event.message.answer(buyer_text, parse_mode="Markdown")
             try:
-                await event.answer("تم تسجيل عنوان المحفظة بنجاح ✅")
+                await event.answer("تم تسجيل عنوان المحفظة ✅")
             except Exception:
                 pass
         else:
@@ -194,11 +193,9 @@ async def apply_buyer_payout_wallet(
 
         escaped_wallet = escape_markdown(normalized_address)
         buyer_text = (
-            f"✅ **صفقة #{deal.id} — تم تسجيل عنوان محفظة الاستلام**\n\n"
-            f"▫️ **الشبكة:** `BEP-20`\n"
-            f"📥 **عنوان محفظة الاستلام:**\n"
+            f"📝 **تأكيد معلومات USDT (تم تسجيل عنوان محفظة الاستلام):**\n"
             f"`{escaped_wallet}`\n\n"
-            f"الصفقة حالياً قيد المراجعة والاعتماد الإداري لإطلاق الرصيد."
+            f"تم إرسال البيانات بانتظار إرسال الـ USDT من الإدارة."
         )
 
         if isinstance(event, CallbackQuery):
@@ -212,12 +209,9 @@ async def apply_buyer_payout_wallet(
 
         # Notify Admins that payout address has been registered
         admin_notice = (
-            f"ℹ️ **تحديث صفقة #{deal.id}**\n\n"
-            f"سجّل المشتري عنوان محفظة الاستلام.\n"
-            f"▫️ **الشبكة:** `BEP-20`\n"
-            f"📥 **العنوان:**\n"
-            f"`{escaped_wallet}`\n\n"
-            f"الصفقة بانتظار المراجعة والاعتماد الإداري."
+            f"ℹ️ **تحديث صفقة #{deal.id}**\n"
+            f"💵 **عنوان USDT (BEP-20) للمشتري:**\n"
+            f"`{escaped_wallet}`"
         )
         for admin_id in settings.ADMIN_IDS:
             try:
@@ -608,16 +602,14 @@ async def start_set_buyer_payout(callback: CallbackQuery, state: FSMContext, db_
     if is_saved_valid:
         # Show explicit Confirmation Gate
         gate_text = (
-            f"📥 **محفظة استلام `USDT` — صفقة #{deal.id}**\n\n"
-            f"▫️ **الشبكة:** `BEP-20`\n"
-            f"▫️ **العنوان المحفوظ بملفك:**\n"
-            f"`{escape_markdown(normalized_saved)}`\n\n"
-            f"⚠️ **تنبيه:** تأكد من أن هذا العنوان يدعم شبكة `BEP-20`.\n\n"
-            f"هل ترغب في استخدام هذا العنوان المحفوظ، أم إدخال عنوان جديد لهذه الصفقة؟"
+            f"📝 **تأكيد معلومات USDT (BEP-20) — صفقة #{deal.id}:**\n"
+            f"`{escape_markdown(normalized_saved)}`"
         )
         gate_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ استخدام هذه البيانات", callback_data=f"use_saved_buyer_wallet_{deal.id}")],
-            [InlineKeyboardButton(text="✏️ إدخال بيانات جديدة لهذه الصفقة", callback_data=f"manual_set_buyer_wallet_{deal.id}")],
+            [
+                InlineKeyboardButton(text="✅ اعتماد", callback_data=f"use_saved_buyer_wallet_{deal.id}"),
+                InlineKeyboardButton(text="✏️ تعديل", callback_data=f"manual_set_buyer_wallet_{deal.id}")
+            ],
             [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
         ])
         try:
@@ -632,13 +624,10 @@ async def start_set_buyer_payout(callback: CallbackQuery, state: FSMContext, db_
     await state.update_data(deal_id=deal_id)
 
     curr_addr = deal.buyer_payout_address or ""
-    curr_addr_str = f"\n▫️ **العنوان المسجل حالياً:**\n`{escape_markdown(curr_addr)}`\n" if curr_addr and curr_addr not in ["PENDING", "غير محدد", "N/A"] else ""
+    curr_addr_str = f"\nالعنوان الحالي: `{escape_markdown(curr_addr)}`\n" if curr_addr and curr_addr not in ["PENDING", "غير محدد", "N/A"] else ""
 
     await callback.message.answer(
-        f"📥 **محفظة استلام `USDT` — صفقة #{deal.id}**\n"
-        f"{curr_addr_str}\n"
-        f"▫️ **الشبكة المطلوبة:** `BNB Smart Chain (BEP-20)`\n\n"
-        f"أرسل عنوان محفظتك الخاصة لتلقي الرصيد عليها فور اعتماد الإدارة:",
+        f"💵 أرسل عنوان USDT (BEP-20) فقط، من دون أي نص أو كلمات إضافية.{curr_addr_str}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
         ]),
@@ -723,12 +712,7 @@ async def cq_manual_set_buyer_wallet(callback: CallbackQuery, state: FSMContext,
     # Release row lock before Telegram calls without expiring attributes
     await db_session.commit()
 
-    text = (
-        f"📥 **إدخال عنوان محفظة جديد — صفقة #{deal.id}**\n\n"
-        f"▫️ **الشبكة المطلوبة:** `BNB Smart Chain (BEP-20)`\n\n"
-        f"أرسل عنوان محفظتك الخاصة لتلقي الرصيد عليها فور اعتماد الإدارة.\n\n"
-        f"⚠️ **تنبيه:** تأكد من أن العنوان يدعم هذه الشبكة تحديداً."
-    )
+    text = "💵 أرسل عنوان USDT (BEP-20) فقط، من دون أي نص أو كلمات إضافية."
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
     ])
@@ -749,10 +733,7 @@ async def process_set_buyer_wallet(message: Message, state: FSMContext, db_sessi
         warn_msg = await message.answer(
             f"⚠️ **عنوان محفظة غير صالح**\n\n"
             f"{val_err}\n\n"
-            f"▫️ **البداية المطلوبة:** `0x`\n"
-            f"▫️ **الطول:** 42 خانة\n"
-            f"▫️ **الشبكة:** `BNB Smart Chain (BEP-20)`\n\n"
-            f"يرجى إعادة المحاولة أو الإلغاء:",
+            f"💵 أرسل عنوان USDT (BEP-20) يبدأ بـ `0x` (42 خانة):",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
             ]),

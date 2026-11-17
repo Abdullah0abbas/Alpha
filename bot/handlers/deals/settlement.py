@@ -260,9 +260,10 @@ async def manual_syp_sent(callback: CallbackQuery, state: FSMContext, db_session
     ])
 
     await callback.message.edit_text(
-        f"📸 **إرفاق إشعار التحويل — صفقة #{deal.id}**\n\n"
-        f"▫️ **المبلغ المطلوب تحويله:** `{syp_str}` ل.س\n\n"
-        f"أرسل لقطة شاشة واضحة لإشعار الدفع لإثبات عملية التحويل:",
+        f"📸 **إرفاق إشعار التحويل — صفقة #{deal.id}**\n"
+        f"〰️〰️〰️〰️〰️〰️〰️\n"
+        f"💰 يجب إرسال المبلغ : `{syp_str}` ل.س\n"
+        f"📸 يرجى إرسال لقطة شاشة تثبت عملية التحويل:",
         reply_markup=cancel_kb,
         parse_mode="Markdown"
     )
@@ -352,16 +353,15 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
 
         if is_saved_valid:
             gate_text = (
-                f"✅ **تم تسجيل إشعار التحويل بنجاح — صفقة #{deal.id}**\n\n"
-                f"▫️ **الشبكة:** `BEP-20`\n"
-                f"📥 **عنوان المحفظة المحفوظ بملفك:**\n"
-                f"`{escape_markdown(normalized_saved)}`\n\n"
-                f"⚠️ **تنبيه:** تأكد من أن هذا العنوان يدعم شبكة `BEP-20`.\n\n"
-                f"هل ترغب في استخدام هذا العنوان المحفوظ، أم إدخال عنوان جديد لهذه الصفقة؟"
+                f"✅ تم حفظ إشعار التحويل\n\n"
+                f"📝 **تأكيد معلومات USDT (BEP-20) — صفقة #{deal.id}:**\n"
+                f"`{escape_markdown(normalized_saved)}`"
             )
             gate_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ استخدام هذه البيانات", callback_data=f"use_saved_buyer_wallet_{deal.id}")],
-                [InlineKeyboardButton(text="✏️ إدخال بيانات جديدة لهذه الصفقة", callback_data=f"manual_set_buyer_wallet_{deal.id}")],
+                [
+                    InlineKeyboardButton(text="✅ اعتماد", callback_data=f"use_saved_buyer_wallet_{deal.id}"),
+                    InlineKeyboardButton(text="✏️ تعديل", callback_data=f"manual_set_buyer_wallet_{deal.id}")
+                ],
                 [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
             ])
             await message.answer(gate_text, reply_markup=gate_kb, parse_mode="Markdown")
@@ -369,10 +369,8 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
             await state.set_state(DealPaymentFSM.waiting_for_buyer_wallet)
             await state.update_data(deal_id=deal.id)
             await message.answer(
-                f"✅ **تم تسجيل إشعار التحويل بنجاح**\n\n"
-                f"▫️ **الشبكة المطلوبة:** `BEP-20`\n\n"
-                f"📥 **أرسل عنوان محفظة الاستلام الخاصة بك فقط:**\n"
-                f"دون أي نصوص إضافية، لتلقي الرصيد عليها فور اعتماد الإدارة.",
+                f"✅ تم حفظ إشعار التحويل\n\n"
+                f"💵 أرسل عنوان USDT (BEP-20) فقط، من دون أي نص أو كلمات إضافية.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
                 ]),
@@ -415,15 +413,15 @@ async def ask_confirm_syp(callback: CallbackQuery, db_session: AsyncSession):
     syp_str = format_syp(deal.amount_syp)
 
     text = (
-        f"⚠️ **تأكيد استلام الدفعة — صفقة #{deal.id}**\n\n"
-        f"▫️ **دورك بالصفقة:** 🔴 بائع\n"
-        f"▫️ **المبلغ المطلوب استلامه:** `{syp_str}` ل.س\n"
-        f"▫️ **رصيد الضمان المقابل:** `{usdt_str} USDT`\n\n"
-        f"⚠️ **تنبيه:** تأكد من وصول كامل المبلغ إلى حسابك قبل التأكيد.\n"
-        f"بمجرد التأكيد، ستُحال الصفقة تلقائياً للإدارة لإطلاق رصيد الضمان للمشتري ولا يمكن التراجع عن هذا الإجراء."
+        f"⚠️ **تأكيد استلام المبلغ — صفقة #{deal.id}**\n"
+        f"〰️〰️〰️〰️〰️〰️〰️\n"
+        f"💰 المبلغ المطلوب استلامه : `{syp_str}` ل.س\n"
+        f"💵 رصيد الضمان المقابل : `{usdt_str} USDT`\n"
+        f"〰️〰️〰️〰️〰️〰️〰️\n"
+        f"⚠️ تأكد من وصول كامل المبلغ إلى حسابك قبل التأكيد (لا يمكن التراجع)."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ نعم، تأكيد استلام الليرة", callback_data=f"man_conf_{deal.id}")],
+        [InlineKeyboardButton(text="✅ نعم، أؤكد الاستلام", callback_data=f"man_conf_{deal.id}")],
         [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_seller_deal_{deal.id}")]
     ])
     try:
@@ -463,18 +461,19 @@ async def cq_back_seller_deal(callback: CallbackQuery, db_session: AsyncSession)
         )
 
         seller_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ تأكيد استلام المبلغ بالليرة السورية", callback_data=f"ask_conf_{deal.id}")],
-            [InlineKeyboardButton(text="⚠️ عدم الاستلام (اعتراض)", callback_data=f"dispute_deal_{deal.id}")]
+            [
+                InlineKeyboardButton(text="✅ تأكيد الاستلام", callback_data=f"ask_conf_{deal.id}"),
+                InlineKeyboardButton(text="⚠️ لم أستلم", callback_data=f"dispute_deal_{deal.id}")
+            ]
         ])
         caption = (
-            f"🧾 **إشعار تحويل الليرة السورية — صفقة #{deal.id}**\n\n"
-            f"📍 **المرحلة:** الخطوة 5 من 7 — تأكيد استلام المبلغ\n\n"
-            f"▫️ **دورك بالصفقة:** 🔴 بائع\n"
-            f"▫️ **المبلغ المطلوب استلامه:** `{syp_str}` ل.س\n"
-            f"▫️ **رصيد الضمان المقابل:** `{usdt_str} USDT`\n"
-            f"▫️ **حساب الاستلام:**\n{payment_info_str}\n\n"
-            f"📸 **المرفق:** لقطة شاشة لإشعار التحويل المالي من المشتري.\n\n"
-            f"⚠️ **تنبيه:** يرجى التحقق من وصول كامل المبلغ إلى حسابك قبل الضغط على زر التأكيد."
+            f"🧾 **إشعار تحويل — صفقة #{deal.id}**\n"
+            f"〰️〰️〰️〰️〰️〰️〰️\n"
+            f"💰 المبلغ المحول : `{syp_str}` ل.س\n"
+            f"💵 الضمان المقابل : `{usdt_str} USDT`\n"
+            f"👤 حساب الاستلام :\n{payment_info_str}\n"
+            f"〰️〰️〰️〰️〰️〰️〰️\n"
+            f"⚠️ تأكد من وصول المبلغ إلى حسابك الفعلي قبل التأكيد."
         )
         try:
             await callback.message.edit_caption(caption=caption, reply_markup=seller_kb, parse_mode="Markdown")
@@ -524,11 +523,8 @@ async def _dispatch_admin_approval(
                     )
             elif origin_callback.from_user.id == deal.seller_id:
                 seller_text = (
-                    f"✅ **صفقة #{deal.id} — تم تأكيد الاستلام وإحالة الصفقة للإدارة**\n\n"
-                    f"▫️ **دورك بالصفقة:** 🔴 بائع\n"
-                    f"▫️ **الكمية:** `{usdt_str} USDT`\n"
-                    f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
-                    f"تم إشعار إدارة {BOT_NAME} لمراجعة الصفقة وإطلاق رصيد الضمان للمشتري."
+                    f"✅ تم تأكيد استلام المبلغ لعملية الربط رقم #{deal.id}.\n"
+                    f"بانتظار إرسال الـ USDT من الإدارة."
                 )
                 if is_photo_msg:
                     await origin_callback.message.edit_caption(
@@ -544,10 +540,8 @@ async def _dispatch_admin_approval(
                     )
             else:
                 fallback_text = (
-                    f"🛡️ **صفقة #{deal.id} — قيد الاعتماد الإداري**\n\n"
-                    f"▫️ **الكمية:** `{usdt_str} USDT`\n"
-                    f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
-                    f"تمت إحالة العملية للإدارة للمراجعة وإطلاق رصيد الضمان إلى محفظة المشتري."
+                    f"✅ تم تأكيد استلام المبلغ لعملية الربط رقم #{deal.id}.\n"
+                    f"بانتظار إرسال الـ USDT من الإدارة."
                 )
                 if is_photo_msg:
                     await origin_callback.message.edit_caption(
@@ -575,11 +569,8 @@ async def _dispatch_admin_approval(
             await bot.send_message(
                 chat_id=deal.buyer_id,
                 text=(
-                    f"🛡️ **تحديث صفقة #{deal.id}**\n\n"
-                    f"▫️ **الكمية:** `{usdt_str} USDT`\n"
-                    f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
-                    f"أكد البائع استلام كامل المبلغ بالليرة السورية.\n"
-                    f"الصفقة الآن قيد الاعتماد الإداري لإطلاق الرصيد إلى محفظتك."
+                    f"✅ تم تأكيد استلام المبلغ لعملية الربط رقم #{deal.id}.\n"
+                    f"بانتظار إرسال الـ USDT من الإدارة."
                 ),
                 parse_mode="Markdown"
             )
@@ -589,16 +580,13 @@ async def _dispatch_admin_approval(
     # 3. If buyer wallet is pending, prompt buyer
     if not deal.buyer_payout_address or deal.buyer_payout_address in ["PENDING", "غير محدد", "N/A"]:
         buyer_wallet_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📥 إدخال محفظة الاستلام", callback_data=f"set_buyer_payout_{deal.id}")]
+            [InlineKeyboardButton(text="💵 إدخال عنوان USDT", callback_data=f"set_buyer_payout_{deal.id}")]
         ])
         try:
             await bot.send_message(
                 chat_id=deal.buyer_id,
                 text=(
-                    f"⚠️ **تنبيه هام — صفقة #{deal.id}**\n\n"
-                    f"الصفقة بانتظار الاعتماد النهائي لإطلاق الرصيد.\n"
-                    f"▫️ **الشبكة المطلوبة:** `BEP-20`\n\n"
-                    f"يرجى تزويدنا بعنوان محفظتك عبر الزر أدناه لتلقي الرصيد:"
+                    f"⚠️ **صفقة #{deal.id}** — يرجى إدخال عنوان USDT (BEP-20) لاستلام الرصيد:"
                 ),
                 reply_markup=buyer_wallet_kb,
                 parse_mode="Markdown"
@@ -971,12 +959,10 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
         await callback.bot.send_message(
             chat_id=deal.buyer_id,
             text=(
-                f"✅ **صفقة #{deal.id} — اكتملت الصفقة بنجاح**\n\n"
-                f"▫️ **صافي الرصيد المستلم:** `{net_buyer_usdt_str} USDT`\n"
-                f"▫️ **الشبكة:** `BEP-20`\n"
-                f"📥 **محفظة الاستلام:**\n`{escape_markdown(deal.buyer_payout_address)}`\n\n"
-                f"تم اعتماد الإدارة وإطلاق رصيد الضمان إلى محفظتك.\n"
-                f"شكراً لتعاملك عبر {BOT_NAME}."
+                f"✅ **تم إتمام صفقة #{deal.id} بنجاح**\n"
+                f"〰️〰️〰️〰️〰️〰️〰️\n"
+                f"💵 الرصيد المرسل : `{net_buyer_usdt_str} USDT` (`BEP-20`)\n"
+                f"📥 المحفظة : `{escape_markdown(deal.buyer_payout_address)}`"
             ),
             parse_mode="Markdown"
         )
@@ -987,11 +973,10 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
         await callback.bot.send_message(
             chat_id=deal.seller_id,
             text=(
-                f"✅ **صفقة #{deal.id} — اكتملت الصفقة بنجاح**\n\n"
-                f"▫️ **قيمة الصفقة:** `{usdt_str} USDT`\n"
-                f"▫️ **المبلغ بالليرة:** `{syp_str}` ل.س\n\n"
-                f"تم إطلاق رصيد الضمان للمشتري بعد تأكيد استلامك لكامل الدفعة بالليرة.\n"
-                f"شكراً لتعاملك عبر {BOT_NAME}."
+                f"✅ **تم إتمام صفقة #{deal.id} بنجاح**\n"
+                f"〰️〰️〰️〰️〰️〰️〰️\n"
+                f"💵 الكمية : `{usdt_str} USDT`\n"
+                f"💰 المبلغ المستلم : `{syp_str}` ل.س"
             ),
             parse_mode="Markdown"
         )

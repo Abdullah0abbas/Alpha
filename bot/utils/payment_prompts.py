@@ -9,38 +9,26 @@ PAYMENT_METHOD_SPECS = {
     "sham_lira": {
         "name": "شام كاش ليرة",
         "icon": "💳",
-        "instruction": (
-            "أرسل عنوان حساب شام كاش ليرة الخاص بك:\n"
-            "(32 خانة hex دون مسافات)"
-        ),
-        "creation_instruction": (
-            "أرسل عنوان حساب شام كاش ليرة الخاص بك لتلقي الدفعة عليه:\n"
-            "(32 خانة hex دون مسافات)"
-        ),
+        "instruction": "أرسل عنوان حساب شام كاش ليرة فقط، من دون أي نص إضافي (32 خانة hex):",
+        "creation_instruction": "أرسل عنوان حساب شام كاش ليرة فقط، من دون أي نص إضافي (32 خانة hex):",
     },
     "syriatel": {
         "name": "سيريتيل كاش",
         "icon": "📱",
-        "instruction": (
-            "أرسل رقم سيريتيل كاش الخاص بك:\n"
-            "(10 أرقام يبدأ بـ 09)"
-        ),
-        "creation_instruction": (
-            "أرسل رقم سيريتيل كاش الخاص بك لتلقي الدفعة عليه:\n"
-            "(10 أرقام يبدأ بـ 09)"
-        ),
+        "instruction": "أرسل رقم سيريتيل كاش فقط، من دون أي نص إضافي (10 أرقام يبدأ بـ 09):",
+        "creation_instruction": "أرسل رقم سيريتيل كاش فقط، من دون أي نص إضافي (10 أرقام يبدأ بـ 09):",
     },
     "haram": {
         "name": "حوالة بنكية (الهرم)",
         "icon": "🏛️",
-        "instruction": "أرسل الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:",
-        "creation_instruction": "أرسل الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:",
+        "instruction": "أرسل الاسم الثلاثي والمحافظة ورقم الموبايل في سطر واحد:",
+        "creation_instruction": "أرسل الاسم الثلاثي والمحافظة ورقم الموبايل في سطر واحد:",
     },
     "fouad": {
         "name": "حوالة بنكية (الفؤاد)",
         "icon": "🏢",
-        "instruction": "أرسل الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:",
-        "creation_instruction": "أرسل الاسم الثلاثي كاملاً ورقم الموبايل السوري لاستلام الحوالة:",
+        "instruction": "أرسل الاسم الثلاثي والمحافظة ورقم الموبايل في سطر واحد:",
+        "creation_instruction": "أرسل الاسم الثلاثي والمحافظة ورقم الموبايل في سطر واحد:",
     },
 }
 
@@ -173,10 +161,7 @@ def build_profile_pm_prompt(pm_key: str) -> Optional[tuple[str, str]]:
     spec = PAYMENT_METHOD_SPECS.get(pm_key)
     if not spec:
         return None
-    prompt = (
-        f"{spec['icon']} **إعداد حساب الاستلام — {spec['name']}**\n\n"
-        f"{spec['instruction']}"
-    )
+    prompt = f"{spec['icon']} **{spec['name']}**\n{spec['instruction']}"
     return spec["name"], prompt
 
 
@@ -192,9 +177,8 @@ def build_deal_pm_prompt(method_or_key: Optional[str], deal_id: int, *, strict: 
     else:
         spec = get_pm_spec(method_or_key)
 
-    header_verb = "إدخال بيانات" if spec["name"].startswith("حوالة") else "إدخال حساب"
     prompt = (
-        f"{spec['icon']} **صفقة #{deal_id} — {header_verb} {spec['name']}**\n\n"
+        f"{spec['icon']} **صفقة #{deal_id} — {spec['name']}**\n"
         f"{spec['instruction']}"
     )
     return spec["name"], prompt
@@ -203,18 +187,17 @@ def build_deal_pm_prompt(method_or_key: Optional[str], deal_id: int, *, strict: 
 def build_seller_pm_creation_prompt(selected_pm: str, offer_id: Optional[int]) -> str:
     """Builds the seller payout prompt shown when accepting a Buy USDT offer."""
     icon = PAYMENT_METHOD_ICONS.get(selected_pm, "💳")
-    offer_label = f" — عرض #{offer_id}" if offer_id else ""
+    offer_label = f" | عرض #{offer_id}" if offer_id else ""
 
     if selected_pm in _NAME_TO_KEY or "شام كاش" in selected_pm or "سيريتيل" in selected_pm or "سيريتل" in selected_pm or any(
         k in selected_pm for k in ("حوالة", "الهرم", "الفؤاد", "بنك")
     ):
         details = get_pm_spec(selected_pm)["creation_instruction"]
     else:
-        details = f"أرسل بيانات حساب الاستلام لوسيلة ({selected_pm}):"
+        details = f"أرسل رقم الحساب لوسيلة ({selected_pm}) فقط، من دون أي نص إضافي:"
 
     return (
-        f"{icon} **بيانات استلام الليرة{offer_label}**\n\n"
-        f"▫️ **الوسيلة المحددة:** {selected_pm}\n\n"
+        f"{icon} **{selected_pm}{offer_label}**\n"
         f"{details}"
     )
 

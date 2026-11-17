@@ -22,41 +22,41 @@ def get_profile_keyboard(user: User) -> InlineKeyboardMarkup:
     if not settings.REWARDS_ENABLED:
         buttons = [
             [
-                InlineKeyboardButton(text="⭐ سمعتي وتقييمي", callback_data="prof_reputation"),
-                InlineKeyboardButton(text="🕒 سجل الصفقات", callback_data="main_my_deals")
+                InlineKeyboardButton(text="⭐ التقييم", callback_data="prof_reputation"),
+                InlineKeyboardButton(text="🕒 الصفقات", callback_data="main_my_deals")
             ],
             [
-                InlineKeyboardButton(text="📍 محفظة الاستلام", callback_data="prof_wallet"),
-                InlineKeyboardButton(text="💳 حساب الدفع المعتمد", callback_data="prof_payment")
+                InlineKeyboardButton(text="💵 عنوان USDT", callback_data="prof_wallet"),
+                InlineKeyboardButton(text="💳 حساب الدفع", callback_data="prof_payment")
             ],
             [
-                InlineKeyboardButton(text="✏️ تعديل اللقب", callback_data="prof_set_nickname")
+                InlineKeyboardButton(text="✏️ اللقب", callback_data="prof_set_nickname")
             ],
             [
-                InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")
+                InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
             ]
         ]
         return InlineKeyboardMarkup(inline_keyboard=buttons)
 
     buttons = [
         [
-            InlineKeyboardButton(text="⭐ سمعتي وتقييمي", callback_data="prof_reputation"),
-            InlineKeyboardButton(text="🕒 سجل الصفقات", callback_data="main_my_deals")
+            InlineKeyboardButton(text="⭐ التقييم", callback_data="prof_reputation"),
+            InlineKeyboardButton(text="🕒 الصفقات", callback_data="main_my_deals")
         ],
         [
-            InlineKeyboardButton(text="📍 محفظة الاستلام", callback_data="prof_wallet"),
-            InlineKeyboardButton(text="💳 حساب الدفع المعتمد", callback_data="prof_payment")
+            InlineKeyboardButton(text="💵 عنوان USDT", callback_data="prof_wallet"),
+            InlineKeyboardButton(text="💳 حساب الدفع", callback_data="prof_payment")
         ],
         [
-            InlineKeyboardButton(text="🆔 توثيق الحساب", callback_data="prof_kyc"),
-            InlineKeyboardButton(text="🔗 رابط الإحالة", callback_data="prof_referral")
+            InlineKeyboardButton(text="🆔 التوثيق", callback_data="prof_kyc"),
+            InlineKeyboardButton(text="🔗 الإحالة", callback_data="prof_referral")
         ],
         [
-            InlineKeyboardButton(text="⚡ برنامج النقاط", callback_data="prof_rewards"),
-            InlineKeyboardButton(text="✏️ تعديل اللقب", callback_data="prof_set_nickname")
+            InlineKeyboardButton(text="🌟 النقاط", callback_data="prof_rewards"),
+            InlineKeyboardButton(text="✏️ اللقب", callback_data="prof_set_nickname")
         ],
         [
-            InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")
+            InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -77,13 +77,11 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
     rep_score = f"{user.reputation_score}%" if user.reputation_score is not None else "100%"
     
     if deals_count >= 50:
-        tier_badge = "تاجر ماسي"
-    elif deals_count >= 15:
-        tier_badge = "تاجر محترف"
-    elif deals_count >= 3:
-        tier_badge = "تاجر موثوق"
+        tier_badge = "ذهبي 🥇"
+    elif deals_count >= 10:
+        tier_badge = "فضي 🥈"
     else:
-        tier_badge = "متداول مبتدئ"
+        tier_badge = "برونزي 🥉"
 
     saved_wallet = escape_markdown(user.saved_usdt_address) if user.saved_usdt_address else "غير محدد"
     saved_acc = escape_markdown(user.saved_payment_info) if user.saved_payment_info else "غير محدد"
@@ -91,34 +89,30 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
     rewards_section = ""
     if settings.REWARDS_ENABLED:
         kyc_badges = {
-            "verified": "🟢 موثق بالكامل",
-            "pending": "🟡 قيد المراجعة الإدارية",
+            "verified": "🟢 موثق",
+            "pending": "🟡 قيد المراجعة",
             "unverified": "⚪ غير موثق"
         }
         kyc_display = kyc_badges.get(user.kyc_status, "⚪ غير موثق")
         points = user.reward_points or 0
         rewards_section = (
-            f"▫️ **حالة التوثيق:** {kyc_display}\n"
-            f"▫️ **رصيد النقاط:** `{points}` نقطة\n"
+            f"🆔 **التوثيق :** {kyc_display}\n"
+            f"🌟 **رصيد النقاط :** `{points}`\n"
         )
 
     text = (
-        "👤 **الملف الشخصي**\n\n"
-        f"▫️ **المعرف:** {user_display}\n"
-        f"▫️ **اللقب:** `{nickname_display}`\n"
-        f"▫️ **رقم الحساب:** `{user.telegram_id}`\n\n"
-        "📊 **مؤشرات التداول:**\n"
-        f"▫️ **المستوى:** {tier_badge}\n"
-        f"▫️ **نسبة السمعة:** `{rep_score}`\n"
-        f"▫️ **الصفقات المكتملة:** `{deals_count}` صفقة\n"
-        f"▫️ **إجمالي حجم التداول:** `{format_usdt(total_volume)} USDT`\n"
-        f"{rewards_section}\n"
-        "💳 **البيانات المحفوظة:**\n"
-        "▫️ **محفظة الاستلام (BEP-20):**\n"
-        f"`{saved_wallet}`\n"
-        "▫️ **حساب الاستلام بالليرة السورية:**\n"
-        f"`{saved_acc}`\n\n"
-        "اختر أي قسم أدناه للإدارة أو التعديل:"
+        "اختر ما تريد معرفته عن حسابك\n"
+        f"ID : `{user.telegram_id}` ({user_display})\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"👤 **اللقب :** `{nickname_display}`\n"
+        f"🏅 **المستوى :** {tier_badge}\n"
+        f"📈 **الصفقات المكتملة :** `{deals_count}` صفقة\n"
+        f"🧐 **السمعة :** ⭐️ `{rep_score}`\n"
+        f"💰 **حجم التداول :** `{format_usdt(total_volume)} USDT`\n"
+        f"{rewards_section}"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"💵 **عنوان USDT (BEP-20) :**\n`{saved_wallet}`\n"
+        f"💳 **حساب الدفع (ل.س) :**\n`{saved_acc}`"
     )
     return text
 
@@ -162,16 +156,14 @@ async def cq_prof_reputation(callback: CallbackQuery, db_session: AsyncSession):
     deals = user.completed_deals_count if user else 0
 
     text = (
-        "⭐ **سجل السمعة والتقييم**\n\n"
-        f"▫️ **نسبة التقييم العام:** `{rep}%`\n"
-        f"▫️ **الصفقات المكتملة بنجاح:** `{deals}` صفقة\n"
-        f"▫️ **النزاعات المفتوحة:** `0` نزاع\n\n"
-        "ℹ️ **معايير احتساب السمعة:**\n"
-        "▫️ كل صفقة مكتملة دون نزاع تعزز تقييم حسابك.\n"
-        "▫️ الالتزام بمواعيد التحويل والتأكيد يرفع مستوى الموثوقية في السوق."
+        "⭐ **التقييم والسمعة**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"🧐 **السمعة :** ⭐️ `{rep}%`\n"
+        f"📈 **الصفقات المكتملة :** `{deals}` صفقة\n"
+        f"⚖️ **النزاعات المفتوحة :** `0`"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 العودة للملف الشخصي", callback_data="menu_user_profile")]
+        [InlineKeyboardButton(text="🔙 رجوع", callback_data="menu_user_profile")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
@@ -187,13 +179,8 @@ async def cq_prof_wallet(callback: CallbackQuery, state: FSMContext, db_session:
 
     await state.set_state(ProfileFSM.waiting_for_usdt_address)
     text = (
-        "📍 **إدارة محفظة الاستلام**\n\n"
-        f"▫️ **العنوان المحفوظ حالياً:**\n`{current_addr}`\n\n"
-        "⚠️ **تنبيه الشبكة المعتمدة:**\n"
-        "يجب أن يكون العنوان على شبكة:\n"
-        "`BNB Smart Chain (BEP-20)`\n"
-        "إرسال عنوان من شبكة أخرى قد يؤدي إلى فقدان الأموال بشكل دائم.\n\n"
-        "أرسل عنوان محفظتك الجديد الآن (يبدأ بـ `0x` ومكون من 42 خانة):"
+        f"📍 **العنوان الحالي :** `{current_addr}`\n\n"
+        "💵 أرسل عنوان `USDT (BEP-20)` فقط، من دون أي نص أو كلمات إضافية."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="menu_user_profile")]
@@ -213,10 +200,8 @@ async def process_saved_usdt(message: Message, state: FSMContext, db_session: As
 
     if not is_valid:
         warn_msg = await message.answer(
-            f"⚠️ **عنوان غير صالح**\n{err_msg}\n\n"
-            "تأكد من أن العنوان يدعم شبكة:\n"
-            "`BNB Smart Chain (BEP-20)`\n\n"
-            "يرجى إعادة المحاولة أو الإلغاء:",
+            f"⚠️ {err_msg}\n\n"
+            "💵 أرسل عنوان `USDT (BEP-20)` فقط، من دون أي نص أو كلمات إضافية:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ إلغاء", callback_data="menu_user_profile")]
             ]),
@@ -233,11 +218,10 @@ async def process_saved_usdt(message: Message, state: FSMContext, db_session: As
 
     await state.clear()
     await message.answer(
-        "✅ **تم حفظ عنوان محفظة الاستلام بنجاح**\n\n"
-        "▫️ **الشبكة:** `BEP-20`\n"
+        "✅ **تم حفظ معلومات USDT:**\n"
         f"`{escape_markdown(normalized_addr)}`",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="👤 العودة للملف الشخصي", callback_data="menu_user_profile")]
+            [InlineKeyboardButton(text="👤 حسابي", callback_data="menu_user_profile")]
         ]),
         parse_mode="Markdown"
     )
@@ -253,14 +237,13 @@ async def cq_prof_payment(callback: CallbackQuery, state: FSMContext, db_session
     current_acc = escape_markdown(user.saved_payment_info) if user and user.saved_payment_info else "غير محدد"
 
     text = (
-        "💳 **إدارة حساب استلام الليرة السورية**\n\n"
-        f"▫️ **الحساب المحفوظ حالياً:**\n`{current_acc}`\n\n"
-        "يُستخدم هذا الحساب لتسريع تزويد المشتري ببيانات التحويل في صفقات البيع.\n\n"
-        "اختر وسيلة الدفع التي ترغب بتعيينها أو تحديثها:"
+        "💳 **حساب استلام الليرة السورية**\n"
+        f"الحساب الحالي : `{current_acc}`\n\n"
+        "اختر وسيلة الدفع:"
     )
     kb = build_payment_method_selection_kb(
         callback_prefix="prof_pm_",
-        back_text="🔙 العودة للملف الشخصي",
+        back_text="🔙 رجوع",
         back_callback="menu_user_profile",
     )
     try:

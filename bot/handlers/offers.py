@@ -56,7 +56,7 @@ def get_confirm_step_kb(confirm_cb: str, edit_cb: str, back_cb: str | None = Non
     """Standard confirmation keyboard with Confirm, Edit, Back, and Cancel."""
     rows = [
         [
-            InlineKeyboardButton(text="✅ تأكيد ومتابعة", callback_data=confirm_cb),
+            InlineKeyboardButton(text="✅ اعتماد", callback_data=confirm_cb),
             InlineKeyboardButton(text="✏️ تعديل", callback_data=edit_cb)
         ]
     ]
@@ -81,8 +81,8 @@ def get_cancel_confirm_kb() -> InlineKeyboardMarkup:
     """Confirmation keyboard before aborting wizard and discarding draft."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="نعم، إلغاء العرض", callback_data="wiz_cancel_confirm_yes"),
-            InlineKeyboardButton(text="لا، متابعة الإنشاء", callback_data="wiz_cancel_confirm_no")
+            InlineKeyboardButton(text="✅ نعم، إلغاء", callback_data="wiz_cancel_confirm_yes"),
+            InlineKeyboardButton(text="↩️ متابعة", callback_data="wiz_cancel_confirm_no")
         ]
     ])
 
@@ -91,11 +91,11 @@ def get_payment_methods_kb(selected_methods: list[str]) -> InlineKeyboardMarkup:
     """Payment methods multi-select keyboard with Back and Cancel."""
     buttons = []
     for method in AVAILABLE_PAYMENT_METHODS:
-        mark = "✅ " if method in selected_methods else "▫️ "
+        mark = "✅ " if method in selected_methods else "⬜ "
         icon = PAYMENT_METHOD_ICONS.get(method, "💳")
         buttons.append([InlineKeyboardButton(text=f"{mark}{icon} {method}", callback_data=f"pm_toggle_{method}")])
 
-    buttons.append([InlineKeyboardButton(text="✨ تأكيد ومتابعة", callback_data="pm_done")])
+    buttons.append([InlineKeyboardButton(text="✅ متابعة", callback_data="pm_done")])
     buttons.append([
         InlineKeyboardButton(text="🔙 رجوع", callback_data="wiz_back_methods"),
         InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")
@@ -106,22 +106,22 @@ def get_payment_methods_kb(selected_methods: list[str]) -> InlineKeyboardMarkup:
 def get_wizard_summary_kb() -> InlineKeyboardMarkup:
     """Summary keyboard with Publish, jump-edit buttons, Back, and Cancel."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 تأكيد ونشر العرض في السوق", callback_data="wiz_publish")],
+        [InlineKeyboardButton(text="🚀 نشر العرض", callback_data="wiz_publish")],
         [
             InlineKeyboardButton(text="✏️ السعر", callback_data="wiz_jump_rate"),
-            InlineKeyboardButton(text="✏️ الكميات", callback_data="wiz_jump_limits")
+            InlineKeyboardButton(text="✏️ الكمية", callback_data="wiz_jump_limits")
         ],
         [
-            InlineKeyboardButton(text="✏️ وسائل الدفع", callback_data="wiz_jump_methods"),
-            InlineKeyboardButton(text="✏️ بيانات الاستلام", callback_data="wiz_jump_payout")
+            InlineKeyboardButton(text="✏️ الدفع", callback_data="wiz_jump_methods"),
+            InlineKeyboardButton(text="✏️ الحساب", callback_data="wiz_jump_payout")
         ],
         [
             InlineKeyboardButton(text="✏️ التفاوض", callback_data="wiz_jump_neg"),
-            InlineKeyboardButton(text="✏️ مدة الصلاحية", callback_data="wiz_jump_dur")
+            InlineKeyboardButton(text="✏️ المدة", callback_data="wiz_jump_dur")
         ],
         [
-            InlineKeyboardButton(text="🔙 رجوع للخطوة السابقة", callback_data="wiz_back_summary"),
-            InlineKeyboardButton(text="❌ إلغاء العرض", callback_data="wiz_cancel")
+            InlineKeyboardButton(text="🔙 رجوع", callback_data="wiz_back_summary"),
+            InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")
         ]
     ])
 
@@ -652,7 +652,7 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         saved_addr = user.saved_usdt_address if (user and user.saved_usdt_address) else None
         if saved_addr:
             short_addr = f"{saved_addr[:6]}...{saved_addr[-4:]}"
-            buttons.append([InlineKeyboardButton(text=f"⚡ استخدام عنوان المحفظة المحفوظ ({short_addr})", callback_data="wiz_use_saved_bep20")])
+            buttons.append([InlineKeyboardButton(text=f"⚡ استخدام المحفوظ ({short_addr})", callback_data="wiz_use_saved_bep20")])
 
         buttons.append([
             InlineKeyboardButton(text="🔙 رجوع", callback_data="wiz_back_payout"),
@@ -660,14 +660,7 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         ])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-        text = (
-            "💼 **عنوان محفظة الاستلام**\n\n"
-            "⚠️ **تنبيه شبكة الاستلام:**\n"
-            "يجب أن يكون العنوان على الشبكة المعتمدة حصراً:\n"
-            "`BNB Smart Chain (BEP-20)`\n\n"
-            "إرسال عنوان من شبكة أخرى قد يؤدي إلى فقدان أموالك نهائياً.\n\n"
-            "أدخل عنوان محفظتك لاستلام الرصيد عند اكتمال الصفقات:"
-        )
+        text = "💵 أرسل عنوان `USDT (BEP-20)` فقط، من دون أي نص أو كلمات إضافية."
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         else:
@@ -691,7 +684,7 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         saved_info_str = _extract_saved_payment_info(user, cur_method)
 
         if saved_info_str:
-            buttons.append([InlineKeyboardButton(text=f"⚡ استخدام الحساب المحفوظ لـ {cur_method}", callback_data=f"wiz_use_saved_pm_{idx}")])
+            buttons.append([InlineKeyboardButton(text=f"⚡ الحساب المحفوظ ({cur_method})", callback_data=f"wiz_use_saved_pm_{idx}")])
 
         buttons.append([
             InlineKeyboardButton(text="🔙 رجوع", callback_data="wiz_back_payout"),
@@ -703,8 +696,8 @@ async def _show_payout_prompt(message: Message, state: FSMContext, db_session: A
         step_str = f"({idx + 1}/{len(methods)})"
 
         text = (
-            f"💳 **بيانات استلام: {icon} {cur_method}** {step_str}\n\n"
-            f"أدخل بيانات حسابك المعتمد لاستلام المبالغ بالليرة السورية عبر **{cur_method}**:"
+            f"{icon} **{cur_method}** {step_str}\n"
+            f"أرسل رقم الحساب فقط، من دون أي نص أو كلمات إضافية:"
         )
         if isinstance(message, CallbackQuery):
             await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -841,30 +834,25 @@ async def _show_payout_confirmation(message: Message, state: FSMContext):
     lines = []
     if offer_type == "buy":
         wallet = payout_details.get("usdt_bep20_address", "")
-        lines.append("▫️ **محفظة الاستلام:**")
-        lines.append("الشبكة: `BEP-20`")
+        lines.append("📝 **تأكيد معلومات USDT (BEP-20):**")
         lines.append(f"`{wallet}`")
     else:
+        lines.append("📝 **تأكيد بيانات الاستلام:**")
         methods = data.get("payment_methods", [])
         for m in methods:
             raw_acc = payout_details.get(m, "غير محدد")
             acc = extract_clean_account(str(raw_acc), m) or str(raw_acc)
             icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-            lines.append(f"▫️ **{icon} {m}:**\n`{acc}`")
+            lines.append(f"{icon} **{m} :** `{acc}`")
 
-    details_text = "\n\n".join(lines) if lines else "لا توجد بيانات مسجلة."
+    details_text = "\n".join(lines) if lines else "لا توجد بيانات مسجلة."
 
     kb = get_confirm_step_kb(
         confirm_cb="wiz_confirm_payout",
         edit_cb="wiz_edit_payout",
         back_cb="wiz_back_payout"
     )
-    text = (
-        "💼 **تأكيد بيانات الاستلام**\n\n"
-        f"{details_text}\n\n"
-        "🔒 **ملاحظة:** هذه البيانات تظهر فقط لأطراف الصفقات التنفيذية ولا تُنشر في القناة العامة.\n\n"
-        "هل ترغب باعتماد هذه البيانات والمتابعة؟"
-    )
+    text = f"{details_text}\n\n🔒 لا تظهر هذه البيانات في القناة العامة."
     if isinstance(message, CallbackQuery):
         await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     else:
@@ -1333,15 +1321,14 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
     neg_status_ar = neg_type_labels.get(new_offer.negotiable_type, "غير متاح 🔒")
 
     await callback.message.edit_text(
-        f"✅ **تم نشر العرض بنجاح — عرض #{new_offer.id}**\n\n"
-        f"▫️ **النوع:** {offer_type_ar}\n"
-        f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-        f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
-        f"▫️ **وسائل الدفع:** {methods_str}\n"
-        f"▫️ **التفاوض:** {neg_status_ar}\n"
-        f"▫️ **مدة الصلاحية:** {duration_str}\n\n"
-        f"{FEE_RULE_LINE}\n\n"
-        f"تم إدراج العرض بنجاح في سوق {BOT_NAME} وقناة {CHANNEL_NAME}.",
+        f"✅ **تم نشر العرض بنجاح — فرصة رقم : {new_offer.id}**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"⚖️ **النوع :** {offer_type_ar}\n"
+        f"💰 **الكمية :** من `{min_str}` إلى `{max_str} USDT`\n"
+        f"📊 **سعر الصرف :** `{rate_str}` ل.س\n"
+        f"🏦 **طرق الدفع :** {methods_str}\n"
+        f"🤝 **التفاوض :** {neg_status_ar}\n"
+        f"⏳ **مدة المعاملة :** {duration_str}",
         parse_mode="Markdown"
     )
     await state.clear()
@@ -1349,7 +1336,13 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
 
     # 6. Broadcast to Channel using unified renderer (no payout details in public channel!)
     if settings.CHANNEL_ID and settings.BOT_USERNAME:
-        channel_text, kb_chan = build_channel_offer_message(new_offer, duration_override=duration_str)
+        trader_res = await db_session.execute(select(User).where(User.telegram_id == user_id))
+        trader_user = trader_res.scalar_one_or_none()
+        channel_text, kb_chan = build_channel_offer_message(
+            new_offer,
+            duration_override=duration_str,
+            trader=trader_user,
+        )
         try:
             msg = await bot.send_message(
                 chat_id=settings.CHANNEL_ID,

@@ -94,7 +94,7 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
         max_limit=str(offer.max_limit)
     )
 
-    offer_type_ar = "🔴 بيع (المعلن يبيع)" if offer.offer_type == 'sell' else "🟢 شراء (المعلن يشتري)"
+    offer_type_ar = "🔴 بيع" if offer.offer_type == 'sell' else "🟢 شراء"
     taker_role_ar = "🟢 مشتري" if offer.offer_type == 'sell' else "🔴 بائع"
     rate_str = format_syp(offer.rate)
     min_str = format_usdt(offer.min_limit)
@@ -106,14 +106,14 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
     ])
 
     await callback.message.answer(
-        f"🤝 **بدء تنفيذ صفقة — عرض #{offer.id}**\n\n"
-        f"📋 **بيانات العرض:**\n"
-        f"▫️ **النوع:** {offer_type_ar}\n"
-        f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-        f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
-        f"▫️ **وسائل الدفع:** {methods_str}\n"
-        f"▫️ **دورك في الصفقة:** **{taker_role_ar}**\n\n"
-        f"⌨️ **أدخل كمية `USDT` المطلوبة للتداول:**",
+        f"📝 **طلب تنفيذ عرض**\n"
+        f"🔢 **رقم العرض :** {offer.id}\n"
+        f"⚖️ **النوع :** {offer_type_ar}\n"
+        f"👤 **دورك :** {taker_role_ar}\n"
+        f"💵 **السعر :** `{rate_str}` ل.س\n"
+        f"💰 **الكمية المتاحة :** من `{min_str}` إلى `{max_str} USDT`\n"
+        f"💳 **طريقة الدفع :** {methods_str}\n\n"
+        f"⌨️ **أرسل الكمية المطلوبة (بـ `USDT`) فقط:**",
         reply_markup=cancel_kb,
         parse_mode="Markdown"
     )
@@ -133,8 +133,7 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
             raise ValueError("Invalid amount")
     except Exception:
         await message.answer(
-            "⚠️ **قيمة غير صحيحة**\n\n"
-            "يرجى إدخال رقم صحيح وموجب يعبّر عن الكمية المطلوبة (بـ `USDT`):",
+            "⚠️ **يرجى إرسال رقم صحيح للكمية المطلوبة (بـ `USDT`):**",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -148,10 +147,8 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
 
     if amount_usdt < min_limit or amount_usdt > max_limit:
         await message.answer(
-            f"⚠️ **الكمية المدخلة خارج الحدود المسموحة**\n\n"
-            f"▫️ **الحد الأدنى:** `{min_str} USDT`\n"
-            f"▫️ **الحد الأقصى:** `{max_str} USDT`\n\n"
-            f"⌨️ يرجى إدخال كمية ضمن هذا النطاق:",
+            f"⚠️ **الكمية خارج النطاق المتاح** (`{min_str}` - `{max_str} USDT`).\n"
+            f"أرسل كمية ضمن الحدود:",
             reply_markup=cancel_kb,
             parse_mode="Markdown"
         )
@@ -178,10 +175,9 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
 
         await state.set_state(DealCreateFSM.waiting_for_payment_method)
         prompt_msg = (
-            f"💳 **اختيار وسيلة الدفع بالليرة السورية**\n\n"
-            f"▫️ **الكمية المطلوبة:** `{format_usdt(amount_usdt)} USDT`\n"
-            f"▫️ **المبلغ المقابل:** `{format_syp(amount_syp)}` ل.س\n\n"
-            f"يدعم هذا العرض عدة وسائل دفع. اختر الوسيلة المناسبة لك من الأزرار أدناه:"
+            f"🔢 **الكمية المطلوبة :** `{format_usdt(amount_usdt)} USDT`\n"
+            f"💴 **المبلغ المقابل :** `{format_syp(amount_syp)}` ل.س\n\n"
+            f"💳 **اختر طريقة الدفع:**"
         )
         await message.answer(prompt_msg, reply_markup=kb, parse_mode="Markdown")
         return

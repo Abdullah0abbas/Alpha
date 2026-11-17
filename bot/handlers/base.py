@@ -37,16 +37,16 @@ def get_main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
     """Returns the primary menu buttons in clean visual hierarchy, including admin panel for admins."""
     keyboard = [
         [
-            InlineKeyboardButton(text="➕ إنشاء عرض جديد", callback_data="menu_create_offer"),
-            InlineKeyboardButton(text="🔍 تصفح العروض المتاحة", callback_data="menu_browse_offers")
+            InlineKeyboardButton(text="➕ إنشاء عرض", callback_data="menu_create_offer"),
+            InlineKeyboardButton(text="📊 السوق", callback_data="menu_browse_offers")
         ],
         [
-            InlineKeyboardButton(text="👤 ملفي الشخصي", callback_data="menu_user_profile"),
-            InlineKeyboardButton(text="💼 صفقاتي النشطة", callback_data="main_my_deals")
+            InlineKeyboardButton(text="👤 حسابي", callback_data="menu_user_profile"),
+            InlineKeyboardButton(text="💼 صفقاتي", callback_data="main_my_deals")
         ],
         [
-            InlineKeyboardButton(text="📋 إدارة عروضي", callback_data="menu_my_offers"),
-            InlineKeyboardButton(text="💬 الدعم والمساعدة", callback_data="menu_support")
+            InlineKeyboardButton(text="📋 عروضي", callback_data="menu_my_offers"),
+            InlineKeyboardButton(text="💬 الدعم", callback_data="menu_support")
         ],
         [
             InlineKeyboardButton(text="📜 الشروط والأحكام", callback_data="menu_terms")
@@ -56,7 +56,7 @@ def get_main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
 
 def get_back_to_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")]
+        [InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")]
     ])
 
 # ================= 1. /start ENTRYPOINT =================
@@ -85,7 +85,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
             result = await db_session.execute(select(Offer).where(Offer.id == offer_id))
             offer = result.scalar_one_or_none()
             if offer and offer.status == "active":
-                offer_type_label = "🔴 بيع (المعلن يبيع)" if offer.offer_type == 'sell' else "🟢 شراء (المعلن يشتري)"
+                offer_type_label = '🔴 بيع "USDT"' if offer.offer_type == 'sell' else '🟢 شراء "USDT"'
                 rate_str = format_syp(offer.rate)
                 min_str = format_usdt(offer.min_limit)
                 max_str = format_usdt(offer.max_limit)
@@ -110,34 +110,32 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                 kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
                 await message.answer(
-                    f"🏷️ **تفاصيل العرض #{offer.id}**\n\n"
-                    f"▫️ **نوع العرض:** {offer_type_label}\n"
-                    f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
-                    f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
-                    f"▫️ **وسائل الدفع:** {methods_str}\n"
-                    f"▫️ **التفاوض:** {neg_str}\n\n"
-                    f"{format_fee_rule_line()}\n\n"
-                    f"اختر الإجراء المطلوب للمتابعة:",
+                    f"📦 **فرصة رقم : {offer.id}**\n"
+                    f"⚖️ **النوع :** {offer_type_label}\n"
+                    f"〰️〰️〰️〰️〰️〰️〰️\n"
+                    f"💰 **الكمية :** من `{min_str}` إلى `{max_str} USDT`\n"
+                    f"📊 **سعر الصرف :** `{rate_str}` ل.س\n"
+                    f"🏦 **طرق الدفع :** {methods_str}\n"
+                    f"🤝 **التفاوض :** {neg_str}\n"
+                    f"〰️〰️〰️〰️〰️〰️〰️\n"
+                    f"{format_fee_rule_line()}",
                     reply_markup=kb,
                     parse_mode="Markdown"
                 )
                 return
             else:
                 await message.answer(
-                    "⚠️ **تنبيه حول العرض**\n\n"
-                    "هذا العرض لم يعد متاحاً للتداول حالياً (قد يكون محجوزاً أو مكتملاً).\n"
-                    "يمكنك استعراض العروض النشطة عبر القائمة الرئيسية.",
+                    "⚠️ **هذا العرض لم يعد متاحاً حالياً** (محجوز أو مكتمل).",
                     reply_markup=get_back_to_menu_kb(),
                     parse_mode="Markdown"
                 )
                 return
 
-    user_label = f"@{username}" if username else f"ID: {user_id}"
     welcome_text = (
-        f"\u200f🛡️ **{BOT_NAME}**\n\n"
-        "منصة تداول مباشر لـ `USDT` مقابل الليرة السورية عبر آلية ضمان تحفظ الرصيد حتى اكتمال الصفقة.\n\n"
-        f"👤 **الحساب:** `{user_label}`\n\n"
-        "اختر من القائمة أدناه:"
+        f"\u200f🛡️ **{BOT_NAME}**\n"
+        f"ID : `{user_id}`\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        "وسيط آلي لتداول `USDT (BEP-20)` مقابل الليرة السورية بنظام الضمان."
     )
     await message.answer(welcome_text, reply_markup=get_main_menu_kb(user_id), parse_mode="Markdown")
 
@@ -146,11 +144,10 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
 async def cq_back_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
-    username = callback.from_user.username
-    user_label = f"@{username}" if username else f"ID: {user_id}"
     welcome_text = (
-        f"\u200f🛡️ **{BOT_NAME}**\n\n"
-        f"👤 **الحساب:** `{user_label}`\n\n"
+        f"\u200f🛡️ **{BOT_NAME}**\n"
+        f"ID : `{user_id}`\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
         "اختر من القائمة أدناه:"
     )
     try:
@@ -181,18 +178,18 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🟢 عرض شراء", callback_data="offer_type_buy"),
-            InlineKeyboardButton(text="🔴 عرض بيع", callback_data="offer_type_sell")
+            InlineKeyboardButton(text="🟢 شراء USDT", callback_data="offer_type_buy"),
+            InlineKeyboardButton(text="🔴 بيع USDT", callback_data="offer_type_sell")
         ],
         [
-            InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")
+            InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
         ]
     ])
     text = (
-        "➕ **إنشاء عرض تداول جديد**\n\n"
-        "حدد نوع العرض الذي ترغب بطرحه في السوق:\n\n"
-        "▫️ 🟢 **شراء USDT:** تدفع ليرة سورية وتستلم `USDT`.\n"
-        "▫️ 🔴 **بيع USDT:** تقدم `USDT` وتستلم ليرة سورية."
+        "➕ **إنشاء عرض جديد**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        "🟢 **شراء USDT :** تدفع ليرة سورية وتستلم `USDT`\n"
+        "🔴 **بيع USDT :** تودع `USDT` وتستلم ليرة سورية"
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -208,22 +205,20 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
 async def cq_menu_browse_offers(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🟢 أريد الشراء", callback_data="browse_type_sell_0"),
-            InlineKeyboardButton(text="🔴 أريد البيع", callback_data="browse_type_buy_0")
+            InlineKeyboardButton(text="🟢 شراء USDT", callback_data="browse_type_sell_0"),
+            InlineKeyboardButton(text="🔴 بيع USDT", callback_data="browse_type_buy_0")
         ],
         [
-            InlineKeyboardButton(text="🌐 كافة العروض", callback_data="browse_type_all_0")
+            InlineKeyboardButton(text="🌐 كل العروض", callback_data="browse_type_all_0")
         ],
         [
-            InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")
+            InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
         ]
     ])
     text = (
-        "🔍 **تصفح العروض المتاحة**\n\n"
-        "حدد فئة العروض التي تبحث عنها:\n\n"
-        "▫️ 🟢 **أريد الشراء:** استعراض البائعين المعلنين لشراء `USDT` منهم.\n"
-        "▫️ 🔴 **أريد البيع:** استعراض المشترين المعلنين لبيع `USDT` لهم.\n"
-        "▫️ 🌐 **كافة العروض:** استعراض جميع العروض النشطة في السوق."
+        "📊 **سوق العروض**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        "اختر نوع العملية المطلوبة:"
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")

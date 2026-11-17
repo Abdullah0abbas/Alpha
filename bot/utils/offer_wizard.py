@@ -161,12 +161,12 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
             if acc.startswith(f"{m}: "):
                 acc = acc[len(m) + 2:].strip()
             icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-            payout_lines.append(f"▫️ {icon} **{m}:**\n`{acc}`")
+            payout_lines.append(f"{icon} **{m}:** `{acc}`")
     else:
         wallet = payout_details.get("usdt_bep20_address", "غير محدد")
         payout_lines.append(f"📥 **محفظة الاستلام (BEP-20):**\n`{wallet}`")
 
-    payout_section = "\n".join(payout_lines) if payout_lines else "▫️ غير مسجلة"
+    payout_section = "\n".join(payout_lines) if payout_lines else "غير مسجلة"
 
     is_neg = wizard_data.get("negotiable", False)
     neg_type = wizard_data.get("negotiable_type", "none")
@@ -189,20 +189,18 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
 
     lines = [
         "📋 **المراجعة النهائية وتأكيد نشر العرض**",
-        "",
-        f"▫️ **النوع:** {type_ar}",
-        f"▫️ **سعر الصرف:** `{rate_str}` ل.س",
-        f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`",
-        f"▫️ **وسائل الدفع:** {methods_str}",
-        f"▫️ **التفاوض:** {neg_str}",
-        f"▫️ **مدة الصلاحية:** {dur_str}",
-        "",
-        "🔒 **بيانات الاستلام الخاصة (لا تُنشر في القناة):**",
+        "〰️〰️〰️〰️〰️〰️〰️",
+        f"⚖️ **النوع:** {type_ar}",
+        f"📊 **سعر الصرف:** `{rate_str}` ل.س",
+        f"💰 **الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`",
+        f"🏦 **طرق الدفع:** {methods_str}",
+        f"🤝 **التفاوض:** {neg_str}",
+        f"⏳ **مدة العرض:** {dur_str}",
+        "〰️〰️〰️〰️〰️〰️〰️",
+        "🔒 **بيانات الاستلام الخاصة (لا تظهر بالقناة):**",
         f"{payout_section}",
         "",
         f"{format_fee_rule_line()}",
-        "",
-        "اضغط «تأكيد ونشر العرض» لطرحه في السوق، أو اختر أي بند لتعديله.",
     ]
 
     return "\n".join(lines)
