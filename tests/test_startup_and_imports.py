@@ -465,7 +465,7 @@ class TestStartupAndImports(unittest.TestCase):
         Ensures no function in bot/ calls another module function (local or imported from bot.*)
         while omitting required positional/keyword arguments.
         """
-        module_defs: dict[str, dict[str, tuple[int, int, set[str], bool]]] = {}
+        module_defs: dict[str, dict[str, tuple[list[str], int, set[str], bool]]] = {}
         module_imports: dict[str, dict[str, tuple[str, str]]] = {}
         module_trees: dict[str, ast.Module] = {}
 
@@ -475,20 +475,21 @@ class TestStartupAndImports(unittest.TestCase):
             tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(rel))
             module_trees[mod_name] = tree
 
-            defs: dict[str, tuple[int, int, set[str], bool]] = {}
+            defs: dict[str, tuple[list[str], int, set[str], bool]] = {}
             imports: dict[str, tuple[str, str]] = {}
             for node in tree.body:
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     pos_args = [a.arg for a in node.args.posonlyargs + node.args.args]
                     num_defaults = len(node.args.defaults)
-                    req_pos = len(pos_args) - num_defaults
+                    req_pos_count = len(pos_args) - num_defaults
+                    req_pos_names = pos_args[:req_pos_count]
                     req_kw = {
                         a.arg
                         for a, d in zip(node.args.kwonlyargs, node.args.kw_defaults)
                         if d is None
                     }
                     has_var = bool(node.args.vararg or node.args.kwarg)
-                    defs[node.name] = (req_pos, len(pos_args), req_kw, has_var)
+                    defs[node.name] = (req_pos_names, len(pos_args), req_kw, has_var)
                 elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("bot."):
                     for alias in node.names:
                         imports[alias.asname or alias.name] = (node.module, alias.name)
@@ -509,16 +510,20 @@ class TestStartupAndImports(unittest.TestCase):
                         sig = module_defs.get(target_mod, {}).get(orig_name)
                     if sig is None:
                         continue
-                    req_pos, _max_pos, req_kw, has_var = sig
+                    req_pos_names, _max_pos, req_kw, has_var = sig
                     if has_var or any(isinstance(a, ast.Starred) for a in node.args) or any(
                         kw.arg is None for kw in node.keywords
                     ):
                         continue
-                    # Only inspect direct positional calls when no keyword arguments cover trailing args
-                    kw_names = {kw.arg for kw in node.keywords}
-                    if not kw_names and len(node.args) < req_pos:
+                    kw_names = {kw.arg for kw in node.keywords if kw.arg is not None}
+                    unfilled_pos = [
+                        arg_name
+                        for idx, arg_name in enumerate(req_pos_names)
+                        if idx >= len(node.args) and arg_name not in kw_names
+                    ]
+                    if unfilled_pos:
                         mismatches.append(
-                            f"{mod_name}:{node.lineno} calls {fname}() with {len(node.args)} arg(s), requires {req_pos}"
+                            f"{mod_name}:{node.lineno} calls {fname}() missing required arg(s): {unfilled_pos}"
                         )
                     missing_kw = req_kw - kw_names
                     if missing_kw:

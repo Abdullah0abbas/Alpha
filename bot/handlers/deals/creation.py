@@ -423,20 +423,24 @@ async def _finalize_deal_creation(
     await state.clear()
 
     # Audit log for deal creation
-    await record_audit(
-        action="CREATE_DEAL",
-        target_type="deal",
-        target_id=new_deal.id,
-        actor_id=taker_user_id,
-        actor_type="USER",
-        details={
-            "offer_id": offer_id,
-            "seller_id": seller_id,
-            "buyer_id": buyer_id,
-            "amount_usdt": str(amount_usdt),
-            "amount_syp": str(amount_syp)
-        }
-    )
+    try:
+        await record_audit(
+            session=db_session,
+            action="CREATE_DEAL",
+            target_type="deal",
+            target_id=new_deal.id,
+            actor_id=taker_user_id,
+            actor_type="USER",
+            details={
+                "offer_id": offer_id,
+                "seller_id": seller_id,
+                "buyer_id": buyer_id,
+                "amount_usdt": str(amount_usdt),
+                "amount_syp": str(amount_syp)
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Failed to record audit for deal #{new_deal.id}: {e}")
 
     # Update channel offer message immediately to reflect reserved status
     try:
