@@ -26,6 +26,16 @@ def check_and_record_rate_limit(user_id: int, action_type: str) -> Tuple[bool, i
         return True, 0
 
     now = time.time()
+
+    # Periodic memory pruning if dictionary exceeds 500 keys
+    if len(_rate_limit_records) > 500:
+        stale_keys = [
+            k for k, ts_list in _rate_limit_records.items()
+            if not ts_list or (now - max(ts_list)) >= 600
+        ]
+        for k in stale_keys:
+            _rate_limit_records.pop(k, None)
+
     key = (user_id, action_type)
     timestamps = _rate_limit_records.get(key, [])
 
