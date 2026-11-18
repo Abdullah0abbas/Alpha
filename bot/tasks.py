@@ -13,6 +13,7 @@ from bot.utils.formatters import format_usdt, format_syp, escape_markdown
 from config.settings import settings
 
 from bot.services.backup_service import perform_and_send_backup
+from bot.services.admin_notifier import dispatch_admin_notification
 
 logger = logging.getLogger(__name__)
 
@@ -209,11 +210,20 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                         f"▫️ **المقابل:** `{format_syp(amount_syp_val)}` ل.س\n\n"
                         f"تم إلغاء الصفقة لعدم إيداع الضمان خلال 15 دقيقة، وإعادة العرض متاحاً في القناة."
                     )
-                    for admin_id in settings.ADMIN_IDS:
-                        try:
-                            await bot.send_message(admin_id, admin_alert_text, parse_mode="Markdown")
-                        except Exception as e:
-                            logger.warning(f"Failed to notify admin {admin_id} of deposit timeout on deal #{deal_id_val}: {e}")
+                    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text=f"🔍 فحص الصفقة #{deal_id_val}", callback_data=f"adm_inspect_deal_{deal_id_val}")],
+                        [
+                            InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{seller_id_val}"),
+                            InlineKeyboardButton(text="🟢 ملف المشتري", callback_data=f"adm_view_user_{buyer_id_val}")
+                        ]
+                    ])
+                    await dispatch_admin_notification(
+                        bot=bot,
+                        category="disputes",
+                        text=admin_alert_text,
+                        reply_markup=admin_kb,
+                        parse_mode="Markdown"
+                    )
         except Exception as item_err:
             logger.error(f"Error expiring deal #{deal_id}: {item_err}", exc_info=True)
 
@@ -431,18 +441,20 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     f"أرسل المشتري إشعار الدفع منذ أكثر من 30 دقيقة ولم يقم البائع بتأكيد الاستلام حتى الآن."
                 )
                 admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal_id_val}")]
+                    [InlineKeyboardButton(text="⚡ تأكيد استلام الليرة إدارياً", callback_data=f"adm_ask_force_conf_{deal_id_val}")],
+                    [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal_id_val}")],
+                    [
+                        InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{seller_id_val}"),
+                        InlineKeyboardButton(text="🟢 ملف المشتري", callback_data=f"adm_view_user_{buyer_id_val}")
+                    ]
                 ])
-                for admin_id in settings.ADMIN_IDS:
-                    try:
-                        await bot.send_message(
-                            chat_id=admin_id,
-                            text=admin_alert_text,
-                            reply_markup=admin_kb,
-                            parse_mode="Markdown"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to notify admin {admin_id} of 30-min SYP confirmation delay on deal #{deal_id_val}: {e}")
+                await dispatch_admin_notification(
+                    bot=bot,
+                    category="disputes",
+                    text=admin_alert_text,
+                    reply_markup=admin_kb,
+                    parse_mode="Markdown"
+                )
         except Exception as item_err:
             logger.error(f"Error sending SYP confirmation reminder for deal #{deal_id}: {item_err}", exc_info=True)
 

@@ -410,6 +410,14 @@ Accessible exclusively to `ADMIN_IDS` with a streamlined 8-command Bot Menu (`/s
    - Combines net platform fee profit (`SUM(fee_usdt)`), executed trade volume (`USDT` & `ل.س`), active sell/buy orderbook liquidity, and monthly/cumulative deal metrics in a single dashboard.
 6. **Audit Trail, Broadcast & Instant Backup (`/audit`, `/broadcast`, `/backup`):**
    - Filterable audit log viewer (`adm_open_audit`) with rotating log download (`escrow_system.log`), rate-limited broadcast (`25 msg/sec`), and one-tap gzip database backup (`adm_trigger_backup`).
+7. **6 Separated Private Admin Channels (`bot/services/admin_notifier.py`, `config/settings.py`):**
+   - `ADMIN_DEPOSITS_CHANNEL_ID`: Instant detailed alert upon verified USDT escrow deposit (`notify_usdt_deposit_confirmed`).
+   - `ADMIN_PAYOUTS_CHANNEL_ID`: Dedicated final-stage escrow release queue (`ADMIN_APPROVAL`) with in-channel `☑️ اعتماد وإطلاق الضمان` action button.
+   - `ADMIN_API_FAILURES_CHANNEL_ID`: Dedicated channel for RPC/API verification failures (`notify_api_verification_failure`) with one-tap manual USDT deposit confirmation (`adm_ask_manual_dep_` -> `adm_do_manual_dep_`).
+   - `ADMIN_DISPUTES_CHANNEL_ID`: Dedicated channel for non-receipt reports (`DISPUTED`), 30-minute seller SYP confirmation delays, and 15-minute deposit timeouts.
+   - `ADMIN_ERRORS_CHANNEL_ID`: Dedicated channel for critical runtime exception alerts (`error_alert.py`).
+   - `ADMIN_BACKUPS_CHANNEL_ID`: Dedicated archive channel for daily automated `.json.gz` database backups (`backup_service.py`).
+   - Each channel automatically falls back to `ADMIN_IDS` if its environment variable is left empty or unreachable.
 
 ---
 

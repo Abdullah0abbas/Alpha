@@ -314,18 +314,39 @@ async def perform_and_send_backup(bot: Bot, recipient_id: int | None = None, is_
         f"تم حفظ النسخة محلياً في مسار `/backups/`."
     )
 
-    targets = [recipient_id] if recipient_id else settings.ADMIN_IDS
+    from bot.services.admin_notifier import dispatch_admin_notification
 
-    for admin_id in targets:
-        if not admin_id:
-            continue
+    if recipient_id:
+        # Manual backup triggered by an admin: send to that admin AND archive in ADMIN_BACKUPS_CHANNEL_ID if configured
         try:
             doc = FSInputFile(path=filepath, filename=filename)
             await bot.send_document(
-                chat_id=admin_id,
+                chat_id=recipient_id,
                 document=doc,
                 caption=caption,
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logger.error(f"Failed to dispatch backup document to admin {admin_id}: {e}")
+            logger.error(f"Failed to dispatch backup document to admin {recipient_id}: {e}")
+
+        if settings.ADMIN_BACKUPS_CHANNEL_ID and str(recipient_id) != str(settings.ADMIN_BACKUPS_CHANNEL_ID):
+            await dispatch_admin_notification(
+                bot=bot,
+                category="backups",
+                text=caption,
+                parse_mode="Markdown",
+                document_path=filepath,
+                document_filename=filename,
+                exclude_admin_id=recipient_id
+            )
+    else:
+        # Scheduled daily backup: dispatch to ADMIN_BACKUPS_CHANNEL_ID (or fallback to ADMIN_IDS)
+        await dispatch_admin_notification(
+            bot=bot,
+            category="backups",
+            text=caption,
+            parse_mode="Markdown",
+            document_path=filepath,
+            document_filename=filename
+        )
+

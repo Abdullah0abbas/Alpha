@@ -257,6 +257,10 @@ async def build_admin_deal_keyboard(deal: Deal, db_session: AsyncSession) -> Inl
 
     if deal.status == "ADMIN_APPROVAL":
         buttons.append([InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
+    elif deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT"):
+        buttons.append([
+            InlineKeyboardButton(text="✅ تأكيد إيداع الـ USDT يدوياً (طوارئ API)", callback_data=f"adm_ask_manual_dep_{deal.id}")
+        ])
     elif deal.status == "SYP_PAYMENT_SENT":
         buttons.append([
             InlineKeyboardButton(text="⚡ تأكيد استلام الليرة إدارياً", callback_data=f"adm_ask_force_conf_{deal.id}")

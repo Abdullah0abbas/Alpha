@@ -5,6 +5,7 @@ try:
 except ImportError:
     pass
 
+
 class Settings:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost:5432/db_name")
@@ -12,7 +13,15 @@ class Settings:
     BOT_USERNAME: str = os.getenv("BOT_USERNAME", "")
     CHANNEL_USERNAME: str = os.getenv("CHANNEL_USERNAME", "")
     SUPPORT_USERNAME: str = os.getenv("SUPPORT_USERNAME", "")
-    
+
+    # 6 Specialized Private Admin Channels / Supergroups (Optional; falls back to ADMIN_IDS if empty)
+    ADMIN_DEPOSITS_CHANNEL_ID: str = os.getenv("ADMIN_DEPOSITS_CHANNEL_ID", "").strip()
+    ADMIN_PAYOUTS_CHANNEL_ID: str = os.getenv("ADMIN_PAYOUTS_CHANNEL_ID", "").strip()
+    ADMIN_API_FAILURES_CHANNEL_ID: str = os.getenv("ADMIN_API_FAILURES_CHANNEL_ID", "").strip()
+    ADMIN_DISPUTES_CHANNEL_ID: str = os.getenv("ADMIN_DISPUTES_CHANNEL_ID", "").strip()
+    ADMIN_ERRORS_CHANNEL_ID: str = os.getenv("ADMIN_ERRORS_CHANNEL_ID", "").strip()
+    ADMIN_BACKUPS_CHANNEL_ID: str = os.getenv("ADMIN_BACKUPS_CHANNEL_ID", "").strip()
+
     @property
     def ADMIN_IDS(self) -> list[int]:
         admins_str = os.getenv("ADMIN_IDS", "")
@@ -32,5 +41,6 @@ class Settings:
             return int(val)
         except ValueError:
             return 3
+
 
 settings = Settings()

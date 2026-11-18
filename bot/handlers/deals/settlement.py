@@ -12,6 +12,7 @@ from db.models import Deal, Offer, User, PaymentProof, Dispute, DealRating
 from bot.states.flow_states import DealPaymentFSM
 from bot.services.audit_service import add_audit
 from bot.services.channel import update_channel_offer_message
+from bot.services.admin_notifier import dispatch_admin_notification, notify_usdt_deposit_confirmed
 from bot.services.rating_service import (
     build_deal_rating_prompt,
     recalculate_user_reputation,
@@ -134,9 +135,28 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
         await db_session.commit()
         await callback.answer("تم تأكيد إيداع الضمان واعتماد بيانات الحساب تلقائياً ✅")
         await push_deal_card(deal.id, callback.bot)
+        try:
+            await notify_usdt_deposit_confirmed(
+                bot=callback.bot,
+                deal=deal,
+                db_session=db_session,
+                verification_method="تأكيد إيداع رصيد الضمان"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send deposit channel notification for deal #{deal.id}: {e}")
         return
 
     await db_session.commit()
+
+    try:
+        await notify_usdt_deposit_confirmed(
+            bot=callback.bot,
+            deal=deal,
+            db_session=db_session,
+            verification_method="تأكيد إيداع رصيد الضمان"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send deposit channel notification for deal #{deal.id}: {e}")
 
     # Notify Buyer only when seller still needs to enter payment details
     try:
@@ -600,19 +620,16 @@ async def _dispatch_admin_approval(
         except Exception as e:
             logger.warning(f"Failed to prompt buyer for payout wallet: {e}")
 
-    # 4. Broadcast to admins
-    for admin_id in settings.ADMIN_IDS:
-        if origin_callback and origin_callback.from_user.id == admin_id:
-            continue
-        try:
-            await bot.send_message(
-                chat_id=admin_id,
-                text=admin_alert_text,
-                reply_markup=admin_kb,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to send admin notification to admin {admin_id} for deal #{deal.id}: {e}")
+    # 4. Broadcast to Admin Payouts Channel (ADMIN_PAYOUTS_CHANNEL_ID) or fallback to ADMIN_IDS
+    exclude_aid = origin_callback.from_user.id if (origin_callback and origin_callback.from_user.id in settings.ADMIN_IDS) else None
+    await dispatch_admin_notification(
+        bot=bot,
+        category="payouts",
+        text=admin_alert_text,
+        reply_markup=admin_kb,
+        parse_mode="Markdown",
+        exclude_admin_id=exclude_aid
+    )
 
 
 @settlement_router.callback_query(F.data.startswith("man_conf_"))
@@ -749,13 +766,19 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
         f"أبلغ البائع عن عدم استلام المبلغ بالليرة السورية. تم إغلاق الصفقة آلياً على البوت لتتم متابعتها وتسويتها يدوياً بين الطرفين والإدارة."
     )
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")]
+        [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")],
+        [
+            InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{deal.seller_id}"),
+            InlineKeyboardButton(text="🟢 ملف المشتري", callback_data=f"adm_view_user_{deal.buyer_id}")
+        ]
     ])
-    for admin_id in settings.ADMIN_IDS:
-        try:
-            await callback.bot.send_message(chat_id=admin_id, text=admin_notice, reply_markup=admin_kb, parse_mode="Markdown")
-        except Exception as e:
-            logger.warning(f"Failed to notify admin {admin_id} for dispute on deal #{deal.id}: {e}")
+    await dispatch_admin_notification(
+        bot=callback.bot,
+        category="disputes",
+        text=admin_notice,
+        reply_markup=admin_kb,
+        parse_mode="Markdown"
+    )
 
     try:
         await push_deal_card(deal.id, callback.bot, notify_handoff=False)

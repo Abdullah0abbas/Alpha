@@ -187,15 +187,12 @@ async def handle_critical_error(event: ErrorEvent, bot: Bot):
         "📁 تم تسجيل التفاصيل الكاملة و trace في ملف السجلات escrow_system.log."
     )
 
-    # Step 7: Dispatch alert to all Admins
-    for admin_id in settings.ADMIN_IDS:
-        if not admin_id:
-            continue
-        try:
-            await bot.send_message(
-                chat_id=admin_id,
-                text=alert_text,
-                parse_mode=None
-            )
-        except Exception as e:
-            logger.error(f"Failed to deliver critical error alert to admin {admin_id}: {e}")
+    # Step 7: Dispatch alert to Admin Errors Channel (ADMIN_ERRORS_CHANNEL_ID) or fallback to ADMIN_IDS
+    from bot.services.admin_notifier import dispatch_admin_notification
+    await dispatch_admin_notification(
+        bot=bot,
+        category="errors",
+        text=alert_text,
+        parse_mode=None
+    )
+

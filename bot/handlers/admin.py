@@ -20,8 +20,10 @@ from bot.services.backup_service import perform_and_send_backup
 from bot.services.rating_service import recalculate_user_reputation, format_stars
 from bot.services.audit_service import record_audit, add_audit, LOG_FILE
 from bot.services.channel import update_channel_offer_message
+from bot.services.admin_notifier import dispatch_admin_notification, notify_usdt_deposit_confirmed
 from config.settings import settings
 from bot.utils.branding import BOT_NAME
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -1263,7 +1265,104 @@ async def cq_admin_view_proof(callback: CallbackQuery, db_session: AsyncSession)
         await callback.answer(f"تعذر عرض الصورة: {e}", show_alert=True)
 
 
-# --- Admin Deal Operational Interventions (Force Confirm SYP / Force Dispute / Force Cancel) ---
+# --- Admin Deal Operational Interventions (Manual Deposit / Force Confirm SYP / Force Dispute / Force Cancel) ---
+
+@admin_router.callback_query(F.data.startswith("adm_ask_manual_dep_"))
+async def cq_admin_ask_manual_deposit(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    deal_id = int(callback.data.split("_")[-1])
+    res = await db_session.execute(select(Deal).where(Deal.id == deal_id))
+    deal = res.scalar_one_or_none()
+    if not deal:
+        await callback.answer("الصفقة غير موجودة.", show_alert=True)
+        return
+
+    seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
+    expected_dep = format_usdt(deal.amount_usdt + seller_fee)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ نعم، تأكيد الإيداع يدوياً", callback_data=f"adm_do_manual_dep_{deal_id}"),
+            InlineKeyboardButton(text="↩️ تراجع", callback_data=f"adm_inspect_deal_{deal_id}")
+        ]
+    ])
+    text = (
+        f"✅ **تأكيد إيداع الـ USDT يدوياً (طوارئ API) — صفقة #{deal_id}**\n\n"
+        f"▫️ **المبلغ المطلوب التحقق منه:** `{expected_dep} USDT`\n"
+        f"▫️ **عنوان محفظة الضمان (`#{deal.deposit_index}`):**\n`{escape_markdown(deal.deposit_address)}`\n\n"
+        "هل تحققت من وصول رصيد الضمان إلى المحفظة أعلاه وترغب بنقل الصفقة لمرحلة تحويل الليرة السورية؟"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("adm_do_manual_dep_"))
+async def cq_admin_do_manual_deposit(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    deal_id = int(callback.data.split("_")[-1])
+    res = await db_session.execute(select(Deal).where(Deal.id == deal_id).with_for_update())
+    deal = res.scalar_one_or_none()
+    if not deal:
+        await callback.answer("الصفقة غير موجودة.", show_alert=True)
+        return
+
+    if deal.status not in ("CREATED", "AWAITING_USDT_DEPOSIT"):
+        await callback.answer(f"لا يمكن تنفيذ هذا الإجراء، حالة الصفقة الحالية: {deal.status}", show_alert=True)
+        return
+
+    seller_info_val = ""
+    if isinstance(deal.seller_payment_info, dict):
+        seller_info_val = str(deal.seller_payment_info.get("info") or "").strip()
+    elif isinstance(deal.seller_payment_info, str):
+        seller_info_val = deal.seller_payment_info.strip()
+
+    if seller_info_val and seller_info_val not in ("PENDING", "غير محدد", "N/A"):
+        deal.status = "AWAITING_SYP_PAYMENT"
+        deal.expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+    else:
+        deal.status = "USDT_DEPOSITED"
+        deal.expires_at = None
+
+    add_audit(
+        session=db_session,
+        action="ADMIN_MANUAL_CONFIRM_DEPOSIT",
+        target_type="deal",
+        target_id=deal.id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"new_status": deal.status, "deposit_address": deal.deposit_address}
+    )
+    await db_session.commit()
+
+    await push_deal_card(deal.id, callback.bot)
+
+    try:
+        await notify_usdt_deposit_confirmed(
+            bot=callback.bot,
+            deal=deal,
+            db_session=db_session,
+            verification_method=f"تأكيد يدوي من الأدمن ({callback.from_user.id})"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send deposit channel notification on manual confirm for deal #{deal.id}: {e}")
+
+    await callback.answer("✅ تم تأكيد إيداع الـ USDT يدوياً وتحديث حالة الصفقة.", show_alert=True)
+    admin_text = await format_admin_deal_review_text(deal, db_session)
+    kb = await build_admin_deal_keyboard(deal, db_session)
+    try:
+        await callback.message.edit_text(admin_text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(admin_text, reply_markup=kb, parse_mode="Markdown")
+
 
 @admin_router.callback_query(F.data.startswith("adm_ask_force_conf_"))
 async def cq_admin_ask_force_confirm_syp(callback: CallbackQuery, db_session: AsyncSession):
@@ -1342,6 +1441,21 @@ async def cq_admin_do_force_confirm_syp(callback: CallbackQuery, db_session: Asy
         await callback.message.edit_text(admin_text, reply_markup=kb, parse_mode="Markdown")
     except Exception:
         await callback.message.answer(admin_text, reply_markup=kb, parse_mode="Markdown")
+
+    # Also notify the dedicated Payouts Channel (ADMIN_PAYOUTS_CHANNEL_ID) if configured
+    if settings.ADMIN_PAYOUTS_CHANNEL_ID:
+        payout_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")],
+            [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")]
+        ])
+        await dispatch_admin_notification(
+            bot=callback.bot,
+            category="payouts",
+            text=admin_text,
+            reply_markup=payout_kb,
+            parse_mode="Markdown",
+            exclude_admin_id=callback.from_user.id
+        )
 
 
 @admin_router.callback_query(F.data.startswith("adm_ask_force_dispute_"))
@@ -1803,6 +1917,7 @@ ACTION_TITLES = {
     "CREATE_DEAL": "🤝 إنشاء صفقة جديدة",
     "RELEASE_ESCROW": "☑️ إطلاق ضمان مالي",
     "CANCEL_DEAL": "❌ إلغاء صفقة",
+    "ADMIN_MANUAL_CONFIRM_DEPOSIT": "✅ تأكيد إيداع ضمان يدوياً",
     "ADMIN_FORCE_CONFIRM_SYP": "⚡ تأكيد استلام ليرة إدارياً",
     "ADMIN_CLOSE_DISPUTED": "⚠️ إغلاق صفقة بعدم استلام",
     "ADMIN_DELETE_OFFER": "🗑️ حذف عرض إدارياً",

@@ -207,21 +207,26 @@ async def apply_buyer_payout_wallet(
         else:
             await event.answer(buyer_text, parse_mode="Markdown")
 
-        # Notify Admins that payout address has been registered
+        # Notify Admin Payouts Channel that payout address has been registered and deal is ready for release
+        from bot.services.admin_notifier import dispatch_admin_notification
         admin_notice = (
-            f"ℹ️ **تحديث صفقة #{deal.id}**\n"
+            f"ℹ️ **تحديث صفقة #{deal.id} — تم تسجيل محفظة المشتري**\n\n"
             f"💵 **عنوان USDT (BEP-20) للمشتري:**\n"
-            f"`{escaped_wallet}`"
+            f"`{escaped_wallet}`\n\n"
+            f"أصبحت الصفقة جاهزة الآن للاعتماد وإطلاق الضمان."
         )
-        for admin_id in settings.ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_notice,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to notify admin {admin_id} for deal #{deal.id}: {e}")
+        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")],
+            [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")]
+        ])
+        await dispatch_admin_notification(
+            bot=bot,
+            category="payouts",
+            text=admin_notice,
+            reply_markup=admin_kb,
+            parse_mode="Markdown"
+        )
+
 
 
 # ================= SELLER PAYMENT ACCOUNT HANDLERS =================
