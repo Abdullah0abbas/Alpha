@@ -221,9 +221,10 @@ async def get_stats_text(db_session: AsyncSession) -> str:
         ).where(Offer.status.in_(["active", "negotiating"]))
         .group_by(Offer.offer_type)
     )
-    active_summary = {t: (cnt, sum_max, avg_rate) for t, cnt, avg_rate in [
-        (t, cnt, sum_max, avg_rate) for t, cnt, sum_max, avg_rate in active_offers_res.all()
-    ]}
+    active_summary = {
+        t: (cnt, sum_max, avg_rate)
+        for t, cnt, sum_max, avg_rate in active_offers_res.all()
+    }
 
     sell_cnt, sell_usdt_pool, sell_avg_rate = active_summary.get("sell", (0, Decimal("0"), Decimal("0")))
     buy_cnt, buy_usdt_pool, buy_avg_rate = active_summary.get("buy", (0, Decimal("0"), Decimal("0")))
@@ -1241,7 +1242,8 @@ async def cq_admin_view_proof(callback: CallbackQuery, db_session: AsyncSession)
 
     ref = proof.transaction_reference
     file_id = ref.removeprefix("PHOTO_") if ref.startswith("PHOTO_") else ref
-    dt_str = format_local_datetime(proof.created_at) if proof.created_at else "—"
+    proof_dt = getattr(proof, "submitted_at", None)
+    dt_str = format_local_datetime(proof_dt) if proof_dt else "—"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🔍 العودة لتفاصيل الصفقة #{deal_id}", callback_data=f"adm_inspect_deal_{deal_id}")]
