@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func
 
-from db.models import User, Deal, Offer
+from db.models import User, Deal, Offer, DealRating
 from bot.states.flow_states import ProfileFSM
 from bot.utils.formatters import escape_markdown, safe_username, format_usdt
 from bot.utils.validators import validate_bep20_address, validate_payment_method_info
@@ -155,12 +155,25 @@ async def cq_prof_reputation(callback: CallbackQuery, db_session: AsyncSession):
     rep = user.reputation_score if user and user.reputation_score is not None else 100
     deals = user.completed_deals_count if user else 0
 
+    rating_agg = await db_session.execute(
+        select(func.count(DealRating.id), func.avg(DealRating.stars)).where(
+            DealRating.target_id == user_id
+        )
+    )
+    rating_count, avg_stars = rating_agg.one()
+    rating_count = int(rating_count or 0)
+    stars_line = (
+        f"🌟 **التقييمات المستلمة:** `{rating_count}` تقييم (متوسط `{float(avg_stars):.1f}/5` ⭐)\n"
+        if rating_count > 0
+        else "🌟 **التقييمات المستلمة:** `0` تقييم\n"
+    )
+
     text = (
         "⭐ **التقييم والسمعة**\n"
         "〰️〰️〰️〰️〰️〰️〰️\n"
         f"🧐 **السمعة :** ⭐️ `{rep}%`\n"
-        f"📈 **الصفقات المكتملة :** `{deals}` صفقة\n"
-        f"⚖️ **النزاعات المفتوحة :** `0`"
+        f"{stars_line}"
+        f"📈 **الصفقات المكتملة :** `{deals}` صفقة"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 رجوع", callback_data="menu_user_profile")]

@@ -8,10 +8,16 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from db.models import Deal, Offer, User, PaymentProof, Dispute
+from db.models import Deal, Offer, User, PaymentProof, Dispute, DealRating
 from bot.states.flow_states import DealPaymentFSM
 from bot.services.audit_service import add_audit
 from bot.services.channel import update_channel_offer_message
+from bot.services.rating_service import (
+    build_deal_rating_prompt,
+    recalculate_user_reputation,
+    format_stars,
+    STAR_LABELS,
+)
 from config.settings import settings
 from bot.utils.deal_views import format_admin_deal_review_text
 from bot.utils.deal_card import push_deal_card, render_deal_card
@@ -1020,3 +1026,126 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
         )
     except Exception as e:
         logger.warning(f"Failed to notify seller {deal.seller_id}: {e}")
+
+    # Send one-tap rating prompts to both Buyer and Seller
+    try:
+        buyer_rate_text, buyer_rate_kb = build_deal_rating_prompt(deal.id, "البائع")
+        await callback.bot.send_message(
+            chat_id=deal.buyer_id,
+            text=buyer_rate_text,
+            reply_markup=buyer_rate_kb,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send rating prompt to buyer {deal.buyer_id} for deal #{deal.id}: {e}")
+
+    try:
+        seller_rate_text, seller_rate_kb = build_deal_rating_prompt(deal.id, "المشتري")
+        await callback.bot.send_message(
+            chat_id=deal.seller_id,
+            text=seller_rate_text,
+            reply_markup=seller_rate_kb,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send rating prompt to seller {deal.seller_id} for deal #{deal.id}: {e}")
+
+
+# ================= POST-DEAL STAR RATING =================
+
+@settlement_router.callback_query(F.data.startswith("rate_deal_"))
+async def handle_deal_rating(callback: CallbackQuery, db_session: AsyncSession):
+    parts = callback.data.split("_")
+    if len(parts) != 4 or not parts[2].isdigit() or not parts[3].isdigit():
+        await callback.answer("بيانات التقييم غير صالحة.", show_alert=True)
+        return
+
+    deal_id = int(parts[2])
+    stars = int(parts[3])
+    if stars < 1 or stars > 5:
+        await callback.answer("يجب أن يكون التقييم بين 1 و 5 نجوم.", show_alert=True)
+        return
+
+    rater_id = callback.from_user.id
+    deal_res = await db_session.execute(
+        select(Deal).where(Deal.id == deal_id)
+    )
+    deal = deal_res.scalar_one_or_none()
+    if not deal:
+        await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
+        return
+
+    if deal.status != "COMPLETED":
+        await callback.answer("يمكن التقييم فقط بعد إتمام الصفقة بنجاح.", show_alert=True)
+        return
+
+    if rater_id not in (deal.buyer_id, deal.seller_id):
+        await callback.answer("غير مصرح: هذا التقييم مخصص لأطراف الصفقة فقط.", show_alert=True)
+        return
+
+    target_id = deal.seller_id if rater_id == deal.buyer_id else deal.buyer_id
+
+    existing_res = await db_session.execute(
+        select(DealRating).where(
+            DealRating.deal_id == deal_id,
+            DealRating.rater_id == rater_id
+        ).with_for_update()
+    )
+    existing_rating = existing_res.scalar_one_or_none()
+    if existing_rating:
+        stars_vis = format_stars(existing_rating.stars)
+        try:
+            await callback.message.edit_text(
+                f"✅ **تم تسجيل تقييمك لصفقة #{deal_id} مسبقاً**\n"
+                f"〰️〰️〰️〰️〰️〰️〰️\n"
+                f"⭐ **التقييم المسجل:** {stars_vis} (`{existing_rating.stars}/5`)",
+                reply_markup=None,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+        await callback.answer("تم تسجيل تقييمك لهذه الصفقة مسبقاً.", show_alert=True)
+        return
+
+    new_rating = DealRating(
+        deal_id=deal.id,
+        rater_id=rater_id,
+        target_id=target_id,
+        stars=stars
+    )
+    db_session.add(new_rating)
+    await db_session.flush()
+
+    new_rep, total_ratings = await recalculate_user_reputation(db_session, target_id)
+
+    add_audit(
+        session=db_session,
+        action="RATE_DEAL",
+        target_type="deal",
+        target_id=deal.id,
+        actor_id=rater_id,
+        actor_type="USER",
+        details={
+            "rater_id": rater_id,
+            "target_id": target_id,
+            "stars": stars,
+            "new_reputation_score": str(new_rep),
+            "total_ratings": total_ratings
+        }
+    )
+    await db_session.commit()
+
+    stars_vis = format_stars(stars)
+    label = STAR_LABELS.get(stars, "")
+    try:
+        await callback.message.edit_text(
+            f"✅ **شكراً لك! تم تسجيل تقييمك لصفقة #{deal.id}**\n"
+            f"〰️〰️〰️〰️〰️〰️〰️\n"
+            f"⭐ **التقييم المسجل:** {stars_vis} ({label} — `{stars}/5`)",
+            reply_markup=None,
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+    await callback.answer("شكراً لتقييمك!")
+

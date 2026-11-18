@@ -216,6 +216,14 @@ disputes
   resolved_by             BIGINT REFERENCES users(telegram_id)
   resolved_at             TIMESTAMPTZ
 
+deal_ratings
+  id                   SERIAL PRIMARY KEY
+  deal_id                INTEGER REFERENCES deals(id)
+  rater_id               BIGINT REFERENCES users(telegram_id)
+  target_id              BIGINT REFERENCES users(telegram_id)
+  stars                  INTEGER CHECK (stars >= 1 AND stars <= 5)
+  created_at             TIMESTAMPTZ DEFAULT now()
+
 blockchain_transactions
   id                   SERIAL PRIMARY KEY
   deal_id                INTEGER REFERENCES deals(id)
@@ -405,7 +413,7 @@ Accessible to `ADMIN_IDS` via `/admin`:
 
 ## 15. User Profile, Offer Creation Wizard & Loyalty System (v3.0 / v3.7)
 
-1. **Profile Card & 100% Reputation Scale:** Trader badge, completed deal count, and `reputation_score` on a `0%–100%` percentage scale (default `100%`, updated via post-deal ratings).
+1. **Profile Card & Post-Deal Star Rating System (`deal_ratings`, `bot/services/rating_service.py`):** Trader badge, completed deal count, and `reputation_score` on a `0%–100%` percentage scale (default `100%`). Immediately upon deal completion (`COMPLETED` via `man_rel_`), both buyer and seller receive a one-tap 1–5 star rating card (`rate_deal_<deal_id>_<stars>`), strictly enforced once per party per deal via `uq_rating_per_deal_rater`, updating `users.reputation_score` automatically (`ROUND(AVG(stars) * 20)`). Admins can inspect deal ratings and delete erroneous ratings (`adm_del_rating_<rating_id>`) directly from `/deal [id]`, triggering automatic reputation recalculation and `DELETE_RATING` audit logging.
 2. **Offer Creation Wizard UX (`bot/handlers/offers.py`, `bot/utils/offer_wizard.py`):**
    - **Progressive Draft Header (`format_wizard_draft_header`):** Displays accumulated choices (`offer_type`, `rate`, `min_limit`, `max_limit`, `payment_methods`) at the top of each wizard step.
    - **2×2 Payment Methods Grid (`get_payment_methods_kb`):** Arranges the 4 approved payment methods in a clean 2-column grid.
@@ -413,7 +421,7 @@ Accessible to `ADMIN_IDS` via `/admin`:
    - **3-Stage Custom Duration Picker:** Buttons for Default (`4 hours`) or Custom (`0–3 hours` × `5–45 minutes`).
    - **Final Summary & Jump-Edit:** Full summary screen (`format_wizard_summary`) with individual jump-edit buttons (`✏️ السعر`, `✏️ الكمية`, `✏️ الدفع`, `✏️ الحساب`, `✏️ التفاوض`, `✏️ المدة`) that return directly to the summary after editing.
 3. **Golden Points Loyalty Program:** Operational flag `REWARDS_ENABLED` (default `false`). Points for deals (+10) and referrals (+25). Tiered claims (500/1500/3000 pts).
-4. **Approved Local Payment Methods:** `شام كاش ليرة`, `سيريتيل كاش`, `حوالة بنكية (الهرم)`, `حوالة بنكية (الفؤاد)`.
+4. **Approved Local Payment Methods & Validation:** `شام كاش ليرة` (32-hex address), `سيريتيل كاش` (10-digit `09xxxxxxxx` with Arabic numeral normalization), `حوالة بنكية (الهرم)` & `حوالة بنكية (الفؤاد)` (full triple name + Syrian mobile number `09xxxxxxxx`).
 
 ---
 
@@ -432,6 +440,7 @@ To keep scope bounded, the following are intentionally excluded from MVP:
 | Date | Change |
 |---|---|
 | v1.0 - v3.3 | See previous version history. |
+| v3.8 | **Post-Deal Star Ratings & Bank Transfer Validation v3.8:**<br>• **Post-Deal Star Rating (`deal_ratings`, `rating_service.py`)**: Dispatches one-tap 1–5 star rating prompts (`rate_deal_`) to both counterparties upon `COMPLETED` status, enforces one rating per user per deal, and recalculates `users.reputation_score` automatically.<br>• **Admin Rating Moderation**: Displays deal ratings in `/deal [id]` (`format_admin_deal_review_text` + `build_admin_deal_keyboard`) with direct delete buttons (`adm_del_rating_`) that recalculate target reputation and record `DELETE_RATING` audit logs.<br>• **Al-Haram / Al-Fouad Validation & Prompts**: Synchronized offer wizard instructions (`get_pm_spec`), Arabic digit normalization, and triple-name + `09xxxxxxxx` validation. |
 | v3.7 | **Wizard UX, Bot Menu Commands & Hardening Update v3.7:**<br>• **Progressive Draft Header (`format_wizard_draft_header`)**: Added live accumulated draft header at the top of each step in the Offer Creation Wizard.<br>• **3-Stage Button-Based Custom Duration Picker**: Replaced text-based custom duration input with a 3-stage interactive button flow (`Default 4h` vs `Custom` → `0–3 Hours` 2×2 grid → `5–45 Minutes` 2×3 grid) and unified duration formatting (`format_duration_hours_minutes`) across wizard summary, publish confirmation, and channel cards.<br>• **2×2 Payment Methods Grid**: Arranged the 4 approved payment methods in a compact 2×2 grid.<br>• **Official Bot Menu Commands & Deep Links**: Configured `/start`, `/continue` (with automatic cleanup of old deal cards), and `/support` (`@AlphaSupport`), plus `?start=offers` deep-link handling.<br>• **Entity Escaping & Error Alert Hardening**: Escaped all dynamic usernames, support handles, dispute reasons, and feedback notes (`escape_markdown` / `html.escape`), and enhanced `error_alert.py` to extract the deepest project-level stack frame. |
 | v3.6 | **Confidential Payout Collection & Reputation Unification v3.6:**<br>• Added Step 6 confidential payout collection (`offers.payout_details` JSONB) and buyer payment method selection in negotiations (`nego_pm_`).<br>• Unified reputation scale to `0%–100%` (default `100%`) across all user and admin views.<br>• Removed legacy `expired_grace` state in favor of immediate deletion upon expiry. |
 | v3.5 | **Technical & UX Overhaul v3.5:**<br>• **Dynamic Payment Method Selection & Collection in Deals**:<br>  - For Buy Offers (Maker=Buyer, Taker=Seller), Taker selects from Maker's supported payment rails and immediately inputs their valid account info (Sham Cash 32-hex address, Syriatel Cash 09xx number, or Bank transfer details). The deal is created with `seller_payment_info` fully populated.<br>  - For Sell Offers (Maker=Seller, Taker=Buyer), Taker picks from Maker's supported rails and the corresponding account from `payout_details` is automatically linked.<br>• **Comprehensive BiDi & UI Overhaul**:<br>  - Total eradication of Arabic/English/symbol inline BiDi inversion.<br>  - Replaced `SYP` with `ل.س` and `USDT` with `دولار` across all bot interfaces, deal cards, and channel posts.<br>  - Rewrote platform fee line into clean, human-readable Arabic: `⚡ عمولة المنصة : مجاناً حتى 25 دولار • 0.1% لما فوق ذلك`.<br>  - Unified payment proof dispatch to the seller into a single dedicated photo message with action buttons. |

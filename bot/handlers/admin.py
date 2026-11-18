@@ -10,12 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func
 
-from db.models import User, Deal, Offer, SystemSetting, Dispute
+from db.models import User, Deal, Offer, SystemSetting, Dispute, DealRating
 from bot.states.flow_states import AdminFSM
 from bot.middlewares.maintenance import get_cached_maintenance, set_cached_maintenance
 from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown, format_local_datetime
-from bot.utils.deal_views import format_admin_deal_review_text
+from bot.utils.deal_views import format_admin_deal_review_text, build_admin_deal_keyboard
 from bot.services.backup_service import perform_and_send_backup
+from bot.services.rating_service import recalculate_user_reputation
 import logging
 from bot.services.audit_service import record_audit, add_audit, LOG_FILE
 from db.models import AuditLog
@@ -640,12 +641,7 @@ async def cmd_admin_inspect_deal(message: Message, db_session: AsyncSession):
         return
 
     admin_text = await format_admin_deal_review_text(deal, db_session)
-    buttons = []
-    if deal.status == "ADMIN_APPROVAL":
-        buttons.append([InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
-    buttons.append([InlineKeyboardButton(text="🔄 تحديث البيانات", callback_data=f"adm_inspect_deal_{deal.id}")])
-
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    kb = await build_admin_deal_keyboard(deal, db_session)
     await message.answer(admin_text, reply_markup=kb, parse_mode="Markdown")
 
 
@@ -664,17 +660,77 @@ async def cq_admin_inspect_deal(callback: CallbackQuery, db_session: AsyncSessio
         return
 
     admin_text = await format_admin_deal_review_text(deal, db_session)
-    buttons = []
-    if deal.status == "ADMIN_APPROVAL":
-        buttons.append([InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
-    buttons.append([InlineKeyboardButton(text="🔄 تحديث البيانات", callback_data=f"adm_inspect_deal_{deal.id}")])
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    kb = await build_admin_deal_keyboard(deal, db_session)
 
     try:
         await callback.message.edit_text(admin_text, reply_markup=kb, parse_mode="Markdown")
     except Exception:
         await callback.message.answer(admin_text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("adm_del_rating_"))
+async def cq_admin_delete_rating(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك بالوصول.", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    if len(parts) != 4 or not parts[3].isdigit():
+        await callback.answer("معرف التقييم غير صالح.", show_alert=True)
+        return
+
+    rating_id = int(parts[3])
+    rating_res = await db_session.execute(
+        select(DealRating).where(DealRating.id == rating_id).with_for_update()
+    )
+    rating = rating_res.scalar_one_or_none()
+    if not rating:
+        await callback.answer("التقييم غير موجود أو تم حذفه مسبقاً.", show_alert=True)
+        return
+
+    deal_id = rating.deal_id
+    rater_id = rating.rater_id
+    target_id = rating.target_id
+    deleted_stars = rating.stars
+
+    await db_session.delete(rating)
+    await db_session.flush()
+
+    new_rep, total_ratings = await recalculate_user_reputation(db_session, target_id)
+
+    add_audit(
+        session=db_session,
+        action="DELETE_RATING",
+        target_type="deal",
+        target_id=deal_id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={
+            "rating_id": rating_id,
+            "rater_id": rater_id,
+            "target_id": target_id,
+            "deleted_stars": deleted_stars,
+            "new_reputation_score": str(new_rep),
+            "remaining_ratings": total_ratings
+        }
+    )
+    await db_session.commit()
+
+    deal_res = await db_session.execute(select(Deal).where(Deal.id == deal_id))
+    deal = deal_res.scalar_one_or_none()
+    if deal:
+        admin_text = await format_admin_deal_review_text(deal, db_session)
+        kb = await build_admin_deal_keyboard(deal, db_session)
+        try:
+            await callback.message.edit_text(admin_text, reply_markup=kb, parse_mode="Markdown")
+        except Exception:
+            await callback.message.answer(admin_text, reply_markup=kb, parse_mode="Markdown")
+
+    await callback.answer(
+        f"✅ تم حذف التقييم وإعادة احتساب سمعة المستخدم ({new_rep}%).",
+        show_alert=True
+    )
 
 
 # ================= 7. MARKET INSIGHTS: /market =================
@@ -998,6 +1054,8 @@ async def cmd_admin_audit(message: Message, db_session: AsyncSession):
         "MAINTENANCE_MODE_ON": "🟢 تفعيل الصيانة",
         "MAINTENANCE_MODE_OFF": "🔴 تعطيل الصيانة",
         "DISPUTE_RESOLVE": "⚖️ تسوية نزاع",
+        "RATE_DEAL": "⭐ تقييم صفقة",
+        "DELETE_RATING": "🗑️ حذف تقييم خاطئ",
     }
 
     for log in logs:
@@ -1046,6 +1104,8 @@ async def cq_admin_refresh_audit(callback: CallbackQuery, db_session: AsyncSessi
         "MAINTENANCE_MODE_ON": "🟢 تفعيل الصيانة",
         "MAINTENANCE_MODE_OFF": "🔴 تعطيل الصيانة",
         "DISPUTE_RESOLVE": "⚖️ تسوية نزاع",
+        "RATE_DEAL": "⭐ تقييم صفقة",
+        "DELETE_RATING": "🗑️ حذف تقييم خاطئ",
     }
 
     lines = [

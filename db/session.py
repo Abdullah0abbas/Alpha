@@ -74,6 +74,18 @@ async def ensure_schema_updated():
             updated_at TIMESTAMPTZ DEFAULT now()
         );
         """),
+        ("deal_ratings table", """
+        CREATE TABLE IF NOT EXISTS deal_ratings (
+            id SERIAL PRIMARY KEY,
+            deal_id INTEGER NOT NULL REFERENCES deals(id),
+            rater_id BIGINT NOT NULL REFERENCES users(telegram_id),
+            target_id BIGINT NOT NULL REFERENCES users(telegram_id),
+            stars INTEGER NOT NULL CHECK (stars >= 1 AND stars <= 5),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            CONSTRAINT chk_rating_different_parties CHECK (rater_id <> target_id),
+            CONSTRAINT uq_rating_per_deal_rater UNIQUE (deal_id, rater_id)
+        );
+        """),
         ("deposit_index_seq sequence", "CREATE SEQUENCE IF NOT EXISTS deposit_index_seq;"),
     ]
 
@@ -133,6 +145,8 @@ async def ensure_schema_updated():
             "uq_open_negotiation_per_offer",
             "SELECT offer_id, COUNT(*) FROM negotiations WHERE status IN ('PENDING_MAKER','PENDING_TAKER') GROUP BY offer_id HAVING COUNT(*) > 1;"
         ),
+        ("deal_ratings.ix_deal_id", "CREATE INDEX IF NOT EXISTS ix_deal_ratings_deal_id ON deal_ratings (deal_id);", None, None),
+        ("deal_ratings.ix_target_id", "CREATE INDEX IF NOT EXISTS ix_deal_ratings_target_id ON deal_ratings (target_id);", None, None),
     ]
 
     try:

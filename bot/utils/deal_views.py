@@ -2,9 +2,10 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from aiogram.types import InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.models import Deal, User
+from db.models import Deal, User, DealRating
+from bot.services.rating_service import format_stars
 from bot.utils.formatters import format_syp, format_usdt, safe_username, escape_markdown, format_local_datetime
 
 
@@ -180,6 +181,28 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
             f"▫️ الوضع الحالي: {status_label}"
         )
 
+    ratings_res = await db_session.execute(
+        select(DealRating).where(DealRating.deal_id == deal.id)
+    )
+    deal_ratings = ratings_res.scalars().all()
+    ratings_section = ""
+    if current_status == "COMPLETED" or deal_ratings:
+        buyer_rating = next((r for r in deal_ratings if r.rater_id == deal.buyer_id), None)
+        seller_rating = next((r for r in deal_ratings if r.rater_id == deal.seller_id), None)
+        buyer_r_str = (
+            f"{format_stars(buyer_rating.stars)} (`{buyer_rating.stars}/5`)"
+            if buyer_rating else "لم يقيّم بعد"
+        )
+        seller_r_str = (
+            f"{format_stars(seller_rating.stars)} (`{seller_rating.stars}/5`)"
+            if seller_rating else "لم يقيّم بعد"
+        )
+        ratings_section = (
+            "\n\n⭐ **تقييمات الصفقة**\n"
+            f"▫️ **تقييم المشتري للبائع:** {buyer_r_str}\n"
+            f"▫️ **تقييم البائع للمشتري:** {seller_r_str}"
+        )
+
     return (
         f"🛡️ **مراجعة الصفقة #{deal.id}**\n\n"
         "📋 **الملخص المالي**\n"
@@ -201,4 +224,38 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
         f"▫️ **السجل:** `{buyer_deals_count}` صفقة ({buyer_rep})\n"
         f"▫️ **محفظة الاستلام:**{buyer_wallet_line}\n\n"
         f"{verification_lines}"
+        f"{ratings_section}"
     )
+
+
+async def build_admin_deal_keyboard(deal: Deal, db_session: AsyncSession) -> InlineKeyboardMarkup:
+    """Builds the admin inspection keyboard including escrow release and rating deletion buttons."""
+    buttons: list[list[InlineKeyboardButton]] = []
+    if deal.status == "ADMIN_APPROVAL":
+        buttons.append([InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
+
+    ratings_res = await db_session.execute(
+        select(DealRating).where(DealRating.deal_id == deal.id)
+    )
+    deal_ratings = ratings_res.scalars().all()
+    buyer_rating = next((r for r in deal_ratings if r.rater_id == deal.buyer_id), None)
+    seller_rating = next((r for r in deal_ratings if r.rater_id == deal.seller_id), None)
+
+    if buyer_rating:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🗑️ حذف تقييم المشتري ({buyer_rating.stars}★)",
+                callback_data=f"adm_del_rating_{buyer_rating.id}"
+            )
+        ])
+    if seller_rating:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🗑️ حذف تقييم البائع ({seller_rating.stars}★)",
+                callback_data=f"adm_del_rating_{seller_rating.id}"
+            )
+        ])
+
+    buttons.append([InlineKeyboardButton(text="🔄 تحديث البيانات", callback_data=f"adm_inspect_deal_{deal.id}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+

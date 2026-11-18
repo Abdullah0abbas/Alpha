@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -115,6 +115,22 @@ class Dispute(Base):
     resolution: Mapped[str | None] = mapped_column(String)
     resolved_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.telegram_id"))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+class DealRating(Base):
+    __tablename__ = "deal_ratings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    deal_id: Mapped[int] = mapped_column(Integer, ForeignKey("deals.id"), nullable=False, index=True)
+    rater_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id"), nullable=False, index=True)
+    target_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id"), nullable=False, index=True)
+    stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("stars >= 1 AND stars <= 5", name="chk_rating_stars"),
+        CheckConstraint("rater_id <> target_id", name="chk_rating_different_parties"),
+        UniqueConstraint("deal_id", "rater_id", name="uq_rating_per_deal_rater"),
+    )
 
 class BlockchainTransaction(Base):
     __tablename__ = "blockchain_transactions"
