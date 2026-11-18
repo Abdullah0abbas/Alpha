@@ -14,6 +14,7 @@ from config.settings import settings
 
 from bot.services.backup_service import perform_and_send_backup
 from bot.services.admin_notifier import dispatch_admin_notification
+from bot.middlewares.error_alert import report_handled_exception
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ async def start_daily_backup_scheduler(bot: Bot, target_hour_utc: int = 0, targe
             break
         except Exception as e:
             logger.error(f"Error in daily backup scheduler: {e}", exc_info=True)
+            await report_handled_exception(bot, e, context_label="جدولة النسخ الاحتياطي اليومي (start_daily_backup_scheduler)")
             # Wait 5 minutes before retrying on failure
             await asyncio.sleep(300)
 
@@ -93,6 +95,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
             deal_ids = list(deal_res.scalars().all())
     except Exception as e:
         logger.error(f"Error querying candidate expired deal IDs: {e}", exc_info=True)
+        await report_handled_exception(bot, e, context_label="استعلام الصفقات المنتهية (process_expiries)")
 
     for deal_id in deal_ids:
         try:
@@ -226,6 +229,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     )
         except Exception as item_err:
             logger.error(f"Error expiring deal #{deal_id}: {item_err}", exc_info=True)
+            await report_handled_exception(bot, item_err, context_label=f"إنهاء مهلة صفقة #{deal_id} (process_expiries)")
 
     # ----------------------------------------------------
     # Branch 2: Active Offers Duration Expiry -> Immediate Permanent Deletion
@@ -286,6 +290,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     logger.warning(f"Failed to notify user {user_id_val} of deleted offer #{offer_id_val}: {e}")
         except Exception as item_err:
             logger.error(f"Error deleting offer #{offer_id}: {item_err}", exc_info=True)
+            await report_handled_exception(bot, item_err, context_label=f"حذف عرض منتهي #{offer_id} (process_expiries)")
 
     # ----------------------------------------------------
     # Branch 3: SYP Payment & Confirmation 30-Minute Reminders (Deal Stays Open)
@@ -352,6 +357,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                         logger.warning(f"Failed to notify buyer {buyer_id_val} of 30-min SYP reminder for deal #{deal_id_val}: {e}")
         except Exception as item_err:
             logger.error(f"Error sending SYP payment reminder for deal #{deal_id}: {item_err}", exc_info=True)
+            await report_handled_exception(bot, item_err, context_label=f"تذكير تحويل الليرة لصفقة #{deal_id}")
 
     # Branch 3b: SYP_PAYMENT_SENT 30-Minute Seller Confirmation Reminder & Admin Alert
     syp_conf_reminder_ids = []
@@ -457,6 +463,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                 )
         except Exception as item_err:
             logger.error(f"Error sending SYP confirmation reminder for deal #{deal_id}: {item_err}", exc_info=True)
+            await report_handled_exception(bot, item_err, context_label=f"تذكير تأكيد استلام الليرة لصفقة #{deal_id}")
 
     # ----------------------------------------------------
     # Branch 4: Expired Negotiations (Max 100 per cycle)
@@ -540,6 +547,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     logger.warning(f"Failed to notify maker {maker_id_val} of negotiation expiry: {e}")
         except Exception as item_err:
             logger.error(f"Error expiring negotiation #{neg_id}: {item_err}", exc_info=True)
+            await report_handled_exception(bot, item_err, context_label=f"إنهاء مهلة تفاوض #{neg_id}")
 
     # ----------------------------------------------------
     # Branch 5: Orphan Reserved/Negotiating Offers Safety Net (Max 100 per cycle)
@@ -604,6 +612,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     logger.warning(f"Failed to update channel message for released orphan offer #{offer.id}: {e}")
         except Exception as item_err:
             logger.error(f"Error releasing orphan offer #{offer_id}: {item_err}", exc_info=True)
+            await report_handled_exception(bot, item_err, context_label=f"تحرير عرض يتيم #{offer_id}")
 
     return expired_deals_count, deleted_offers_count, syp_reminders_count, expired_negs_count, orphan_released_count
 
@@ -649,6 +658,7 @@ async def start_expiry_watcher(bot: Bot, interval_seconds: int = 30):
                     raise
                 except Exception as loop_err:
                     logger.error(f"Error inside expiry cycle: {loop_err}", exc_info=True)
+                    await report_handled_exception(bot, loop_err, context_label="دورة مراقب المهل الزمنية (start_expiry_watcher)")
                 await asyncio.sleep(interval_seconds)
 
         except asyncio.CancelledError:
@@ -656,4 +666,5 @@ async def start_expiry_watcher(bot: Bot, interval_seconds: int = 30):
             break
         except Exception as crash_err:
             logger.critical(f"Supervisor: Expiry watcher crashed, restarting in 10s: {crash_err}", exc_info=True)
+            await report_handled_exception(bot, crash_err, context_label="انهيار وإعادة تشغيل مراقب المهل (start_expiry_watcher)")
             await asyncio.sleep(10)

@@ -21,6 +21,7 @@ from bot.services.rating_service import recalculate_user_reputation, format_star
 from bot.services.audit_service import record_audit, add_audit, LOG_FILE
 from bot.services.channel import update_channel_offer_message
 from bot.services.admin_notifier import dispatch_admin_notification, notify_usdt_deposit_confirmed
+from bot.middlewares.error_alert import report_handled_exception
 from config.settings import settings
 from bot.utils.branding import BOT_NAME
 from datetime import timedelta
@@ -1354,6 +1355,9 @@ async def cq_admin_do_manual_deposit(callback: CallbackQuery, db_session: AsyncS
         )
     except Exception as e:
         logger.warning(f"Failed to send deposit channel notification on manual confirm for deal #{deal.id}: {e}")
+        await report_handled_exception(
+            callback.bot, e, context_label=f"notify_usdt_deposit_confirmed manual confirm (deal #{deal.id})", user_id=callback.from_user.id
+        )
 
     await callback.answer("✅ تم تأكيد إيداع الـ USDT يدوياً وتحديث حالة الصفقة.", show_alert=True)
     admin_text = await format_admin_deal_review_text(deal, db_session)
@@ -1896,6 +1900,9 @@ async def cmd_admin_backup(message: Message, bot: Bot):
             pass
     except Exception as e:
         await wait_msg.edit_text(f"❌ **حدث خطأ أثناء أخذ النسخة الاحتياطية:**\n`{e}`", parse_mode="Markdown")
+        await report_handled_exception(
+            bot, e, context_label="cmd_admin_backup", user_id=message.from_user.id
+        )
 
 
 @admin_router.callback_query(F.data == "adm_trigger_backup")
@@ -1909,6 +1916,9 @@ async def cq_admin_trigger_backup(callback: CallbackQuery):
         await perform_and_send_backup(callback.bot, recipient_id=callback.from_user.id, is_scheduled=False)
     except Exception as e:
         await callback.message.answer(f"❌ **حدث خطأ أثناء أخذ النسخة الاحتياطية:**\n`{e}`", parse_mode="Markdown")
+        await report_handled_exception(
+            callback.bot, e, context_label="cq_admin_trigger_backup", user_id=callback.from_user.id
+        )
 
 
 # ================= 9. AUDIT TRAIL & SYSTEM LOGS (/audit & button) =================

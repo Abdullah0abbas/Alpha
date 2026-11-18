@@ -13,6 +13,7 @@ from bot.states.flow_states import DealPaymentFSM
 from bot.services.audit_service import add_audit
 from bot.services.channel import update_channel_offer_message
 from bot.services.admin_notifier import dispatch_admin_notification, notify_usdt_deposit_confirmed
+from bot.middlewares.error_alert import report_handled_exception
 from bot.services.rating_service import (
     build_deal_rating_prompt,
     recalculate_user_reputation,
@@ -144,6 +145,9 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
             )
         except Exception as e:
             logger.warning(f"Failed to send deposit channel notification for deal #{deal.id}: {e}")
+            await report_handled_exception(
+                callback.bot, e, context_label=f"notify_usdt_deposit_confirmed (deal #{deal.id})", user_id=callback.from_user.id
+            )
         return
 
     await db_session.commit()
@@ -157,6 +161,9 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
         )
     except Exception as e:
         logger.warning(f"Failed to send deposit channel notification for deal #{deal.id}: {e}")
+        await report_handled_exception(
+            callback.bot, e, context_label=f"notify_usdt_deposit_confirmed (deal #{deal.id})", user_id=callback.from_user.id
+        )
 
     # Notify Buyer only when seller still needs to enter payment details
     try:
@@ -348,6 +355,9 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         await db_session.commit()
     except Exception as e:
         logger.warning(f"PaymentProof creation log: {e}")
+        await report_handled_exception(
+            message.bot, e, context_label=f"PaymentProof creation (deal #{deal.id})", user_id=message.from_user.id
+        )
 
     existing_buyer_addr = (deal.buyer_payout_address or "").strip()
     is_existing_valid, normalized_existing, _ = validate_bep20_address(existing_buyer_addr) if (existing_buyer_addr and existing_buyer_addr not in ["PENDING", "غير محدد", "N/A"]) else (False, "", "")
@@ -588,6 +598,9 @@ async def _dispatch_admin_approval(
         await push_deal_card(deal.id, bot, notify_handoff=False)
     except Exception as e:
         logger.warning(f"Failed to push deal card in _dispatch_admin_approval for deal #{deal.id}: {e}")
+        await report_handled_exception(
+            bot, e, context_label=f"push_deal_card in _dispatch_admin_approval (deal #{deal.id})"
+        )
 
     # 2. Notify Buyer (single notification)
     if not (origin_callback and origin_callback.from_user.id == deal.buyer_id):
@@ -693,6 +706,9 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
                 target_offer = offer
         except Exception as e:
             logger.warning(f"Failed to close associated offer #{offer_id_val} on dispute for deal #{deal.id}: {e}")
+            await report_handled_exception(
+                callback.bot, e, context_label=f"close offer #{offer_id_val} on dispute (deal #{deal.id})", user_id=callback.from_user.id
+            )
 
     if hasattr(db_session, "add"):
         try:
@@ -704,6 +720,9 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
             db_session.add(new_dispute)
         except Exception as e:
             logger.warning(f"Failed to add Dispute row for deal #{deal.id}: {e}")
+            await report_handled_exception(
+                callback.bot, e, context_label=f"Dispute insert (deal #{deal.id})", user_id=callback.from_user.id
+            )
 
     add_audit(
         session=db_session,
@@ -721,6 +740,9 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
             await update_channel_offer_message(callback.bot, target_offer)
         except Exception as e:
             logger.warning(f"Failed to update channel offer message on dispute for deal #{deal.id}: {e}")
+            await report_handled_exception(
+                callback.bot, e, context_label=f"update_channel_offer_message on dispute (deal #{deal.id})", user_id=callback.from_user.id
+            )
 
     support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip('@')
     support_link = f"https://t.me/{support_username}"
@@ -784,6 +806,9 @@ async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncS
         await push_deal_card(deal.id, callback.bot, notify_handoff=False)
     except Exception as e:
         logger.warning(f"Failed to push deal card on dispute for deal #{deal.id}: {e}")
+        await report_handled_exception(
+            callback.bot, e, context_label=f"push_deal_card on dispute (deal #{deal.id})", user_id=callback.from_user.id
+        )
 
     await callback.answer("تم إغلاق الصفقة آلياً وتحويل الملف للمتابعة اليدوية مع الدعم الفني.")
 
@@ -995,6 +1020,9 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
             await update_channel_offer_message(callback.bot, offer)
         except Exception as e:
             logger.warning(f"Failed to update channel message after release for deal #{deal.id}: {e}")
+            await report_handled_exception(
+                callback.bot, e, context_label=f"update_channel_offer_message on release (deal #{deal.id})", user_id=callback.from_user.id
+            )
 
     usdt_str = format_usdt(deal.amount_usdt)
     syp_str = format_syp(deal.amount_syp)
@@ -1021,6 +1049,9 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
         await push_deal_card(deal.id, callback.bot, notify_handoff=False)
     except Exception as e:
         logger.warning(f"Failed to push deal card on release for deal #{deal.id}: {e}")
+        await report_handled_exception(
+            callback.bot, e, context_label=f"push_deal_card on release (deal #{deal.id})", user_id=callback.from_user.id
+        )
 
     # Notify Buyer and Seller of completion
     try:
