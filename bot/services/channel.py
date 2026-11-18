@@ -143,7 +143,11 @@ async def update_channel_offer_message(bot: Bot, offer: Offer, trader=None) -> N
             await bot.delete_message(chat_id=settings.CHANNEL_ID, message_id=offer.channel_message_id)
             return
         except Exception as delete_err:
-            logger.warning(f"Failed to delete channel message for offer {offer.id}, falling back to edit: {delete_err}")
+            err_msg = str(delete_err).lower()
+            if "message to delete not found" in err_msg:
+                return
+            # Telegram prohibits bots from deleting messages older than 48 hours; fall back cleanly to striking through the post
+            logger.info(f"Channel message for offer #{offer.id} cannot be deleted ({delete_err}); falling back to strike-through edit.")
 
     channel_text, kb = build_channel_offer_message(offer, trader=trader)
 
@@ -156,5 +160,8 @@ async def update_channel_offer_message(bot: Bot, offer: Offer, trader=None) -> N
             parse_mode="HTML"
         )
     except Exception as e:
-        logger.warning(f"Failed to edit channel message for offer {offer.id}: {e}")
+        err_str = str(e).lower()
+        if "message is not modified" not in err_str and "message to edit not found" not in err_str:
+            logger.warning(f"Failed to edit channel message for offer {offer.id}: {e}")
+
 

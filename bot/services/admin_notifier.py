@@ -126,6 +126,9 @@ async def dispatch_admin_notification(
                 logger.warning(f"Fallback delivery for '{category}' to admin {admin_id} also failed: {fb_err}")
 
 
+from datetime import datetime, timezone
+
+
 async def notify_usdt_deposit_confirmed(
     bot: Bot,
     deal: Deal,
@@ -137,49 +140,58 @@ async def notify_usdt_deposit_confirmed(
     Sends a rich, complete notification to Channel #1 (ADMIN_DEPOSITS_CHANNEL_ID)
     the moment a user deposits USDT into escrow and the bot verifies it.
     """
+    deal_id = deal.id
+    offer_id = getattr(deal, "offer_id", None)
+    seller_id = deal.seller_id
+    buyer_id = deal.buyer_id
+    amount_usdt = deal.amount_usdt
+    amount_syp = deal.amount_syp
+    deposit_index = deal.deposit_index
+    deposit_address = deal.deposit_address
     seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
     buyer_fee = getattr(deal, "buyer_fee_usdt", None) or Decimal("0")
-    total_deposited_usdt = deal.amount_usdt + seller_fee
+    total_deposited_usdt = amount_usdt + seller_fee
 
-    seller_res = await db_session.execute(select(User).where(User.telegram_id == deal.seller_id))
+    seller_res = await db_session.execute(select(User).where(User.telegram_id == seller_id))
     seller_user = seller_res.scalar_one_or_none()
-    seller_uname = safe_username(seller_user.username if seller_user else None, deal.seller_id)
+    seller_uname = safe_username(seller_user.username if seller_user else None, seller_id)
 
-    buyer_res = await db_session.execute(select(User).where(User.telegram_id == deal.buyer_id))
+    buyer_res = await db_session.execute(select(User).where(User.telegram_id == buyer_id))
     buyer_user = buyer_res.scalar_one_or_none()
-    buyer_uname = safe_username(buyer_user.username if buyer_user else None, deal.buyer_id)
+    buyer_uname = safe_username(buyer_user.username if buyer_user else None, buyer_id)
 
-    rate_val = (deal.amount_syp / deal.amount_usdt) if (deal.amount_usdt and deal.amount_usdt > 0) else Decimal("0")
+    rate_val = (amount_syp / amount_usdt) if (amount_usdt and amount_usdt > 0) else Decimal("0")
     tx_line = f"▫️ **هاش المعاملة (TX Hash):** `{escape_markdown(tx_hash)}`\n" if tx_hash else ""
-    offer_line = f"▫️ **رقم العرض المرتبط:** `#{deal.offer_id}`\n" if getattr(deal, "offer_id", None) else ""
-    dt_str = format_local_datetime(deal.updated_at or deal.created_at)
+    offer_line = f"▫️ **رقم العرض المرتبط:** `#{offer_id}`\n" if offer_id else ""
+    # Never access deal.updated_at after commit because onupdate=func.now() expires the attribute and triggers MissingGreenlet
+    dt_str = format_local_datetime(datetime.now(timezone.utc))
 
     text = (
-        f"📥 **إشعار إيداع USDT مؤكد في الضمان — صفقة #{deal.id}**\n"
+        f"📥 **إشعار إيداع USDT مؤكد في الضمان — صفقة #{deal_id}**\n"
         f"〰️〰️〰️〰️〰️〰️〰️\n"
         f"{offer_line}"
         f"▫️ **آلية التحقق:** {escape_markdown(verification_method)}\n"
         f"▫️ **التوقيت:** `{dt_str}`\n\n"
         f"💰 **التفاصيل المالية للإيداع:**\n"
         f"▫️ **المبلغ الإجمالي المودع:** `{format_usdt(total_deposited_usdt)} USDT`\n"
-        f"▫️ **قيمة الصفقة الأساسية:** `{format_usdt(deal.amount_usdt)} USDT`\n"
+        f"▫️ **قيمة الصفقة الأساسية:** `{format_usdt(amount_usdt)} USDT`\n"
         f"▫️ **عمولة البائع المودعة:** `{format_usdt(seller_fee)} USDT`\n"
         f"▫️ **عمولة المشتري (تُخصم عند الإطلاق):** `{format_usdt(buyer_fee)} USDT`\n"
-        f"▫️ **المقابل بالليرة السورية:** `{format_syp(deal.amount_syp)}` ل.س (السعر: `{format_syp(rate_val)}` ل.س)\n\n"
+        f"▫️ **المقابل بالليرة السورية:** `{format_syp(amount_syp)}` ل.س (السعر: `{format_syp(rate_val)}` ل.س)\n\n"
         f"🔐 **بيانات محفظة الضمان (BEP-20):**\n"
-        f"▫️ **مؤشر الاشتقاق (Index):** `{deal.deposit_index}`\n"
-        f"▫️ **عنوان الإيداع:**\n`{escape_markdown(deal.deposit_address)}`\n"
+        f"▫️ **مؤشر الاشتقاق (Index):** `{deposit_index}`\n"
+        f"▫️ **عنوان الإيداع:**\n`{escape_markdown(deposit_address)}`\n"
         f"{tx_line}\n"
         f"👥 **أطراف العملية:**\n"
-        f"▫️ **🔴 البائع (المودِع):** `{deal.seller_id}` ({seller_uname})\n"
-        f"▫️ **🟢 المشتري:** `{deal.buyer_id}` ({buyer_uname})"
+        f"▫️ **🔴 البائع (المودِع):** `{seller_id}` ({seller_uname})\n"
+        f"▫️ **🟢 المشتري:** `{buyer_id}` ({buyer_uname})"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🔍 فتح ملف الصفقة #{deal.id}", callback_data=f"adm_inspect_deal_{deal.id}")],
+        [InlineKeyboardButton(text=f"🔍 فتح ملف الصفقة #{deal_id}", callback_data=f"adm_inspect_deal_{deal_id}")],
         [
-            InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{deal.seller_id}"),
-            InlineKeyboardButton(text="🟢 ملف المشتري", callback_data=f"adm_view_user_{deal.buyer_id}")
+            InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{seller_id}"),
+            InlineKeyboardButton(text="🟢 ملف المشتري", callback_data=f"adm_view_user_{buyer_id}")
         ]
     ])
 
