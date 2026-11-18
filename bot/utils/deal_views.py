@@ -4,7 +4,7 @@ from sqlalchemy.future import select
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.models import Deal, User, DealRating
+from db.models import Deal, User, DealRating, PaymentProof
 from bot.services.rating_service import format_stars
 from bot.utils.formatters import format_syp, format_usdt, safe_username, escape_markdown, format_local_datetime
 
@@ -52,21 +52,22 @@ STATUS_ARABIC_MAP = {
     "AWAITING_USDT_DEPOSIT": "بانتظار إيداع الضمان",
     "USDT_DEPOSITED": "تم إيداع الضمان بنجاح",
     "AWAITING_SYP_PAYMENT": "بانتظار تحويل الليرة",
-    "SYP_PAYMENT_SENT": "تم إرسال الليرة وبانتظار التأكيد",
+    "SYP_PAYMENT_SENT": "تم إرسال الليرة وبانتظار تأكيد البائع",
     "SYP_PAYMENT_CONFIRMED": "تم تأكيد استلام الليرة",
     "ADMIN_APPROVAL": "مراجعة واعتماد الإدارة",
     "RELEASING": "جاري إطلاق الرصيد",
     "COMPLETED": "مكتملة بنجاح",
     "CANCELLED": "ملغاة",
     "EXPIRED": "منتهية الصلاحية",
-    "DISPUTED": "نزاع مفتوح",
+    "DISPUTED": "مغلقة بعدم استلام (متابعة يدوية)",
 }
 
 async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) -> str:
-    """Format rich, detailed notification text for platform administrators."""
+    """Format rich, detailed notification and inspection text for platform administrators."""
     usdt_str = format_usdt(deal.amount_usdt)
     syp_str = format_syp(deal.amount_syp)
     created_date_str = format_local_datetime(deal.created_at) if deal.created_at else "غير محدد"
+    offer_line = f"▫️ **رقم العرض المرتبط:** `#{deal.offer_id}`\n" if getattr(deal, "offer_id", None) else ""
 
     # Fee breakdown
     seller_fee = getattr(deal, "seller_fee_usdt", None)
@@ -126,22 +127,31 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
         else " غير مسجلة بعد"
     )
 
+    # Check if payment proof screenshot is attached
+    proof_res = await db_session.execute(
+        select(PaymentProof).where(PaymentProof.deal_id == deal.id).order_by(PaymentProof.id.desc()).limit(1)
+    )
+    proof_obj = proof_res.scalar_one_or_none()
+    proof_status_line = "📸 إشعار الدفع: مرفق ✅ (متاح للعرض بالزر أدناه)" if proof_obj else "📸 إشعار الدفع: غير مرفق بعد"
+
     current_status = deal.status
     status_label = STATUS_ARABIC_MAP.get(current_status, current_status)
 
     if current_status in ("ADMIN_APPROVAL", "SYP_PAYMENT_CONFIRMED"):
         verification_lines = (
             "📌 **سجل التحقق**\n"
-            "⏳ إيداع الضمان: مؤكد من البائع (وضع المحاكاة)\n"
+            "✅ إيداع الضمان: مؤكد ومحجوز\n"
             "✅ تحويل الليرة: مؤكد استلامه من البائع\n"
-            "✅ محفظة المستلم: مسجلة ومتحقق منها\n\n"
+            f"▫️ {proof_status_line}\n"
+            f"▫️ محفظة المستلم: {'مسجلة ومتحقق منها ✅' if has_buyer_wallet else 'غير مسجلة بعد ⚠️'}\n\n"
             "الصفقة جاهزة للاعتماد وإطلاق الرصيد."
         )
     elif current_status == "COMPLETED":
         verification_lines = (
             "📌 **سجل التحقق**\n"
-            "✅ إيداع الضمان: مكتمل (وضع المحاكاة)\n"
+            "✅ إيداع الضمان: مكتمل\n"
             "✅ تحويل الليرة: مؤكد ومكتمل\n"
+            f"▫️ {proof_status_line}\n"
             "✅ محفظة المستلم: تم إطلاق الرصيد إليها"
         )
     elif current_status in ("PENDING_OWNER_APPROVAL", "CREATED", "AWAITING_USDT_DEPOSIT"):
@@ -158,6 +168,7 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
             "📌 **سجل التحقق**\n"
             "✅ إيداع الضمان: مؤكد ومحجوز\n"
             "⏳ تحويل الليرة: بانتظار المشتري\n"
+            f"▫️ {proof_status_line}\n"
             f"▫️ محفظة المستلم: {payout_status}"
         )
     elif current_status == "SYP_PAYMENT_SENT":
@@ -166,19 +177,22 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
             "📌 **سجل التحقق**\n"
             "✅ إيداع الضمان: مؤكد ومحجوز\n"
             "⏳ تحويل الليرة: بانتظار تأكيد البائع\n"
+            f"▫️ {proof_status_line}\n"
             f"▫️ محفظة المستلم: {payout_status}"
         )
     elif current_status == "DISPUTED":
         verification_lines = (
             "📌 **سجل التحقق**\n"
             "🛡️ إيداع الضمان: محجوز لدى المنصة\n"
-            "⚠️ تحويل الليرة: نزاع مفتوح بين الطرفين\n\n"
-            "الصفقة تتطلب مراجعة الإدارة وحسم النزاع."
+            "⚠️ تحويل الليرة: مغلقة بعدم استلام (متابعة يدوية)\n"
+            f"▫️ {proof_status_line}\n\n"
+            "الصفقة تتطلب مراجعة الإدارة والفصل اليدوي بين الطرفين."
         )
     else:
         verification_lines = (
             "📌 **سجل التحقق**\n"
-            f"▫️ الوضع الحالي: {status_label}"
+            f"▫️ الوضع الحالي: {status_label}\n"
+            f"▫️ {proof_status_line}"
         )
 
     ratings_res = await db_session.execute(
@@ -204,9 +218,10 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
         )
 
     return (
-        f"🛡️ **مراجعة الصفقة #{deal.id}**\n\n"
+        f"🛡️ **مراجعة عملية الربط / الصفقة #{deal.id}**\n\n"
         "📋 **الملخص المالي**\n"
         f"▫️ **الحالة:** {status_label}\n"
+        f"{offer_line}"
         f"▫️ **التاريخ:** `{created_date_str}`\n"
         f"▫️ **الكمية:** `{usdt_str} USDT`\n"
         f"▫️ **الإجمالي:** `{syp_str}` ل.س\n"
@@ -229,11 +244,58 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
 
 
 async def build_admin_deal_keyboard(deal: Deal, db_session: AsyncSession) -> InlineKeyboardMarkup:
-    """Builds the admin inspection keyboard including escrow release and rating deletion buttons."""
+    """
+    Builds the comprehensive admin inspection keyboard:
+    - Escrow release (ADMIN_APPROVAL)
+    - Admin force confirm SYP or close as dispute (SYP_PAYMENT_SENT)
+    - Admin force cancel (early/open states)
+    - View attached SYP payment proof screenshot (PaymentProof)
+    - Open Seller / Buyer full user profile
+    - Delete buyer/seller rating
+    """
     buttons: list[list[InlineKeyboardButton]] = []
+
     if deal.status == "ADMIN_APPROVAL":
         buttons.append([InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
+    elif deal.status == "SYP_PAYMENT_SENT":
+        buttons.append([
+            InlineKeyboardButton(text="⚡ تأكيد استلام الليرة إدارياً", callback_data=f"adm_ask_force_conf_{deal.id}")
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="⚠️ إغلاق كنزاع (عدم استلام)", callback_data=f"adm_ask_force_dispute_{deal.id}")
+        ])
 
+    if deal.status in (
+        "PENDING_OWNER_APPROVAL",
+        "CREATED",
+        "AWAITING_USDT_DEPOSIT",
+        "USDT_DEPOSITED",
+        "AWAITING_SYP_PAYMENT",
+    ):
+        buttons.append([
+            InlineKeyboardButton(text="❌ إلغاء الصفقة إدارياً", callback_data=f"adm_ask_force_cancel_{deal.id}")
+        ])
+
+    # Check if payment proof photo exists
+    proof_res = await db_session.execute(
+        select(PaymentProof).where(PaymentProof.deal_id == deal.id).order_by(PaymentProof.id.desc()).limit(1)
+    )
+    proof_obj = proof_res.scalar_one_or_none()
+    if proof_obj and proof_obj.transaction_reference and proof_obj.transaction_reference.startswith("PHOTO_"):
+        buttons.append([
+            InlineKeyboardButton(text="📸 عرض صورة إشعار التحويل", callback_data=f"adm_view_proof_{deal.id}")
+        ])
+
+    # Direct links to Seller and Buyer profiles
+    party_row = []
+    if deal.seller_id:
+        party_row.append(InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{deal.seller_id}"))
+    if deal.buyer_id:
+        party_row.append(InlineKeyboardButton(text="🟢 ملف المشتري", callback_data=f"adm_view_user_{deal.buyer_id}"))
+    if party_row:
+        buttons.append(party_row)
+
+    # Ratings moderation buttons
     ratings_res = await db_session.execute(
         select(DealRating).where(DealRating.deal_id == deal.id)
     )
@@ -256,6 +318,10 @@ async def build_admin_deal_keyboard(deal: Deal, db_session: AsyncSession) -> Inl
             )
         ])
 
-    buttons.append([InlineKeyboardButton(text="🔄 تحديث البيانات", callback_data=f"adm_inspect_deal_{deal.id}")])
+    buttons.append([
+        InlineKeyboardButton(text="🔄 تحديث البيانات", callback_data=f"adm_inspect_deal_{deal.id}"),
+        InlineKeyboardButton(text="👑 لوحة الإدارة", callback_data="admin_main_menu"),
+    ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 

@@ -45,24 +45,16 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="support", description="التواصل مع الدعم الفني"),
     ]
 
-    # Secret admin commands for Bot Menu Button (bottom-left)
+    # Streamlined admin commands for Bot Menu Button (bottom-left)
     admin_commands = [
         BotCommand(command="start", description="القائمة الرئيسية"),
         BotCommand(command="continue", description="متابعة صفقتك الحالية"),
         BotCommand(command="support", description="التواصل مع الدعم الفني"),
-        BotCommand(command="admin", description="👑 لوحة الإدارة"),
-        BotCommand(command="deal", description="🔍 استعلام عن صفقة / عملية ربط"),
-        BotCommand(command="pending", description="🛡️ الصفقات المعلقة للاعتماد"),
-        BotCommand(command="stats", description="📊 الإحصائيات الشاملة"),
-        BotCommand(command="market", description="📈 تحليلات وبيانات السوق"),
-        BotCommand(command="top_traders", description="🏆 كبار المتداولين"),
-        BotCommand(command="disputes", description="⚖️ النزاعات المعلقة"),
-        BotCommand(command="search", description="🔍 استعلام عن مستخدم"),
-        BotCommand(command="audit", description="📋 سجل التدقيق الجنائي والعمليات"),
-        BotCommand(command="broadcast", description="📢 إرسال بث جماعي"),
-        BotCommand(command="backup", description="💾 أخذ نسخة احتياطية فورية"),
-        BotCommand(command="m_on", description="🟢 تفعيل وضع الصيانة"),
-        BotCommand(command="m_off", description="🔴 تعطيل وضع الصيانة"),
+        BotCommand(command="admin", description="👑 لوحة التحكم وغرفة العمليات"),
+        BotCommand(command="deal", description="🔍 استعلام عن عملية ربط / صفقة"),
+        BotCommand(command="user", description="👤 استعلام عن مستخدم وإدارة حسابه"),
+        BotCommand(command="pending", description="📡 العمليات الجارية والصفقات المعلقة"),
+        BotCommand(command="backup", description="💾 نسخة احتياطية فورية لقاعدة البيانات"),
     ]
 
     try:

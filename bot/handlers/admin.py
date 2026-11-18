@@ -1,25 +1,25 @@
 from decimal import Decimal
 from datetime import datetime, timezone
 import asyncio
-import math
+import logging
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
-from db.models import User, Deal, Offer, SystemSetting, Dispute, DealRating
+from db.models import User, Deal, Offer, SystemSetting, Dispute, DealRating, PaymentProof, AuditLog
 from bot.states.flow_states import AdminFSM
-from bot.middlewares.maintenance import get_cached_maintenance, set_cached_maintenance
+from bot.middlewares.maintenance import set_cached_maintenance
 from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown, format_local_datetime
 from bot.utils.deal_views import format_admin_deal_review_text, build_admin_deal_keyboard
+from bot.utils.deal_card import push_deal_card
 from bot.services.backup_service import perform_and_send_backup
-from bot.services.rating_service import recalculate_user_reputation
-import logging
+from bot.services.rating_service import recalculate_user_reputation, format_stars
 from bot.services.audit_service import record_audit, add_audit, LOG_FILE
-from db.models import AuditLog
+from bot.services.channel import update_channel_offer_message
 from config.settings import settings
 from bot.utils.branding import BOT_NAME
 
@@ -27,19 +27,42 @@ logger = logging.getLogger(__name__)
 
 admin_router = Router()
 
+OPEN_DEAL_STATUSES = [
+    "PENDING_OWNER_APPROVAL",
+    "CREATED",
+    "AWAITING_USDT_DEPOSIT",
+    "USDT_DEPOSITED",
+    "AWAITING_SYP_PAYMENT",
+    "SYP_PAYMENT_SENT",
+    "ADMIN_APPROVAL",
+]
+
+
 def is_admin(user_id: int) -> bool:
     return user_id in settings.ADMIN_IDS
 
-def get_admin_main_kb(maintenance_on: bool) -> InlineKeyboardMarkup:
+
+def get_admin_main_kb(maintenance_on: bool, pending_count: int = 0) -> InlineKeyboardMarkup:
     m_icon = "🟢 مفعّل" if maintenance_on else "🔴 معطّل"
+    pending_badge = f" ({pending_count})" if pending_count > 0 else ""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📊 إحصائيات النظام", callback_data="admin_stats"),
-            InlineKeyboardButton(text="🔍 استعلام عن مستخدم", callback_data="admin_search_user")
+            InlineKeyboardButton(
+                text=f"📡 العمليات الجارية والمعلقة{pending_badge}",
+                callback_data="adm_live_ops"
+            )
         ],
         [
-            InlineKeyboardButton(text="🔍 استعلام عن صفقة", callback_data="admin_search_deal"),
-            InlineKeyboardButton(text="📢 رسالة بث جماعي", callback_data="admin_broadcast")
+            InlineKeyboardButton(text="🔍 استعلام عن عملية ربط", callback_data="admin_search_deal"),
+            InlineKeyboardButton(text="👤 استعلام عن مستخدم", callback_data="admin_search_user")
+        ],
+        [
+            InlineKeyboardButton(text="📊 التقارير المالية والسوق", callback_data="admin_stats"),
+            InlineKeyboardButton(text="📋 سجل التدقيق والعمليات", callback_data="adm_open_audit")
+        ],
+        [
+            InlineKeyboardButton(text="📢 رسالة بث جماعي", callback_data="admin_broadcast"),
+            InlineKeyboardButton(text="💾 نسخ احتياطي فوري", callback_data="adm_trigger_backup")
         ],
         [
             InlineKeyboardButton(text=f"🛠️ وضع الصيانة: {m_icon}", callback_data="admin_toggle_maintenance")
@@ -49,10 +72,59 @@ def get_admin_main_kb(maintenance_on: bool) -> InlineKeyboardMarkup:
         ]
     ])
 
+
 def get_admin_back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 العودة للوحة الإدارة", callback_data="admin_main_menu")]
     ])
+
+
+async def _build_admin_dashboard_view(db_session: AsyncSession) -> tuple[str, InlineKeyboardMarkup]:
+    result = await db_session.execute(
+        select(SystemSetting).where(SystemSetting.key == "maintenance_mode")
+    )
+    setting = result.scalar_one_or_none()
+    is_m = False
+    if setting:
+        if isinstance(setting.value, dict):
+            is_m = bool(setting.value.get("enabled", False))
+        elif isinstance(setting.value, bool):
+            is_m = setting.value
+    set_cached_maintenance(is_m)
+
+    pending_res = await db_session.execute(
+        select(func.count(Deal.id)).where(Deal.status.in_(["ADMIN_APPROVAL", "SYP_PAYMENT_SENT"]))
+    )
+    pending_cnt = pending_res.scalar_one() or 0
+
+    active_deals_res = await db_session.execute(
+        select(func.count(Deal.id)).where(Deal.status.in_(OPEN_DEAL_STATUSES))
+    )
+    active_deals_cnt = active_deals_res.scalar_one() or 0
+
+    active_offers_res = await db_session.execute(
+        select(func.count(Offer.id)).where(Offer.status.in_(["active", "negotiating", "reserved"]))
+    )
+    active_offers_cnt = active_offers_res.scalar_one() or 0
+
+    m_status_ar = "🟢 مفعل (الوصول محصور بالأدمن)" if is_m else "🔴 معطل (متاح لجميع المستخدمين)"
+
+    text = (
+        f"👑 **غرفة العمليات والإدارة — {BOT_NAME}**\n\n"
+        f"📡 **نبض النظام اللحظي:**\n"
+        f"▫️ **بانتظار الاعتماد أو التأكيد:** `{pending_cnt}` صفقة\n"
+        f"▫️ **إجمالي الصفقات الجارية الآن:** `{active_deals_cnt}` صفقة\n"
+        f"▫️ **العروض النشطة في السوق:** `{active_offers_cnt}` عرض\n"
+        f"▫️ **حالة الصيانة:** {m_status_ar}\n\n"
+        "⚡ **الأوامر الإدارية السريعة:**\n"
+        "• `/deal [رقم]` — فحص عملية ربط والتدخل الفوري\n"
+        "• `/user [معرف/يوزر/لقب]` — كشف ملف مستخدم وإدارته\n"
+        "• `/pending` — غرفة العمليات الجارية والمعلقة\n"
+        "• `/backup` — سحب نسخة احتياطية مشفرة فوراً\n\n"
+        "اختر القسم المطلوب من لوحة التحكم:"
+    )
+    return text, get_admin_main_kb(is_m, pending_cnt)
+
 
 # ================= 1. ADMIN MENU ENTRYPOINT =================
 
@@ -61,30 +133,9 @@ async def cmd_admin(message: Message, db_session: AsyncSession, state: FSMContex
     if not is_admin(message.from_user.id):
         return
     await state.clear()
-    
-    # Check current maintenance setting
-    result = await db_session.execute(
-        select(SystemSetting).where(SystemSetting.key == "maintenance_mode")
-    )
-    setting = result.scalar_one_or_none()
-    is_m = False
-    if setting:
-        if isinstance(setting.value, dict):
-            is_m = bool(setting.value.get("enabled", False))
-        elif isinstance(setting.value, bool):
-            is_m = setting.value
-    set_cached_maintenance(is_m)
+    text, kb = await _build_admin_dashboard_view(db_session)
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
-    m_status_ar = "🟢 مفعل (الوصول محصور بالأدمن)" if is_m else "🔴 معطل (الوصول متاح للجميع)"
-
-    text = (
-        f"👑 **لوحة تحكم {BOT_NAME}**\n\n"
-        "مرحباً بك في لوحة الإدارة.\n"
-        "مراقبة نشاط السوق، وإدارة المستخدمين، والتحكم بحالة الصيانة:\n\n"
-        f"🛠️ **حالة الصيانة:** {m_status_ar}\n\n"
-        "اختر الإجراء المطلوب من القائمة:"
-    )
-    await message.answer(text, reply_markup=get_admin_main_kb(is_m), parse_mode="Markdown")
 
 @admin_router.callback_query(F.data == "admin_main_menu")
 async def cq_admin_main_menu(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext):
@@ -92,37 +143,24 @@ async def cq_admin_main_menu(callback: CallbackQuery, db_session: AsyncSession, 
         await callback.answer("غير مصرح لك بالوصول.", show_alert=True)
         return
     await state.clear()
-
-    result = await db_session.execute(
-        select(SystemSetting).where(SystemSetting.key == "maintenance_mode")
-    )
-    setting = result.scalar_one_or_none()
-    is_m = False
-    if setting:
-        if isinstance(setting.value, dict):
-            is_m = bool(setting.value.get("enabled", False))
-        elif isinstance(setting.value, bool):
-            is_m = setting.value
-    set_cached_maintenance(is_m)
-
-    m_status_ar = "🟢 مفعل (الوصول محصور بالأدمن)" if is_m else "🔴 معطل (الوصول متاح للجميع)"
-
-    text = (
-        f"👑 **لوحة تحكم {BOT_NAME}**\n\n"
-        "مرحباً بك في لوحة الإدارة.\n"
-        "مراقبة نشاط السوق، وإدارة المستخدمين، والتحكم بحالة الصيانة:\n\n"
-        f"🛠️ **حالة الصيانة:** {m_status_ar}\n\n"
-        "اختر الإجراء المطلوب من القائمة:"
-    )
+    text, kb = await _build_admin_dashboard_view(db_session)
     try:
-        await callback.message.edit_text(text, reply_markup=get_admin_main_kb(is_m), parse_mode="Markdown")
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except Exception:
-        await callback.message.answer(text, reply_markup=get_admin_main_kb(is_m), parse_mode="Markdown")
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
+
+
+# ================= 2. UNIFIED FINANCIAL & MARKET REPORTS =================
 
 async def get_stats_text(db_session: AsyncSession) -> str:
     total_users_res = await db_session.execute(select(func.count()).select_from(User))
     total_users = total_users_res.scalar_one() or 0
+
+    banned_users_res = await db_session.execute(
+        select(func.count()).select_from(User).where(User.is_banned.is_(True))
+    )
+    banned_users = banned_users_res.scalar_one() or 0
 
     now = datetime.now(timezone.utc)
     month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
@@ -131,12 +169,13 @@ async def get_stats_text(db_session: AsyncSession) -> str:
         select(Deal.status, func.count()).group_by(Deal.status)
     )
     deals_all_map = {status.upper() if status else "UNKNOWN": count for status, count in deals_all_res.all()}
-    
+
     comp_all = deals_all_map.get("COMPLETED", 0)
     exp_all = deals_all_map.get("EXPIRED", 0)
     canc_all = deals_all_map.get("CANCELLED", 0)
-    total_closed_all = comp_all + exp_all + canc_all
-    
+    disp_all = deals_all_map.get("DISPUTED", 0)
+    total_closed_all = comp_all + exp_all + canc_all + disp_all
+
     deals_month_res = await db_session.execute(
         select(Deal.status, func.count())
         .where(Deal.created_at >= month_start)
@@ -147,42 +186,70 @@ async def get_stats_text(db_session: AsyncSession) -> str:
     comp_month = deals_month_map.get("COMPLETED", 0)
     exp_month = deals_month_map.get("EXPIRED", 0)
     canc_month = deals_month_map.get("CANCELLED", 0)
-    total_closed_month = comp_month + exp_month + canc_month
+    disp_month = deals_month_map.get("DISPUTED", 0)
+    total_closed_month = comp_month + exp_month + canc_month + disp_month
 
     def calc_pct(count: int, total: int) -> str:
         if total <= 0:
             return "0.0%"
         return f"{(count / total * 100):.1f}%"
 
-    profit_res = await db_session.execute(
-        select(func.coalesce(func.sum(Deal.fee_usdt), 0)).where(func.upper(Deal.status) == "COMPLETED")
+    vol_all_res = await db_session.execute(
+        select(
+            func.coalesce(func.sum(Deal.amount_usdt), 0),
+            func.coalesce(func.sum(Deal.amount_syp), 0),
+            func.coalesce(func.sum(Deal.fee_usdt), 0),
+        ).where(func.upper(Deal.status) == "COMPLETED")
     )
-    total_net_profit = profit_res.scalar_one() or Decimal("0")
+    total_usdt_vol, total_syp_vol, total_net_profit = vol_all_res.one()
 
-    profit_month_res = await db_session.execute(
-        select(func.coalesce(func.sum(Deal.fee_usdt), 0))
-        .where(func.upper(Deal.status) == "COMPLETED")
-        .where(Deal.created_at >= month_start)
+    vol_month_res = await db_session.execute(
+        select(
+            func.coalesce(func.sum(Deal.amount_usdt), 0),
+            func.coalesce(func.sum(Deal.amount_syp), 0),
+            func.coalesce(func.sum(Deal.fee_usdt), 0),
+        ).where(func.upper(Deal.status) == "COMPLETED", Deal.created_at >= month_start)
     )
-    month_net_profit = profit_month_res.scalar_one() or Decimal("0")
+    month_usdt_vol, month_syp_vol, month_net_profit = vol_month_res.one()
+
+    active_offers_res = await db_session.execute(
+        select(
+            Offer.offer_type,
+            func.count(Offer.id),
+            func.coalesce(func.sum(Offer.max_limit), 0),
+            func.coalesce(func.avg(Offer.rate), 0)
+        ).where(Offer.status.in_(["active", "negotiating"]))
+        .group_by(Offer.offer_type)
+    )
+    active_summary = {t: (cnt, sum_max, avg_rate) for t, cnt, avg_rate in [
+        (t, cnt, sum_max, avg_rate) for t, cnt, sum_max, avg_rate in active_offers_res.all()
+    ]}
+
+    sell_cnt, sell_usdt_pool, sell_avg_rate = active_summary.get("sell", (0, Decimal("0"), Decimal("0")))
+    buy_cnt, buy_usdt_pool, buy_avg_rate = active_summary.get("buy", (0, Decimal("0"), Decimal("0")))
+
+    avg_rate_all = (total_syp_vol / total_usdt_vol).quantize(Decimal("1")) if total_usdt_vol > 0 else Decimal("0")
 
     return (
-        f"📊 **إحصائيات وتقارير {BOT_NAME}**\n\n"
-        f"👥 **المستخدمون المسجلون:** `{total_users:,}` مستخدم\n\n"
+        f"📊 **التقارير المالية وتحليلات السوق — {BOT_NAME}**\n\n"
+        f"👥 **المستخدمون المسجلون:** `{total_users:,}` (محظور: `{banned_users}`)\n\n"
         "💰 **صافي أرباح العمولات (الصفقات المكتملة):**\n"
-        f"▫️ **الإجمالي العام:** `{format_usdt(total_net_profit)} USDT`\n"
-        f"▫️ **الشهر الحالي:** `{format_usdt(month_net_profit)} USDT`\n\n"
-        "📅 **إحصائيات الشهر الحالي:**\n"
-        f"▫️ **إجمالي الصفقات:** `{total_closed_month}` صفقة\n"
-        f"▫️ **مكتملة:** `{comp_month}` ({calc_pct(comp_month, total_closed_month)})\n"
-        f"▫️ **ملغاة:** `{canc_month}` ({calc_pct(canc_month, total_closed_month)})\n"
-        f"▫️ **منتهية الصلاحية:** `{exp_month}` ({calc_pct(exp_month, total_closed_month)})\n\n"
-        "🌐 **الإحصائيات التراكمية:**\n"
-        f"▫️ **إجمالي الصفقات:** `{total_closed_all}` صفقة\n"
-        f"▫️ **مكتملة:** `{comp_all}` ({calc_pct(comp_all, total_closed_all)})\n"
-        f"▫️ **ملغاة:** `{canc_all}` ({calc_pct(canc_all, total_closed_all)})\n"
-        f"▫️ **منتهية الصلاحية:** `{exp_all}` ({calc_pct(exp_all, total_closed_all)})"
+        f"▫️ **الإجمالي التراكمي:** `{format_usdt(total_net_profit)} USDT`\n"
+        f"▫️ **أرباح الشهر الحالي:** `{format_usdt(month_net_profit)} USDT`\n\n"
+        "💵 **حجم التداول المنفّذ (Completed Volume):**\n"
+        f"▫️ **الإجمالي العام:** `{format_usdt(total_usdt_vol)} USDT` (`{format_syp(total_syp_vol)}` ل.س)\n"
+        f"▫️ **حجم الشهر الحالي:** `{format_usdt(month_usdt_vol)} USDT` (`{format_syp(month_syp_vol)}` ل.س)\n"
+        f"▫️ **متوسط سعر التنفيذ العام:** `{format_syp(avg_rate_all)}` ل.س\n\n"
+        "📦 **سيولة السوق والعروض النشطة حالياً:**\n"
+        f"▫️ **عروض البيع (`{sell_cnt}`):** سيولة `{format_usdt(sell_usdt_pool)} USDT` | متوسط `{format_syp(sell_avg_rate)}` ل.س\n"
+        f"▫️ **عروض الشراء (`{buy_cnt}`):** طلب `{format_usdt(buy_usdt_pool)} USDT` | متوسط `{format_syp(buy_avg_rate)}` ل.س\n\n"
+        "📅 **حركة الصفقات (الشهر الحالي / الإجمالي):**\n"
+        f"▫️ **المكتملة:** `{comp_month}` / `{comp_all}` ({calc_pct(comp_all, total_closed_all)})\n"
+        f"▫️ **الملغاة:** `{canc_month}` / `{canc_all}` ({calc_pct(canc_all, total_closed_all)})\n"
+        f"▫️ **المنتهية:** `{exp_month}` / `{exp_all}` ({calc_pct(exp_all, total_closed_all)})\n"
+        f"▫️ **عدم استلام (DISPUTED):** `{disp_month}` / `{disp_all}`"
     )
+
 
 @admin_router.message(Command("stats"))
 async def cmd_admin_stats(message: Message, db_session: AsyncSession):
@@ -190,100 +257,11 @@ async def cmd_admin_stats(message: Message, db_session: AsyncSession):
         return
     stats_text = await get_stats_text(db_session)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 تحديث الأرقام", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🔄 تحديث التقرير المالي", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🔙 العودة للوحة الإدارة", callback_data="admin_main_menu")]
     ])
     await message.answer(stats_text, reply_markup=kb, parse_mode="Markdown")
 
-@admin_router.message(Command("search"))
-async def cmd_admin_search(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.set_state(AdminFSM.waiting_for_user_search_id)
-    text = (
-        "🔍 **الاستعلام عن مستخدم**\n\n"
-        "أرسل معرّف تيليغرام الرقمي للمستخدم:\n"
-        "*(مثال: `123456789`)*"
-    )
-    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
-    ])
-    sent_msg = await message.answer(text, reply_markup=cancel_kb, parse_mode="Markdown")
-    await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
-
-@admin_router.message(Command("m_on"))
-async def cmd_admin_m_on(message: Message, db_session: AsyncSession):
-    if not is_admin(message.from_user.id):
-        return
-    result = await db_session.execute(
-        select(SystemSetting).where(SystemSetting.key == "maintenance_mode").with_for_update()
-    )
-    setting = result.scalar_one_or_none()
-    if not setting:
-        setting = SystemSetting(key="maintenance_mode", value={"enabled": True})
-        db_session.add(setting)
-    else:
-        setting.value = {"enabled": True}
-
-    add_audit(
-        session=db_session,
-        action="MAINTENANCE_MODE_ON",
-        target_type="system_setting",
-        target_id="maintenance_mode",
-        actor_id=message.from_user.id,
-        actor_type="ADMIN",
-        details={"enabled": True, "method": "command"}
-    )
-    await db_session.commit()
-    set_cached_maintenance(True)
-
-    await message.answer("🟢 **تم تفعيل وضع الصيانة بنجاح!**\nالوصول محصور بالأدمن فقط.", parse_mode="Markdown")
-
-@admin_router.message(Command("m_off"))
-async def cmd_admin_m_off(message: Message, db_session: AsyncSession):
-    if not is_admin(message.from_user.id):
-        return
-    result = await db_session.execute(
-        select(SystemSetting).where(SystemSetting.key == "maintenance_mode").with_for_update()
-    )
-    setting = result.scalar_one_or_none()
-    if not setting:
-        setting = SystemSetting(key="maintenance_mode", value={"enabled": False})
-        db_session.add(setting)
-    else:
-        setting.value = {"enabled": False}
-
-    add_audit(
-        session=db_session,
-        action="MAINTENANCE_MODE_OFF",
-        target_type="system_setting",
-        target_id="maintenance_mode",
-        actor_id=message.from_user.id,
-        actor_type="ADMIN",
-        details={"enabled": False, "method": "command"}
-    )
-    await db_session.commit()
-    set_cached_maintenance(False)
-
-    await message.answer("🔴 **تم تعطيل وضع الصيانة بنجاح!**\nالوصول متاح لجميع المستخدمين الآن.", parse_mode="Markdown")
-
-@admin_router.message(Command("broadcast"))
-async def cmd_admin_broadcast(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.set_state(AdminFSM.waiting_for_broadcast_text)
-    text = (
-        "📢 **إرسال رسالة بث جماعي**\n\n"
-        f"أرسل الآن نص الرسالة المراد تعميمها على مستخدمي {BOT_NAME}:\n\n"
-        "▫️ تدعم الرسالة التنسيق النصي.\n"
-        "▫️ سيتم الإرسال لجميع الحسابات المسجلة تباعاً."
-    )
-    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
-    ])
-    await message.answer(text, reply_markup=cancel_kb, parse_mode="Markdown")
-
-# ================= 2. STATISTICS CALLBACK =================
 
 @admin_router.callback_query(F.data == "admin_stats")
 async def cq_admin_stats(callback: CallbackQuery, db_session: AsyncSession):
@@ -293,7 +271,7 @@ async def cq_admin_stats(callback: CallbackQuery, db_session: AsyncSession):
 
     stats_text = await get_stats_text(db_session)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 تحديث الأرقام", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🔄 تحديث التقرير المالي", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🔙 العودة للوحة الإدارة", callback_data="admin_main_menu")]
     ])
 
@@ -303,7 +281,65 @@ async def cq_admin_stats(callback: CallbackQuery, db_session: AsyncSession):
         await callback.message.answer(stats_text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
-# ================= 3. USER MANAGEMENT & BAN TOGGLE =================
+
+# ================= 3. COMPREHENSIVE USER LOOKUP & MANAGEMENT =================
+
+async def _find_user_by_query(query_str: str, db_session: AsyncSession) -> User | None:
+    cleaned = (query_str or "").strip()
+    if not cleaned:
+        return None
+    cleaned_digits = cleaned.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789"))
+    if cleaned_digits.isdigit():
+        res = await db_session.execute(select(User).where(User.telegram_id == int(cleaned_digits)))
+        return res.scalar_one_or_none()
+
+    uname_clean = cleaned.lstrip("@")
+    res = await db_session.execute(
+        select(User).where(
+            or_(
+                func.lower(User.username) == uname_clean.lower(),
+                func.lower(User.nickname) == cleaned.lower(),
+            )
+        ).order_by(User.created_at.desc()).limit(1)
+    )
+    return res.scalar_one_or_none()
+
+
+@admin_router.message(Command("user", "search"))
+async def cmd_admin_user_search(message: Message, state: FSMContext, db_session: AsyncSession):
+    if not is_admin(message.from_user.id):
+        return
+
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) >= 2 and args[1].strip():
+        await state.clear()
+        query_val = args[1].strip()
+        user = await _find_user_by_query(query_val, db_session)
+        if not user:
+            await message.answer(
+                f"❌ لم يتم العثور على أي مستخدم مطابق لـ `{escape_markdown(query_val)}`.\n"
+                "يمكنك البحث بالمعرف الرقمي، أو `@username`، أو اللقب.",
+                reply_markup=get_admin_back_kb(),
+                parse_mode="Markdown"
+            )
+            return
+        await send_user_card(message, user, db_session)
+        return
+
+    await state.set_state(AdminFSM.waiting_for_user_search_id)
+    text = (
+        "👤 **الاستعلام الشامل عن مستخدم**\n\n"
+        "أرسل أحد البيانات التالية للبحث عن المستخدم:\n"
+        "▫️ **المعرف الرقمي (Telegram ID):** مثل `123456789`\n"
+        "▫️ **اسم المستخدم (Username):** مثل `@username`\n"
+        "▫️ **اللقب المسجل (Nickname)**"
+    )
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
+    ])
+    sent_msg = await message.answer(text, reply_markup=cancel_kb, parse_mode="Markdown")
+    await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
+
 
 @admin_router.callback_query(F.data == "admin_search_user")
 async def cq_admin_search_user(callback: CallbackQuery, state: FSMContext):
@@ -313,8 +349,11 @@ async def cq_admin_search_user(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(AdminFSM.waiting_for_user_search_id)
     text = (
-        "🔍 **الاستعلام عن مستخدم**\n\n"
-        "أرسل معرّف تيليغرام الرقمي للمستخدم (أرقام فقط):"
+        "👤 **الاستعلام الشامل عن مستخدم**\n\n"
+        "أرسل أحد البيانات التالية للبحث عن المستخدم:\n"
+        "▫️ **المعرف الرقمي (Telegram ID):** مثل `123456789`\n"
+        "▫️ **اسم المستخدم (Username):** مثل `@username`\n"
+        "▫️ **اللقب المسجل (Nickname)**"
     )
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
@@ -327,63 +366,157 @@ async def cq_admin_search_user(callback: CallbackQuery, state: FSMContext):
         await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
     await callback.answer()
 
+
 @admin_router.message(AdminFSM.waiting_for_user_search_id)
 async def process_user_search(message: Message, state: FSMContext, db_session: AsyncSession):
     if not is_admin(message.from_user.id):
         return
 
-    text_input = message.text.strip() if message.text else ""
-    if not text_input.isdigit():
-        warn_msg = await message.answer(
-            "⚠️ **معرف غير صالح!** يرجى إرسال أرقام فقط:",
+    text_input = (message.text or "").strip()
+    if not text_input:
+        await message.answer(
+            "⚠️ يرجى إرسال المعرف الرقمي أو `@username` أو اللقب:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
             ]),
             parse_mode="Markdown"
         )
-        await state.update_data(prompt_msg_id=warn_msg.message_id, prompt_chat_id=warn_msg.chat.id)
         return
 
-    target_id = int(text_input)
-    result = await db_session.execute(
-        select(User).where(User.telegram_id == target_id)
-    )
-    user = result.scalar_one_or_none()
+    user = await _find_user_by_query(text_input, db_session)
+    await state.clear()
 
     if not user:
         await message.answer(
-            f"❌ لم يتم العثور على أي مستخدم مسجل بالمعرف `{target_id}` في قاعدة البيانات.",
-            reply_markup=get_admin_back_kb(),
+            f"❌ لم يتم العثور على أي مستخدم مسجل يطابق `{escape_markdown(text_input)}` في قاعدة البيانات.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔍 بحث مرة أخرى", callback_data="admin_search_user")],
+                [InlineKeyboardButton(text="🔙 العودة للوحة الإدارة", callback_data="admin_main_menu")]
+            ]),
             parse_mode="Markdown"
         )
-        await state.clear()
         return
 
-    await state.clear()
-    await send_user_card(message, user)
+    await send_user_card(message, user, db_session)
 
-async def send_user_card(event_or_msg, user: User, is_edit: bool = False):
+
+@admin_router.callback_query(F.data.startswith("adm_view_user_"))
+async def cq_admin_view_user(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك بالوصول.", show_alert=True)
+        return
+    await state.clear()
+
+    target_id = int(callback.data.split("_")[-1])
+    res = await db_session.execute(select(User).where(User.telegram_id == target_id))
+    user = res.scalar_one_or_none()
+    if not user:
+        await callback.answer("المستخدم غير موجود في قاعدة البيانات.", show_alert=True)
+        return
+
+    await send_user_card(callback, user, db_session, is_edit=True)
+    await callback.answer()
+
+
+async def send_user_card(event_or_msg, user: User, db_session: AsyncSession, is_edit: bool = False):
+    uid = user.telegram_id
     ban_badge = "🚫 محظور" if user.is_banned else "✅ نشط ومصرح"
-    uname = safe_username(user.username, user.telegram_id)
+    uname = safe_username(user.username, uid)
+    nick_str = f"`{escape_markdown(user.nickname)}`" if getattr(user, "nickname", None) else "غير محدد"
     reg_date = format_local_datetime(user.created_at) if user.created_at else "غير محدد"
 
+    # Saved payment accounts
+    saved_usdt = getattr(user, "saved_usdt_address", None)
+    usdt_wallet_str = f"`{escape_markdown(saved_usdt)}`" if saved_usdt else "غير محفوظة"
+
+    saved_pm = getattr(user, "saved_payment_info", None)
+    if isinstance(saved_pm, dict) and (saved_pm.get("info") or saved_pm.get("method")):
+        pm_m = escape_markdown(str(saved_pm.get("method") or ""))
+        pm_i = escape_markdown(str(saved_pm.get("info") or ""))
+        syp_account_str = f"{pm_m} — `{pm_i}`" if pm_m else f"`{pm_i}`"
+    elif isinstance(saved_pm, str) and saved_pm.strip():
+        syp_account_str = f"`{escape_markdown(saved_pm.strip())}`"
+    else:
+        syp_account_str = "غير محفوظ"
+
+    # Deal status counts for this user
+    deals_stat_res = await db_session.execute(
+        select(Deal.status, func.count(Deal.id))
+        .where(or_(Deal.seller_id == uid, Deal.buyer_id == uid))
+        .group_by(Deal.status)
+    )
+    d_map = {st: cnt for st, cnt in deals_stat_res.all()}
+    active_deals_cnt = sum(d_map.get(st, 0) for st in OPEN_DEAL_STATUSES)
+    comp_cnt = d_map.get("COMPLETED", 0)
+    canc_cnt = d_map.get("CANCELLED", 0) + d_map.get("EXPIRED", 0)
+    disp_cnt = d_map.get("DISPUTED", 0)
+
+    # Total traded volume in completed deals
+    vol_res = await db_session.execute(
+        select(
+            func.coalesce(func.sum(Deal.amount_usdt), 0),
+            func.coalesce(func.sum(Deal.amount_syp), 0),
+        ).where(
+            or_(Deal.seller_id == uid, Deal.buyer_id == uid),
+            Deal.status == "COMPLETED"
+        )
+    )
+    user_vol_usdt, user_vol_syp = vol_res.one()
+
+    # Active offers count
+    offers_cnt_res = await db_session.execute(
+        select(func.count(Offer.id)).where(
+            Offer.user_id == uid,
+            Offer.status.in_(["active", "negotiating", "reserved"])
+        )
+    )
+    active_offers_cnt = offers_cnt_res.scalar_one() or 0
+
+    # Ratings received count
+    ratings_cnt_res = await db_session.execute(
+        select(func.count(DealRating.id)).where(DealRating.target_id == uid)
+    )
+    ratings_cnt = ratings_cnt_res.scalar_one() or 0
+
+    rep_score = user.reputation_score if user.reputation_score is not None else Decimal("100.0")
+
     card_text = (
-        f"👤 **ملف المستخدم —** `{user.telegram_id}`\n\n"
-        f"▫️ **اسم المستخدم:** {uname}\n"
-        f"▫️ **المعرف الرقمي:** `{user.telegram_id}`\n"
-        f"▫️ **تاريخ التسجيل:** `{reg_date}`\n"
-        f"▫️ **الصفقات المكتملة:** `{user.completed_deals_count}` صفقة\n"
-        f"▫️ **تقييم السمعة:** ⭐ `{user.reputation_score if user.reputation_score is not None else 100}%`\n"
-        f"▫️ **حالة الحساب:** {ban_badge}"
+        f"👤 **السجل الكامل للمستخدم —** `{uid}`\n\n"
+        f"▫️ **المعرف والاسم:** {uname} (`{uid}`)\n"
+        f"▫️ **اللقب المسجل:** {nick_str}\n"
+        f"▫️ **حالة الحساب:** {ban_badge}\n"
+        f"▫️ **تاريخ الانضمام:** `{reg_date}`\n\n"
+        f"💳 **الحسابات المالية المحفوظة:**\n"
+        f"▫️ **محفظة BEP-20:** {usdt_wallet_str}\n"
+        f"▫️ **حساب الليرة:** {syp_account_str}\n\n"
+        f"📊 **ملخص النشاط والتداول:**\n"
+        f"▫️ **الصفقات الجارية الآن:** `{active_deals_cnt}` صفقة\n"
+        f"▫️ **المكتملة:** `{comp_cnt}` | **الملغاة/المنتهية:** `{canc_cnt}`\n"
+        f"▫️ **حالات عدم الاستلام (DISPUTED):** `{disp_cnt}`\n"
+        f"▫️ **إجمالي حجم التداول:** `{format_usdt(user_vol_usdt)} USDT` (`{format_syp(user_vol_syp)}` ل.س)\n"
+        f"▫️ **العروض النشطة حالياً:** `{active_offers_cnt}` عرض\n"
+        f"▫️ **تقييم السمعة:** ⭐ `{rep_score}%` (من `{ratings_cnt}` تقييم)"
     )
 
     toggle_btn_text = "✅ فك الحظر عن المستخدم" if user.is_banned else "🚫 حظر المستخدم فوراً"
     action = "unban" if user.is_banned else "ban"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=toggle_btn_text, callback_data=f"admin_toggle_ban_{action}_{user.telegram_id}")],
-        [InlineKeyboardButton(text="🔍 بحث عن مستخدم آخر", callback_data="admin_search_user")],
-        [InlineKeyboardButton(text="🔙 العودة للوحة الإدارة", callback_data="admin_main_menu")]
+        [
+            InlineKeyboardButton(text=f"📋 صفقات المستخدم ({active_deals_cnt + comp_cnt + disp_cnt})", callback_data=f"adm_user_deals_{uid}"),
+            InlineKeyboardButton(text=f"⭐ التقييمات ({ratings_cnt})", callback_data=f"adm_user_ratings_{uid}")
+        ],
+        [
+            InlineKeyboardButton(text=f"📦 العروض النشطة ({active_offers_cnt})", callback_data=f"adm_user_offers_{uid}"),
+            InlineKeyboardButton(text="✉️ إرسال رسالة مباشرة", callback_data=f"adm_msg_user_{uid}")
+        ],
+        [
+            InlineKeyboardButton(text=toggle_btn_text, callback_data=f"admin_toggle_ban_{action}_{uid}")
+        ],
+        [
+            InlineKeyboardButton(text="🔍 بحث عن مستخدم آخر", callback_data="admin_search_user"),
+            InlineKeyboardButton(text="🔙 لوحة الإدارة", callback_data="admin_main_menu")
+        ]
     ])
 
     if is_edit and isinstance(event_or_msg, CallbackQuery):
@@ -396,6 +529,7 @@ async def send_user_card(event_or_msg, user: User, is_edit: bool = False):
     else:
         await event_or_msg.answer(card_text, reply_markup=kb, parse_mode="Markdown")
 
+
 @admin_router.callback_query(F.data.startswith("admin_toggle_ban_"))
 async def cq_admin_toggle_ban(callback: CallbackQuery, db_session: AsyncSession):
     if not is_admin(callback.from_user.id):
@@ -403,7 +537,7 @@ async def cq_admin_toggle_ban(callback: CallbackQuery, db_session: AsyncSession)
         return
 
     parts = callback.data.split("_")
-    action = parts[3] # 'ban' or 'unban'
+    action = parts[3]  # 'ban' or 'unban'
     target_id = int(parts[4])
 
     result = await db_session.execute(
@@ -417,10 +551,10 @@ async def cq_admin_toggle_ban(callback: CallbackQuery, db_session: AsyncSession)
 
     if action == "ban":
         user.is_banned = True
-        msg = f"تم حظر المستخدم {target_id} بنجاح."
+        msg = f"🚫 تم حظر المستخدم {target_id} بنجاح."
     else:
         user.is_banned = False
-        msg = f"تم إلغاء حظر المستخدم {target_id} بنجاح."
+        msg = f"✅ تم إلغاء حظر المستخدم {target_id} بنجاح."
 
     add_audit(
         session=db_session,
@@ -435,197 +569,530 @@ async def cq_admin_toggle_ban(callback: CallbackQuery, db_session: AsyncSession)
     await db_session.commit()
 
     await callback.answer(msg, show_alert=True)
-    await send_user_card(callback, user, is_edit=True)
+    await send_user_card(callback, user, db_session, is_edit=True)
 
-# ================= 4. BROADCAST SYSTEM =================
 
-@admin_router.callback_query(F.data == "admin_broadcast")
-async def cq_admin_broadcast(callback: CallbackQuery, state: FSMContext):
+# --- User Sub-screens: Ratings, Deals, Offers, Direct Message ---
+
+@admin_router.callback_query(F.data.startswith("adm_user_ratings_"))
+async def cq_admin_user_ratings(callback: CallbackQuery, db_session: AsyncSession):
     if not is_admin(callback.from_user.id):
-        await callback.answer("غير مصرح لك بالوصول.", show_alert=True)
+        await callback.answer("غير مصرح لك.", show_alert=True)
         return
 
-    await state.set_state(AdminFSM.waiting_for_broadcast_text)
-    text = (
-        f"📢 **إرسال رسالة بث عام — {BOT_NAME}**\n\n"
-        "أرسل نص الرسالة المطلوب تعميمها على مستخدمي البوت.\n\n"
-        "▫️ تدعم الرسالة التنسيق النصي.\n"
-        "▫️ يتم الإرسال لكافة الحسابات المسجلة تباعاً."
+    uid = int(callback.data.split("_")[-1])
+    user_res = await db_session.execute(select(User).where(User.telegram_id == uid))
+    user = user_res.scalar_one_or_none()
+    if not user:
+        await callback.answer("المستخدم غير موجود.", show_alert=True)
+        return
+
+    ratings_res = await db_session.execute(
+        select(DealRating)
+        .where(DealRating.target_id == uid)
+        .order_by(DealRating.id.desc())
+        .limit(15)
     )
-    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
-    ])
-    await callback.message.edit_text(text, reply_markup=cancel_kb, parse_mode="Markdown")
+    ratings = list(ratings_res.scalars().all())
+
+    rep_score = user.reputation_score if user.reputation_score is not None else Decimal("100.0")
+    lines = [
+        f"⭐ **سجل التقييمات المستلمة للمستخدم** `{uid}`\n"
+        f"▫️ **تقييم السمعة الحالي:** `{rep_score}%`\n\n"
+    ]
+
+    kb_rows = []
+    if not ratings:
+        lines.append("لا توجد أي تقييمات مسجلة لهذا المستخدم حتى الآن.")
+    else:
+        lines.append("يمكنك حذف أي تقييم كيدي أو خاطئ بضغطة زر لإعادة احتساب السمعة فوراً:\n\n")
+        for r in ratings:
+            stars_vis = format_stars(r.stars)
+            dt_str = format_local_datetime(r.created_at) if r.created_at else "—"
+            lines.append(
+                f"🔹 **صفقة #{r.deal_id}** — {stars_vis} (`{r.stars}/5`)\n"
+                f"   • المقيم: `{r.rater_id}` | التوقيت: `{dt_str}`\n"
+            )
+            kb_rows.append([
+                InlineKeyboardButton(
+                    text=f"🗑️ حذف تقييم صفقة #{r.deal_id} ({r.stars}⭐)",
+                    callback_data=f"adm_del_user_rating_{r.id}_{uid}"
+                ),
+                InlineKeyboardButton(
+                    text=f"🔍 صفقة #{r.deal_id}",
+                    callback_data=f"adm_inspect_deal_{r.deal_id}"
+                )
+            ])
+
+    kb_rows.append([InlineKeyboardButton(text="🔙 العودة لملف المستخدم", callback_data=f"adm_view_user_{uid}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+    try:
+        await callback.message.edit_text("".join(lines), reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer("".join(lines), reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
-@admin_router.message(AdminFSM.waiting_for_broadcast_text)
-async def process_broadcast_message(message: Message, state: FSMContext, db_session: AsyncSession, bot: Bot):
+
+@admin_router.callback_query(F.data.startswith("adm_del_user_rating_"))
+async def cq_admin_del_user_rating(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    rating_id = int(parts[4])
+    uid = int(parts[5])
+
+    rating_res = await db_session.execute(
+        select(DealRating).where(DealRating.id == rating_id).with_for_update()
+    )
+    rating = rating_res.scalar_one_or_none()
+    if not rating:
+        await callback.answer("التقييم غير موجود أو تم حذفه مسبقاً.", show_alert=True)
+        return
+
+    deal_id = rating.deal_id
+    rater_id = rating.rater_id
+    target_id = rating.target_id
+    deleted_stars = rating.stars
+
+    await db_session.delete(rating)
+    await db_session.flush()
+
+    new_rep, total_ratings = await recalculate_user_reputation(db_session, target_id)
+
+    add_audit(
+        session=db_session,
+        action="DELETE_RATING",
+        target_type="user",
+        target_id=target_id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={
+            "rating_id": rating_id,
+            "deal_id": deal_id,
+            "rater_id": rater_id,
+            "deleted_stars": deleted_stars,
+            "new_reputation_score": str(new_rep),
+            "remaining_ratings": total_ratings
+        }
+    )
+    await db_session.commit()
+
+    await callback.answer(
+        f"✅ تم حذف التقييم وإعادة احتساب سمعة المستخدم ({new_rep}%).",
+        show_alert=True
+    )
+    # Refresh the user ratings view
+    await cq_admin_user_ratings(callback, db_session)
+
+
+@admin_router.callback_query(F.data.startswith("adm_user_deals_"))
+async def cq_admin_user_deals(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    uid = int(callback.data.split("_")[-1])
+    deals_res = await db_session.execute(
+        select(Deal)
+        .where(or_(Deal.seller_id == uid, Deal.buyer_id == uid))
+        .order_by(Deal.id.desc())
+        .limit(12)
+    )
+    deals = list(deals_res.scalars().all())
+
+    lines = [
+        f"📋 **سجل صفقات المستخدم** `{uid}` *(آخر 12 صفقة)*\n\n"
+    ]
+    kb_rows = []
+
+    if not deals:
+        lines.append("لا توجد أي صفقات مسجلة لهذا المستخدم.")
+    else:
+        for d in deals:
+            role_ar = "🔴 بائع" if d.seller_id == uid else "🟢 مشتري"
+            other_id = d.buyer_id if d.seller_id == uid else d.seller_id
+            lines.append(
+                f"🔸 **صفقة #{d.id}** — `{d.status}`\n"
+                f"   • الدور: {role_ar} | الطرف الآخر: `{other_id}`\n"
+                f"   • الكمية: `{format_usdt(d.amount_usdt)} USDT` (`{format_syp(d.amount_syp)}` ل.س)\n"
+            )
+            kb_rows.append([
+                InlineKeyboardButton(
+                    text=f"🔍 فحص الصفقة #{d.id} ({d.status})",
+                    callback_data=f"adm_inspect_deal_{d.id}"
+                )
+            ])
+
+    kb_rows.append([InlineKeyboardButton(text="🔙 العودة لملف المستخدم", callback_data=f"adm_view_user_{uid}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+    try:
+        await callback.message.edit_text("".join(lines), reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer("".join(lines), reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("adm_user_offers_"))
+async def cq_admin_user_offers(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    uid = int(callback.data.split("_")[-1])
+    offers_res = await db_session.execute(
+        select(Offer)
+        .where(Offer.user_id == uid, Offer.status.in_(["active", "negotiating", "reserved"]))
+        .order_by(Offer.id.desc())
+    )
+    offers = list(offers_res.scalars().all())
+
+    lines = [
+        f"📦 **العروض النشطة للمستخدم** `{uid}`\n\n"
+    ]
+    kb_rows = []
+
+    if not offers:
+        lines.append("لا توجد أي عروض نشطة أو محجوزة لهذا المستخدم حالياً.")
+    else:
+        for o in offers:
+            t_ar = "🔴 بيع USDT" if o.offer_type == "sell" else "🟢 شراء USDT"
+            lines.append(
+                f"🔹 **عرض #{o.id}** ({t_ar}) — الحالة: `{o.status}`\n"
+                f"   • الكمية: `{format_usdt(o.min_limit)}` - `{format_usdt(o.max_limit)} USDT` | السعر: `{format_syp(o.rate)}` ل.س\n"
+            )
+            if o.status in ["active", "negotiating"]:
+                kb_rows.append([
+                    InlineKeyboardButton(
+                        text=f"🗑️ حذف وإلغاء العرض #{o.id} من السوق",
+                        callback_data=f"adm_del_offer_{o.id}_{uid}"
+                    )
+                ])
+
+    kb_rows.append([InlineKeyboardButton(text="🔙 العودة لملف المستخدم", callback_data=f"adm_view_user_{uid}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+    try:
+        await callback.message.edit_text("".join(lines), reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer("".join(lines), reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("adm_del_offer_"))
+async def cq_admin_delete_offer(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    offer_id = int(parts[3])
+    return_uid = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+
+    offer_res = await db_session.execute(
+        select(Offer).where(Offer.id == offer_id).with_for_update()
+    )
+    offer = offer_res.scalar_one_or_none()
+    if not offer:
+        await callback.answer("العرض غير موجود.", show_alert=True)
+        return
+
+    if offer.status == "reserved":
+        await callback.answer("⚠️ لا يمكن حذف العرض لأنه محجوز في صفقة جارية حالياً. قم بإلغاء الصفقة أولاً.", show_alert=True)
+        return
+
+    owner_id = offer.user_id
+    offer.status = "deleted"
+
+    add_audit(
+        session=db_session,
+        action="ADMIN_DELETE_OFFER",
+        target_type="offer",
+        target_id=offer_id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"owner_id": owner_id}
+    )
+    await db_session.commit()
+
+    await update_channel_offer_message(callback.bot, offer)
+
+    try:
+        await callback.bot.send_message(
+            chat_id=owner_id,
+            text=(
+                f"🗑️ **إشعار إداري — حذف عرض #{offer_id}**\n\n"
+                f"قامت إدارة {BOT_NAME} بإزالة عرضك رقم `#{offer_id}` من السوق والقناة العامة."
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    await callback.answer(f"✅ تم حذف العرض #{offer_id} وإزالته من القناة العامة.", show_alert=True)
+
+    if return_uid > 0:
+        callback_copy = callback.model_copy(update={"data": f"adm_user_offers_{return_uid}"})
+        await cq_admin_user_offers(callback_copy, db_session)
+    else:
+        callback_copy = callback.model_copy(update={"data": "adm_ops_filter_offers"})
+        await cq_admin_live_ops_filter(callback_copy, db_session)
+
+
+@admin_router.callback_query(F.data.startswith("adm_msg_user_"))
+async def cq_admin_msg_user(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    uid = int(callback.data.split("_")[-1])
+    await state.set_state(AdminFSM.waiting_for_direct_user_msg)
+    await state.update_data(target_user_id=uid)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء والعودة لملف المستخدم", callback_data=f"adm_view_user_{uid}")]
+    ])
+    text = (
+        f"✉️ **إرسال رسالة إدارية مباشرة إلى المستخدم** `{uid}`\n\n"
+        f"أرسل الآن نص الرسالة المطلوب إرسالها إلى هذا المستخدم عبر {BOT_NAME}:"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@admin_router.message(AdminFSM.waiting_for_direct_user_msg)
+async def process_direct_user_msg(message: Message, state: FSMContext, db_session: AsyncSession, bot: Bot):
     if not is_admin(message.from_user.id):
         return
 
-    broadcast_text = message.text or message.caption
-    if not broadcast_text:
-        await message.answer("⚠️ يرجى إرسال نص للرسالة.")
+    data = await state.get_data()
+    target_uid = data.get("target_user_id")
+    msg_content = (message.text or message.caption or "").strip()
+
+    if not msg_content or not target_uid:
+        await message.answer("⚠️ يرجى إرسال نص واضح للرسالة.")
         return
 
     await state.clear()
 
-    # Fetch all users
-    users_res = await db_session.execute(select(User.telegram_id))
-    all_user_ids = users_res.scalars().all()
-    total_recipients = len(all_user_ids)
-
-    status_msg = await message.answer(
-        f"⏳ جاري إرسال البث لـ `{total_recipients}` مستخدم...\nيرجى الانتظار.",
-        parse_mode="Markdown"
+    formatted_msg = (
+        f"📩 **رسالة رسمية من إدارة {BOT_NAME}**\n\n"
+        f"{msg_content}"
     )
-
-    success_count = 0
-    fail_count = 0
-
-    formatted_broadcast = (
-        f"📢 **تنبيه إداري — {BOT_NAME}**\n\n"
-        f"{broadcast_text}"
-    )
-
-    for uid in all_user_ids:
-        try:
-            await bot.send_message(
-                chat_id=uid,
-                text=formatted_broadcast,
-                parse_mode="Markdown"
-            )
-            success_count += 1
-        except Exception:
-            fail_count += 1
-        # Safe rate limit delay (max 25 messages per second to strictly respect Telegram's 30/s limit)
-        await asyncio.sleep(0.04)
-
-    summary_text = (
-        "✅ **اكتملت عملية البث الجماعي**\n\n"
-        f"▫️ **إجمالي المستهدفين:** `{total_recipients}`\n"
-        f"▫️ **تم الإرسال بنجاح:** `{success_count}`\n"
-        f"▫️ **فشل الإرسال (حظر أو حساب ملغى):** `{fail_count}`"
-    )
-    await status_msg.edit_text(summary_text, reply_markup=get_admin_back_kb(), parse_mode="Markdown")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 العودة لملف المستخدم", callback_data=f"adm_view_user_{target_uid}")],
+        [InlineKeyboardButton(text="👑 لوحة الإدارة", callback_data="admin_main_menu")]
+    ])
 
     try:
-        await record_audit(
-            session=db_session,
-            action="BROADCAST",
-            target_type="system",
-            target_id="broadcast",
-            actor_id=message.from_user.id,
-            actor_type="ADMIN",
-            details={
-                "total_recipients": total_recipients,
-                "success_count": success_count,
-                "fail_count": fail_count
-            }
+        await bot.send_message(chat_id=target_uid, text=formatted_msg, parse_mode="Markdown")
+        await message.answer(
+            f"✅ **تم إرسال الرسالة الإدارية بنجاح إلى المستخدم** `{target_uid}`.",
+            reply_markup=kb,
+            parse_mode="Markdown"
         )
     except Exception as e:
-        logger.warning(f"Failed to record audit for broadcast: {e}")
-
-# ================= 5. MAINTENANCE MODE TOGGLE =================
-
-@admin_router.callback_query(F.data == "admin_toggle_maintenance")
-async def cq_admin_toggle_maintenance(callback: CallbackQuery, db_session: AsyncSession):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("غير مصرح لك بالوصول.", show_alert=True)
-        return
-
-    result = await db_session.execute(
-        select(SystemSetting).where(SystemSetting.key == "maintenance_mode").with_for_update()
-    )
-    setting = result.scalar_one_or_none()
-
-    current_val = False
-    if setting:
-        if isinstance(setting.value, dict):
-            current_val = bool(setting.value.get("enabled", False))
-        elif isinstance(setting.value, bool):
-            current_val = setting.value
-
-    new_val = not current_val
-
-    if not setting:
-        setting = SystemSetting(
-            key="maintenance_mode",
-            value={"enabled": new_val}
+        await message.answer(
+            f"❌ **تعذر إرسال الرسالة إلى المستخدم** `{target_uid}`:\n`{e}`",
+            reply_markup=kb,
+            parse_mode="Markdown"
         )
-        db_session.add(setting)
-    else:
-        setting.value = {"enabled": new_val}
-
-    add_audit(
-        session=db_session,
-        action="MAINTENANCE_MODE_ON" if new_val else "MAINTENANCE_MODE_OFF",
-        target_type="system_setting",
-        target_id="maintenance_mode",
-        actor_id=callback.from_user.id,
-        actor_type="ADMIN",
-        details={"enabled": new_val, "method": "button"}
-    )
-
-    await db_session.commit()
-    set_cached_maintenance(new_val)
-
-    status_str = "🟢 تم تفعيل وضع الصيانة! (الوصول محصور بالأدمن فقط)" if new_val else "🔴 تم تعطيل وضع الصيانة! (الوصول متاح للجميع)"
-    await callback.answer(status_str, show_alert=True)
-
-    # Re-render main admin menu
-    m_status_ar = "🟢 مفعل (الوصول محصور بالأدمن)" if new_val else "🔴 معطل (الوصول متاح للجميع)"
-    text = (
-        f"👑 **لوحة تحكم {BOT_NAME}**\n\n"
-        "مرحباً بك في لوحة الإدارة.\n"
-        "مراقبة نشاط السوق، وإدارة المستخدمين، والتحكم بحالة الصيانة:\n\n"
-        f"🛠️ **حالة الصيانة:** {m_status_ar}\n\n"
-        "اختر الإجراء المطلوب من القائمة:"
-    )
-    try:
-        await callback.message.edit_text(text, reply_markup=get_admin_main_kb(new_val), parse_mode="Markdown")
-    except Exception:
-        await callback.message.answer(text, reply_markup=get_admin_main_kb(new_val), parse_mode="Markdown")
 
 
-# ================= 6. DEALS OVERSIGHT: /pending & /deal =================
+# ================= 4. LIVE OPERATIONS CENTER (/pending & adm_live_ops) =================
+
+def _build_live_ops_filter_kb(active_tab: str) -> list[list[InlineKeyboardButton]]:
+    tabs = [
+        ("pending", "🛡️ بانتظار الاعتماد/التأكيد"),
+        ("active", "⏳ جميع الصفقات الجارية"),
+        ("disputed", "⚠️ صفقات عدم الاستلام"),
+        ("offers", "📦 العروض النشطة بالسوق"),
+    ]
+    rows = []
+    pair = []
+    for key, label in tabs:
+        prefix = "🔘 " if key == active_tab else ""
+        pair.append(InlineKeyboardButton(text=f"{prefix}{label}", callback_data=f"adm_ops_filter_{key}"))
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    return rows
+
+
+async def _render_live_ops_center(
+    db_session: AsyncSession,
+    filter_key: str = "pending"
+) -> tuple[str, InlineKeyboardMarkup]:
+    nav_rows = _build_live_ops_filter_kb(filter_key)
+    item_rows = []
+
+    if filter_key == "pending":
+        res = await db_session.execute(
+            select(Deal)
+            .where(Deal.status.in_(["ADMIN_APPROVAL", "SYP_PAYMENT_SENT"]))
+            .order_by(Deal.created_at.desc())
+        )
+        deals = list(res.scalars().all())
+        app_cnt = sum(1 for d in deals if d.status == "ADMIN_APPROVAL")
+        syp_cnt = sum(1 for d in deals if d.status == "SYP_PAYMENT_SENT")
+
+        lines = [
+            f"📡 **غرفة العمليات — صفقات بانتظار الاعتماد والتأكيد ({len(deals)})**\n"
+            f"▫️ **بانتظار إطلاق الضمان (`ADMIN_APPROVAL`):** `{app_cnt}`\n"
+            f"▫️ **بانتظار تأكيد استلام الليرة (`SYP_PAYMENT_SENT`):** `{syp_cnt}`\n\n"
+        ]
+        if not deals:
+            lines.append("✅ لا توجد أي صفقات معلقة بانتظار التدخل حالياً.")
+        else:
+            for d in deals[:12]:
+                badge = "🛡️ إطلاق ضمان" if d.status == "ADMIN_APPROVAL" else "💸 تأكيد ليرة"
+                lines.append(
+                    f"🔸 **صفقة #{d.id}** ({badge})\n"
+                    f"   • الكمية: `{format_usdt(d.amount_usdt)} USDT` | المقابل: `{format_syp(d.amount_syp)}` ل.س\n"
+                    f"   • البائع: `{d.seller_id}` | المشتري: `{d.buyer_id}`\n"
+                )
+                item_rows.append([
+                    InlineKeyboardButton(
+                        text=f"🔍 فتح وفحص صفقة #{d.id} ({badge})",
+                        callback_data=f"adm_inspect_deal_{d.id}"
+                    )
+                ])
+
+    elif filter_key == "active":
+        res = await db_session.execute(
+            select(Deal)
+            .where(Deal.status.in_(OPEN_DEAL_STATUSES))
+            .order_by(Deal.id.desc())
+        )
+        deals = list(res.scalars().all())
+        lines = [
+            f"⏳ **غرفة العمليات — جميع الصفقات الجارية الآن ({len(deals)})**\n\n"
+        ]
+        if not deals:
+            lines.append("لا توجد أي صفقات جارية أو مفتوحة في النظام حالياً.")
+        else:
+            for d in deals[:12]:
+                lines.append(
+                    f"🔸 **صفقة #{d.id}** — `{d.status}`\n"
+                    f"   • الكمية: `{format_usdt(d.amount_usdt)} USDT` (`{format_syp(d.amount_syp)}` ل.س)\n"
+                    f"   • البائع: `{d.seller_id}` | المشتري: `{d.buyer_id}`\n"
+                )
+                item_rows.append([
+                    InlineKeyboardButton(
+                        text=f"🔍 فحص والتدخل في صفقة #{d.id} ({d.status})",
+                        callback_data=f"adm_inspect_deal_{d.id}"
+                    )
+                ])
+
+    elif filter_key == "disputed":
+        res = await db_session.execute(
+            select(Deal)
+            .where(Deal.status == "DISPUTED")
+            .order_by(Deal.id.desc())
+            .limit(12)
+        )
+        deals = list(res.scalars().all())
+        lines = [
+            f"⚠️ **غرفة العمليات — صفقات عدم الاستلام (`DISPUTED`) ({len(deals)})**\n\n"
+        ]
+        if not deals:
+            lines.append("✅ لا توجد صفقات مسجلة بحالة عدم استلام.")
+        else:
+            for d in deals:
+                lines.append(
+                    f"🔸 **صفقة #{d.id}** — `{format_usdt(d.amount_usdt)} USDT` (`{format_syp(d.amount_syp)}` ل.س)\n"
+                    f"   • البائع: `{d.seller_id}` | المشتري: `{d.buyer_id}`\n"
+                )
+                item_rows.append([
+                    InlineKeyboardButton(
+                        text=f"🔍 مراجعة ملف صفقة #{d.id}",
+                        callback_data=f"adm_inspect_deal_{d.id}"
+                    )
+                ])
+
+    else:  # offers
+        res = await db_session.execute(
+            select(Offer)
+            .where(Offer.status.in_(["active", "negotiating", "reserved"]))
+            .order_by(Offer.id.desc())
+            .limit(12)
+        )
+        offers = list(res.scalars().all())
+        lines = [
+            f"📦 **غرفة العمليات — العروض النشطة في السوق ({len(offers)})**\n\n"
+        ]
+        if not offers:
+            lines.append("لا توجد عروض نشطة في السوق حالياً.")
+        else:
+            for o in offers:
+                t_ar = "🔴 بيع" if o.offer_type == "sell" else "🟢 شراء"
+                lines.append(
+                    f"🔹 **عرض #{o.id}** ({t_ar}) — `{o.status}` | التاجر: `{o.user_id}`\n"
+                    f"   • الكمية: `{format_usdt(o.min_limit)}` - `{format_usdt(o.max_limit)} USDT` | السعر: `{format_syp(o.rate)}` ل.س\n"
+                )
+                row_btns = [
+                    InlineKeyboardButton(text=f"👤 التاجر {o.user_id}", callback_data=f"adm_view_user_{o.user_id}")
+                ]
+                if o.status in ["active", "negotiating"]:
+                    row_btns.append(
+                        InlineKeyboardButton(text=f"🗑️ حذف عرض #{o.id}", callback_data=f"adm_del_offer_{o.id}_0")
+                    )
+                item_rows.append(row_btns)
+
+    footer_rows = [
+        [
+            InlineKeyboardButton(text="🔄 تحديث القائمة", callback_data=f"adm_ops_filter_{filter_key}"),
+            InlineKeyboardButton(text="🔙 لوحة الإدارة", callback_data="admin_main_menu")
+        ]
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=nav_rows + item_rows + footer_rows)
+    return "".join(lines), kb
+
 
 @admin_router.message(Command("pending"))
 async def cmd_admin_pending(message: Message, db_session: AsyncSession):
     if not is_admin(message.from_user.id):
         return
+    text, kb = await _render_live_ops_center(db_session, "pending")
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
-    result = await db_session.execute(
-        select(Deal)
-        .where(Deal.status.in_(["ADMIN_APPROVAL", "SYP_PAYMENT_SENT"]))
-        .order_by(Deal.created_at.desc())
-    )
-    all_pending = list(result.scalars().all())
 
-    if not all_pending:
-        await message.answer(
-            "✅ **لا توجد أي صفقات معلقة بانتظار الاعتماد أو تأكيد الاستلام حالياً.**\n\nكافة الصفقات تم تدقيقها وإطلاقها.",
-            parse_mode="Markdown"
-        )
+@admin_router.callback_query(F.data == "adm_live_ops")
+async def cq_admin_live_ops(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
         return
+    text, kb = await _render_live_ops_center(db_session, "pending")
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
 
-    approval_deals = [d for d in all_pending if d.status == "ADMIN_APPROVAL"]
-    syp_sent_deals = [d for d in all_pending if d.status == "SYP_PAYMENT_SENT"]
-    ordered_deals = approval_deals + syp_sent_deals
 
-    await message.answer(
-        f"🛡️ **الصفقات المعلقة للمتابعة الإدارية:** `{len(ordered_deals)}` صفقة\n"
-        f"▫️ **بانتظار إطلاق الضمان (`ADMIN_APPROVAL`):** `{len(approval_deals)}`\n"
-        f"▫️ **بانتظار تأكيد استلام البائع (`SYP_PAYMENT_SENT`):** `{len(syp_sent_deals)}`\n\n"
-        "يمكنك مراجعة كل صفقة واتخاذ الإجراء المناسب:",
-        parse_mode="Markdown"
-    )
+@admin_router.callback_query(F.data.startswith("adm_ops_filter_"))
+async def cq_admin_live_ops_filter(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+    filter_key = callback.data.split("_")[-1]
+    text, kb = await _render_live_ops_center(db_session, filter_key)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
 
-    for deal in ordered_deals:
-        admin_text = await format_admin_deal_review_text(deal, db_session)
-        admin_kb = await build_admin_deal_keyboard(deal, db_session)
-        await message.answer(admin_text, reply_markup=admin_kb, parse_mode="Markdown")
 
+# ================= 5. DEAL INSPECTION & ADMIN INTERVENTION (/deal) =================
 
 @admin_router.callback_query(F.data == "admin_search_deal")
 async def cq_admin_search_deal(callback: CallbackQuery, state: FSMContext):
@@ -636,7 +1103,7 @@ async def cq_admin_search_deal(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminFSM.waiting_for_deal_search_id)
     text = (
         "🔍 **الاستعلام عن صفقة / عملية ربط**\n\n"
-        "أرسل رقم الصفقة أو عملية الربط المطلوب فحصها (أرقام فقط):"
+        "أرسل رقم الصفقة أو عملية الربط المطلوب فحصها والتدخل بها (أرقام فقط):"
     )
     cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
@@ -752,6 +1219,323 @@ async def cq_admin_inspect_deal(callback: CallbackQuery, db_session: AsyncSessio
     await callback.answer()
 
 
+# --- View Payment Proof Photo ---
+
+@admin_router.callback_query(F.data.startswith("adm_view_proof_"))
+async def cq_admin_view_proof(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    deal_id = int(callback.data.split("_")[-1])
+    proof_res = await db_session.execute(
+        select(PaymentProof)
+        .where(PaymentProof.deal_id == deal_id)
+        .order_by(PaymentProof.id.desc())
+        .limit(1)
+    )
+    proof = proof_res.scalar_one_or_none()
+    if not proof or not proof.transaction_reference:
+        await callback.answer("لا يوجد إشعار دفع مرفق لهذه الصفقة.", show_alert=True)
+        return
+
+    ref = proof.transaction_reference
+    file_id = ref.removeprefix("PHOTO_") if ref.startswith("PHOTO_") else ref
+    dt_str = format_local_datetime(proof.created_at) if proof.created_at else "—"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🔍 العودة لتفاصيل الصفقة #{deal_id}", callback_data=f"adm_inspect_deal_{deal_id}")]
+    ])
+    try:
+        await callback.message.answer_photo(
+            photo=file_id,
+            caption=(
+                f"📸 **صورة إشعار تحويل الليرة — صفقة #{deal_id}**\n"
+                f"▫️ **توقيت الإرفاق:** `{dt_str}`"
+            ),
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"تعذر عرض الصورة: {e}", show_alert=True)
+
+
+# --- Admin Deal Operational Interventions (Force Confirm SYP / Force Dispute / Force Cancel) ---
+
+@admin_router.callback_query(F.data.startswith("adm_ask_force_conf_"))
+async def cq_admin_ask_force_confirm_syp(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    deal_id = int(callback.data.split("_")[-1])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ نعم، تأكيد الاستلام إدارياً", callback_data=f"adm_do_force_conf_{deal_id}"),
+            InlineKeyboardButton(text="↩️ تراجع", callback_data=f"adm_inspect_deal_{deal_id}")
+        ]
+    ])
+    text = (
+        f"⚡ **تأكيد إداري لاستلام الليرة — صفقة #{deal_id}**\n\n"
+        "هل أنت متأكد من اعتماد استلام الليرة السورية نيابةً عن البائع المتأخر ونقل الصفقة إلى مرحلة `ADMIN_APPROVAL` لإطلاق الضمان؟"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("adm_do_force_conf_"))
+async def cq_admin_do_force_confirm_syp(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    deal_id = int(callback.data.split("_")[-1])
+    res = await db_session.execute(select(Deal).where(Deal.id == deal_id).with_for_update())
+    deal = res.scalar_one_or_none()
+    if not deal:
+        await callback.answer("الصفقة غير موجودة.", show_alert=True)
+        return
+
+    if deal.status != "SYP_PAYMENT_SENT":
+        await callback.answer(f"لا يمكن تنفيذ هذا الإجراء، حالة الصفقة الحالية: {deal.status}", show_alert=True)
+        return
+
+    deal.status = "ADMIN_APPROVAL"
+    deal.expires_at = None
+
+    add_audit(
+        session=db_session,
+        action="ADMIN_FORCE_CONFIRM_SYP",
+        target_type="deal",
+        target_id=deal.id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"seller_id": deal.seller_id, "buyer_id": deal.buyer_id}
+    )
+    await db_session.commit()
+
+    await push_deal_card(deal.id, callback.bot)
+
+    for uid in [deal.buyer_id, deal.seller_id]:
+        try:
+            await callback.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"🛡️ **تحديث إداري — صفقة #{deal.id}**\n\n"
+                    f"قامت إدارة {BOT_NAME} باعتماد تأكيد الحوالة ونقل الصفقة إلى مرحلة التدقيق النهائي لإطلاق الضمان (`ADMIN_APPROVAL`)."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    await callback.answer("✅ تم تأكيد استلام الليرة إدارياً ونقل الصفقة للاعتماد.", show_alert=True)
+    admin_text = await format_admin_deal_review_text(deal, db_session)
+    kb = await build_admin_deal_keyboard(deal, db_session)
+    try:
+        await callback.message.edit_text(admin_text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(admin_text, reply_markup=kb, parse_mode="Markdown")
+
+
+@admin_router.callback_query(F.data.startswith("adm_ask_force_dispute_"))
+async def cq_admin_ask_force_dispute(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    deal_id = int(callback.data.split("_")[-1])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⚠️ نعم، إغلاق بعدم الاستلام (DISPUTED)", callback_data=f"adm_do_force_dispute_{deal_id}"),
+            InlineKeyboardButton(text="↩️ تراجع", callback_data=f"adm_inspect_deal_{deal_id}")
+        ]
+    ])
+    text = (
+        f"⚠️ **تأكيد إغلاق الصفقة #{deal_id} بحالة عدم استلام (`DISPUTED`)**\n\n"
+        "سيتم إيقاف الصفقة وتثبيت حالتها كـ `DISPUTED` وإلغاء العرض المرتبط بها مع إشعار الطرفين.\n"
+        "هل أنت متأكد من المتابعة؟"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("adm_do_force_dispute_"))
+async def cq_admin_do_force_dispute(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    deal_id = int(callback.data.split("_")[-1])
+    res = await db_session.execute(select(Deal).where(Deal.id == deal_id).with_for_update())
+    deal = res.scalar_one_or_none()
+    if not deal:
+        await callback.answer("الصفقة غير موجودة.", show_alert=True)
+        return
+
+    if deal.status in ["COMPLETED", "CANCELLED", "EXPIRED", "DISPUTED"]:
+        await callback.answer(f"الصفقة مغلقة مسبقاً بالحالة: {deal.status}", show_alert=True)
+        return
+
+    prev_status = deal.status
+    deal.status = "DISPUTED"
+    deal.expires_at = None
+
+    offer = None
+    if deal.offer_id:
+        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id).with_for_update())
+        offer = offer_res.scalar_one_or_none()
+        if offer:
+            offer.status = "cancelled"
+
+    dispute_row = Dispute(
+        deal_id=deal.id,
+        opened_by=callback.from_user.id,
+        reason="إغلاق إداري بحالة عدم استلام (DISPUTED)"
+    )
+    db_session.add(dispute_row)
+
+    add_audit(
+        session=db_session,
+        action="ADMIN_CLOSE_DISPUTED",
+        target_type="deal",
+        target_id=deal.id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"previous_status": prev_status}
+    )
+    await db_session.commit()
+
+    if offer:
+        await update_channel_offer_message(callback.bot, offer)
+
+    await push_deal_card(deal.id, callback.bot)
+
+    for uid in [deal.buyer_id, deal.seller_id]:
+        try:
+            await callback.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"⚠️ **إشعار إداري — إغلاق صفقة #{deal.id}**\n\n"
+                    f"تم إغلاق الصفقة رقم `#{deal.id}` إدارياً بحالة عدم استلام (`DISPUTED`).\n"
+                    f"لأي استفسار يرجى التواصل مع الدعم الفني عبر `/support`."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    await callback.answer("✅ تم إغلاق الصفقة بحالة DISPUTED.", show_alert=True)
+    admin_text = await format_admin_deal_review_text(deal, db_session)
+    kb = await build_admin_deal_keyboard(deal, db_session)
+    try:
+        await callback.message.edit_text(admin_text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(admin_text, reply_markup=kb, parse_mode="Markdown")
+
+
+@admin_router.callback_query(F.data.startswith("adm_ask_force_cancel_"))
+async def cq_admin_ask_force_cancel(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    deal_id = int(callback.data.split("_")[-1])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❌ نعم، إلغاء الصفقة إدارياً", callback_data=f"adm_do_force_cancel_{deal_id}"),
+            InlineKeyboardButton(text="↩️ تراجع", callback_data=f"adm_inspect_deal_{deal_id}")
+        ]
+    ])
+    text = (
+        f"❌ **تأكيد الإلغاء الإداري للصفقة #{deal_id}**\n\n"
+        "سيتم إلغاء الصفقة (`CANCELLED`) وإعادة تفعيل العرض في السوق (إن كان صالحاً) وإشعار الطرفين.\n"
+        "هل أنت متأكد من المتابعة؟"
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("adm_do_force_cancel_"))
+async def cq_admin_do_force_cancel(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    deal_id = int(callback.data.split("_")[-1])
+    res = await db_session.execute(select(Deal).where(Deal.id == deal_id).with_for_update())
+    deal = res.scalar_one_or_none()
+    if not deal:
+        await callback.answer("الصفقة غير موجودة.", show_alert=True)
+        return
+
+    if deal.status in ["COMPLETED", "CANCELLED", "EXPIRED", "DISPUTED"]:
+        await callback.answer(f"الصفقة مغلقة مسبقاً بالحالة: {deal.status}", show_alert=True)
+        return
+
+    prev_status = deal.status
+    deal.status = "CANCELLED"
+    deal.expires_at = None
+
+    offer = None
+    if deal.offer_id:
+        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id).with_for_update())
+        offer = offer_res.scalar_one_or_none()
+        if offer and offer.status == "reserved":
+            now = datetime.now(timezone.utc)
+            if offer.expires_at and offer.expires_at <= now:
+                offer.status = "expired"
+            else:
+                offer.status = "active"
+
+    add_audit(
+        session=db_session,
+        action="CANCEL_DEAL",
+        target_type="deal",
+        target_id=deal.id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"previous_status": prev_status, "reason": "admin_force_cancel"}
+    )
+    await db_session.commit()
+
+    if offer:
+        await update_channel_offer_message(callback.bot, offer)
+
+    await push_deal_card(deal.id, callback.bot)
+
+    for uid in [deal.buyer_id, deal.seller_id]:
+        try:
+            await callback.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"❌ **إشعار إداري — إلغاء صفقة #{deal.id}**\n\n"
+                    f"قامت إدارة {BOT_NAME} بإلغاء الصفقة رقم `#{deal.id}` إدارياً."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    await callback.answer("✅ تم إلغاء الصفقة إدارياً بنجاح.", show_alert=True)
+    admin_text = await format_admin_deal_review_text(deal, db_session)
+    kb = await build_admin_deal_keyboard(deal, db_session)
+    try:
+        await callback.message.edit_text(admin_text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(admin_text, reply_markup=kb, parse_mode="Markdown")
+
+
 @admin_router.callback_query(F.data.startswith("adm_del_rating_"))
 async def cq_admin_delete_rating(callback: CallbackQuery, db_session: AsyncSession):
     if not is_admin(callback.from_user.id):
@@ -816,262 +1600,167 @@ async def cq_admin_delete_rating(callback: CallbackQuery, db_session: AsyncSessi
     )
 
 
-# ================= 7. MARKET INSIGHTS: /market =================
+# ================= 6. BROADCAST SYSTEM =================
 
-@admin_router.message(Command("market"))
-async def cmd_admin_market(message: Message, db_session: AsyncSession):
+@admin_router.message(Command("broadcast"))
+async def cmd_admin_broadcast(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-
-    now = datetime.now(timezone.utc)
-    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-
-    # 1. Total Volume of completed deals (All-Time)
-    vol_all_res = await db_session.execute(
-        select(
-            func.coalesce(func.sum(Deal.amount_usdt), 0),
-            func.coalesce(func.sum(Deal.amount_syp), 0),
-            func.count(Deal.id)
-        ).where(func.upper(Deal.status) == "COMPLETED")
+    await state.set_state(AdminFSM.waiting_for_broadcast_text)
+    text = (
+        "📢 **إرسال رسالة بث جماعي**\n\n"
+        f"أرسل الآن نص الرسالة المراد تعميمها على مستخدمي {BOT_NAME}:\n\n"
+        "▫️ تدعم الرسالة التنسيق النصي.\n"
+        "▫️ سيتم الإرسال لجميع الحسابات المسجلة تباعاً."
     )
-    total_usdt_vol, total_syp_vol, total_comp_count = vol_all_res.one()
-
-    # 2. Total Volume of completed deals (This Month)
-    vol_month_res = await db_session.execute(
-        select(
-            func.coalesce(func.sum(Deal.amount_usdt), 0),
-            func.coalesce(func.sum(Deal.amount_syp), 0),
-            func.count(Deal.id)
-        ).where(func.upper(Deal.status) == "COMPLETED", Deal.created_at >= month_start)
-    )
-    month_usdt_vol, month_syp_vol, month_comp_count = vol_month_res.one()
-
-    # 3. Active Offers in the Orderbook right now
-    active_offers_res = await db_session.execute(
-        select(
-            Offer.offer_type,
-            func.count(Offer.id),
-            func.coalesce(func.sum(Offer.max_limit), 0),
-            func.coalesce(func.avg(Offer.rate), 0)
-        ).where(Offer.status.in_(["active", "negotiating"]))
-        .group_by(Offer.offer_type)
-    )
-    active_summary = {t: (cnt, sum_max, avg_rate) for t, cnt, sum_max, avg_rate in active_offers_res.all()}
-
-    sell_cnt, sell_usdt_pool, sell_avg_rate = active_summary.get("sell", (0, Decimal("0"), Decimal("0")))
-    buy_cnt, buy_usdt_pool, buy_avg_rate = active_summary.get("buy", (0, Decimal("0"), Decimal("0")))
-
-    # Average effective rate for completed deals
-    avg_rate_all = (total_syp_vol / total_usdt_vol).quantize(Decimal("1")) if total_usdt_vol > 0 else Decimal("0")
-    avg_rate_month = (month_syp_vol / month_usdt_vol).quantize(Decimal("1")) if month_usdt_vol > 0 else Decimal("0")
-
-    market_text = (
-        "📈 **تحليلات السوق**\n\n"
-        "💵 **حجم التداول المنفّذ (الصفقات المكتملة):**\n"
-        f"▫️ **الإجمالي التراكمي:** `{format_usdt(total_usdt_vol)} USDT`\n"
-        f"▫️ **الإجمالي بالليرة:** `{format_syp(total_syp_vol)}` ل.س\n"
-        f"▫️ **متوسط سعر التنفيذ العام:** `{format_syp(avg_rate_all)}` ل.س\n"
-        f"▫️ **عدد الصفقات المكتملة:** `{total_comp_count}` صفقة\n\n"
-        "📅 **حجم التداول خلال الشهر الحالي:**\n"
-        f"▫️ **حجم الشهر:** `{format_usdt(month_usdt_vol)} USDT`\n"
-        f"▫️ **بالليرة:** `{format_syp(month_syp_vol)}` ل.س\n"
-        f"▫️ **متوسط سعر تنفيذ الشهر:** `{format_syp(avg_rate_month)}` ل.س\n"
-        f"▫️ **صفقات هذا الشهر:** `{month_comp_count}` صفقة\n\n"
-        "📦 **العروض النشطة حالياً:**\n"
-        f"▫️ **عروض البيع النشطة:** `{sell_cnt}` عرض\n"
-        f"▫️ **سيولة البيع المعروضة:** `{format_usdt(sell_usdt_pool)} USDT`\n"
-        f"▫️ **متوسط سعر البيع:** `{format_syp(sell_avg_rate)}` ل.س\n\n"
-        f"▫️ **عروض الشراء النشطة:** `{buy_cnt}` عرض\n"
-        f"▫️ **طلب الشراء المعروض:** `{format_usdt(buy_usdt_pool)} USDT`\n"
-        f"▫️ **متوسط سعر الشراء:** `{format_syp(buy_avg_rate)}` ل.س"
-    )
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 تحديث التحليلات", callback_data="adm_refresh_market")],
-        [InlineKeyboardButton(text="🔙 العودة للوحة الإدارة", callback_data="admin_main_menu")]
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
     ])
-    await message.answer(market_text, reply_markup=kb, parse_mode="Markdown")
+    await message.answer(text, reply_markup=cancel_kb, parse_mode="Markdown")
 
 
-@admin_router.callback_query(F.data == "adm_refresh_market")
-async def cq_admin_refresh_market(callback: CallbackQuery, db_session: AsyncSession):
+@admin_router.callback_query(F.data == "admin_broadcast")
+async def cq_admin_broadcast(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("غير مصرح لك بالوصول.", show_alert=True)
         return
 
-    now = datetime.now(timezone.utc)
-    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-
-    vol_all_res = await db_session.execute(
-        select(
-            func.coalesce(func.sum(Deal.amount_usdt), 0),
-            func.coalesce(func.sum(Deal.amount_syp), 0),
-            func.count(Deal.id)
-        ).where(func.upper(Deal.status) == "COMPLETED")
+    await state.set_state(AdminFSM.waiting_for_broadcast_text)
+    text = (
+        f"📢 **إرسال رسالة بث عام — {BOT_NAME}**\n\n"
+        "أرسل نص الرسالة المطلوب تعميمها على مستخدمي البوت.\n\n"
+        "▫️ تدعم الرسالة التنسيق النصي.\n"
+        "▫️ يتم الإرسال لكافة الحسابات المسجلة تباعاً."
     )
-    total_usdt_vol, total_syp_vol, total_comp_count = vol_all_res.one()
-
-    vol_month_res = await db_session.execute(
-        select(
-            func.coalesce(func.sum(Deal.amount_usdt), 0),
-            func.coalesce(func.sum(Deal.amount_syp), 0),
-            func.count(Deal.id)
-        ).where(func.upper(Deal.status) == "COMPLETED", Deal.created_at >= month_start)
-    )
-    month_usdt_vol, month_syp_vol, month_comp_count = vol_month_res.one()
-
-    active_offers_res = await db_session.execute(
-        select(
-            Offer.offer_type,
-            func.count(Offer.id),
-            func.coalesce(func.sum(Offer.max_limit), 0),
-            func.coalesce(func.avg(Offer.rate), 0)
-        ).where(Offer.status.in_(["active", "negotiating"]))
-        .group_by(Offer.offer_type)
-    )
-    active_summary = {t: (cnt, sum_max, avg_rate) for t, cnt, sum_max, avg_rate in active_offers_res.all()}
-
-    sell_cnt, sell_usdt_pool, sell_avg_rate = active_summary.get("sell", (0, Decimal("0"), Decimal("0")))
-    buy_cnt, buy_usdt_pool, buy_avg_rate = active_summary.get("buy", (0, Decimal("0"), Decimal("0")))
-
-    avg_rate_all = (total_syp_vol / total_usdt_vol).quantize(Decimal("1")) if total_usdt_vol > 0 else Decimal("0")
-    avg_rate_month = (month_syp_vol / month_usdt_vol).quantize(Decimal("1")) if month_usdt_vol > 0 else Decimal("0")
-
-    market_text = (
-        "📈 **تحليلات السوق**\n\n"
-        "💵 **حجم التداول المنفّذ (الصفقات المكتملة):**\n"
-        f"▫️ **الإجمالي التراكمي:** `{format_usdt(total_usdt_vol)} USDT`\n"
-        f"▫️ **الإجمالي بالليرة:** `{format_syp(total_syp_vol)}` ل.س\n"
-        f"▫️ **متوسط سعر التنفيذ العام:** `{format_syp(avg_rate_all)}` ل.س\n"
-        f"▫️ **عدد الصفقات المكتملة:** `{total_comp_count}` صفقة\n\n"
-        "📅 **حجم التداول خلال الشهر الحالي:**\n"
-        f"▫️ **حجم الشهر:** `{format_usdt(month_usdt_vol)} USDT`\n"
-        f"▫️ **بالليرة:** `{format_syp(month_syp_vol)}` ل.س\n"
-        f"▫️ **متوسط سعر تنفيذ الشهر:** `{format_syp(avg_rate_month)}` ل.س\n"
-        f"▫️ **صفقات هذا الشهر:** `{month_comp_count}` صفقة\n\n"
-        "📦 **العروض النشطة حالياً:**\n"
-        f"▫️ **عروض البيع النشطة:** `{sell_cnt}` عرض\n"
-        f"▫️ **سيولة البيع المعروضة:** `{format_usdt(sell_usdt_pool)} USDT`\n"
-        f"▫️ **متوسط سعر البيع:** `{format_syp(sell_avg_rate)}` ل.س\n\n"
-        f"▫️ **عروض الشراء النشطة:** `{buy_cnt}` عرض\n"
-        f"▫️ **طلب الشراء المعروض:** `{format_usdt(buy_usdt_pool)} USDT`\n"
-        f"▫️ **متوسط سعر الشراء:** `{format_syp(buy_avg_rate)}` ل.س"
-    )
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 تحديث التحليلات", callback_data="adm_refresh_market")],
-        [InlineKeyboardButton(text="🔙 العودة للوحة الإدارة", callback_data="admin_main_menu")]
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
     ])
-
-    try:
-        await callback.message.edit_text(market_text, reply_markup=kb, parse_mode="Markdown")
-    except Exception:
-        await callback.message.answer(market_text, reply_markup=kb, parse_mode="Markdown")
+    await callback.message.edit_text(text, reply_markup=cancel_kb, parse_mode="Markdown")
     await callback.answer()
 
 
-# ================= 8. TOP TRADERS: /top_traders =================
-
-@admin_router.message(Command("top_traders"))
-async def cmd_admin_top_traders(message: Message, db_session: AsyncSession):
+@admin_router.message(AdminFSM.waiting_for_broadcast_text)
+async def process_broadcast_message(message: Message, state: FSMContext, db_session: AsyncSession, bot: Bot):
     if not is_admin(message.from_user.id):
         return
 
-    result = await db_session.execute(
-        select(User)
-        .order_by(User.completed_deals_count.desc(), User.reputation_score.desc())
-        .limit(10)
+    broadcast_text = message.text or message.caption
+    if not broadcast_text:
+        await message.answer("⚠️ يرجى إرسال نص للرسالة.")
+        return
+
+    await state.clear()
+
+    users_res = await db_session.execute(select(User.telegram_id))
+    all_user_ids = users_res.scalars().all()
+    total_recipients = len(all_user_ids)
+
+    status_msg = await message.answer(
+        f"⏳ جاري إرسال البث لـ `{total_recipients}` مستخدم...\nيرجى الانتظار.",
+        parse_mode="Markdown"
     )
-    top_users = result.scalars().all()
 
-    if not top_users:
-        await message.answer("ℹ️ لا يوجد مستخدمين مسجلين بعد.", parse_mode="Markdown")
-        return
+    success_count = 0
+    fail_count = 0
 
-    lines = [
-        "🏆 **قائمة كبار المتداولين**\n"
-    ]
-
-    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-    for idx, u in enumerate(top_users):
-        medal = medals[idx] if idx < len(medals) else "👤"
-        uname = f"@{escape_markdown(u.username)}" if u.username else "بدون معرف"
-        ban_tag = " [محظور 🚫]" if u.is_banned else ""
-        lines.append(
-            f"{medal} **{uname}** (`{u.telegram_id}`){ban_tag}\n"
-            f"▫️ **الصفقات المكتملة:** `{u.completed_deals_count}` صفقة\n"
-            f"▫️ **تقييم السمعة:** ⭐ `{u.reputation_score if u.reputation_score is not None else 100}%`\n"
-        )
-
-    lines.append("لإدارة أي مستخدم، استخدم الأمر: `/search [معرف_المستخدم]`")
-    await message.answer("\n".join(lines), parse_mode="Markdown")
-
-
-# ================= 9. DISPUTES & DIRECT REPLY: /disputes & /reply =================
-
-@admin_router.message(Command("disputes"))
-async def cmd_admin_disputes(message: Message, db_session: AsyncSession):
-    if not is_admin(message.from_user.id):
-        return
-
-    result = await db_session.execute(
-        select(Dispute).where(Dispute.resolution.is_(None)).order_by(Dispute.id.desc())
+    formatted_broadcast = (
+        f"📢 **تنبيه إداري — {BOT_NAME}**\n\n"
+        f"{broadcast_text}"
     )
-    open_disputes = result.scalars().all()
 
-    if not open_disputes:
-        await message.answer(
-            "🛡️ **سجل النزاعات**\n\n"
-            "✅ لا توجد أي نزاعات مفتوحة أو معلقة حالياً.\n"
-            "كافة الصفقات تسير بشكل طبيعي.",
-            parse_mode="Markdown"
-        )
-        return
+    for uid in all_user_ids:
+        try:
+            await bot.send_message(
+                chat_id=uid,
+                text=formatted_broadcast,
+                parse_mode="Markdown"
+            )
+            success_count += 1
+        except Exception:
+            fail_count += 1
+        await asyncio.sleep(0.04)
 
-    lines = [
-        f"⚠️ **النزاعات المفتوحة والمعلقة:** `{len(open_disputes)}` نزاع\n"
-    ]
-    for d in open_disputes:
-        lines.append(
-            f"📌 **نزاع #{d.id} — صفقة #{d.deal_id}**\n"
-            f"▫️ **فُتح بواسطة:** `{d.opened_by}`\n"
-            f"▫️ **السبب:** {escape_markdown(d.reason or 'غير محدد')}\n"
-            f"▫️ **للفحص والتدخل:** `/deal {d.deal_id}`\n"
-        )
-
-    await message.answer("\n".join(lines), parse_mode="Markdown")
-
-
-@admin_router.message(Command("reply"))
-async def cmd_admin_reply_user(message: Message, bot: Bot):
-    if not is_admin(message.from_user.id):
-        return
-
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3 or not args[1].isdigit():
-        await message.answer(
-            "⚠️ **طريقة الاستخدام:**\n"
-            "`/reply [معرف_المستخدم] [نص_الرد]`",
-            parse_mode="Markdown"
-        )
-        return
-
-    target_user_id = int(args[1])
-    reply_content = args[2].strip()
-
-    formatted_msg = (
-        f"📩 **رد رسمي من إدارة {BOT_NAME}**\n\n"
-        f"{reply_content}"
+    summary_text = (
+        "✅ **اكتملت عملية البث الجماعي**\n\n"
+        f"▫️ **إجمالي المستهدفين:** `{total_recipients}`\n"
+        f"▫️ **تم الإرسال بنجاح:** `{success_count}`\n"
+        f"▫️ **فشل الإرسال (حظر أو حساب ملغى):** `{fail_count}`"
     )
+    await status_msg.edit_text(summary_text, reply_markup=get_admin_back_kb(), parse_mode="Markdown")
 
     try:
-        await bot.send_message(chat_id=target_user_id, text=formatted_msg, parse_mode="Markdown")
-        await message.answer(f"✅ تم إرسال الرد بنجاح إلى المستخدم `{target_user_id}`.", parse_mode="Markdown")
+        await record_audit(
+            session=db_session,
+            action="BROADCAST",
+            target_type="system",
+            target_id="broadcast",
+            actor_id=message.from_user.id,
+            actor_type="ADMIN",
+            details={
+                "total_recipients": total_recipients,
+                "success_count": success_count,
+                "fail_count": fail_count
+            }
+        )
     except Exception as e:
-        await message.answer(f"❌ تعذر إرسال الرسالة إلى `{target_user_id}`:\n`{e}`", parse_mode="Markdown")
+        logger.warning(f"Failed to record audit for broadcast: {e}")
 
 
-# ================= 10. DATABASE BACKUP: /backup =================
+# ================= 7. MAINTENANCE MODE TOGGLE =================
+
+@admin_router.callback_query(F.data == "admin_toggle_maintenance")
+async def cq_admin_toggle_maintenance(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك بالوصول.", show_alert=True)
+        return
+
+    result = await db_session.execute(
+        select(SystemSetting).where(SystemSetting.key == "maintenance_mode").with_for_update()
+    )
+    setting = result.scalar_one_or_none()
+
+    current_val = False
+    if setting:
+        if isinstance(setting.value, dict):
+            current_val = bool(setting.value.get("enabled", False))
+        elif isinstance(setting.value, bool):
+            current_val = setting.value
+
+    new_val = not current_val
+
+    if not setting:
+        setting = SystemSetting(
+            key="maintenance_mode",
+            value={"enabled": new_val}
+        )
+        db_session.add(setting)
+    else:
+        setting.value = {"enabled": new_val}
+
+    add_audit(
+        session=db_session,
+        action="MAINTENANCE_MODE_ON" if new_val else "MAINTENANCE_MODE_OFF",
+        target_type="system_setting",
+        target_id="maintenance_mode",
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"enabled": new_val, "method": "button"}
+    )
+
+    await db_session.commit()
+    set_cached_maintenance(new_val)
+
+    status_str = "🟢 تم تفعيل وضع الصيانة! (الوصول محصور بالأدمن فقط)" if new_val else "🔴 تم تعطيل وضع الصيانة! (الوصول متاح للجميع)"
+    await callback.answer(status_str, show_alert=True)
+
+    text, kb = await _build_admin_dashboard_view(db_session)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+
+# ================= 8. DATABASE BACKUP (/backup & button) =================
 
 @admin_router.message(Command("backup"))
 async def cmd_admin_backup(message: Message, bot: Bot):
@@ -1093,21 +1782,43 @@ async def cmd_admin_backup(message: Message, bot: Bot):
         await wait_msg.edit_text(f"❌ **حدث خطأ أثناء أخذ النسخة الاحتياطية:**\n`{e}`", parse_mode="Markdown")
 
 
-# ================= 11. AUDIT TRAIL & SYSTEM LOGS: /audit =================
-
-@admin_router.message(Command("audit"))
-async def cmd_admin_audit(message: Message, db_session: AsyncSession):
-    if not is_admin(message.from_user.id):
+@admin_router.callback_query(F.data == "adm_trigger_backup")
+async def cq_admin_trigger_backup(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
         return
 
-    args = message.text.split()
-    query = select(AuditLog).order_by(AuditLog.id.desc())
+    await callback.answer("⏳ جاري تجهيز وإرسال النسخة الاحتياطية...")
+    try:
+        await perform_and_send_backup(callback.bot, recipient_id=callback.from_user.id, is_scheduled=False)
+    except Exception as e:
+        await callback.message.answer(f"❌ **حدث خطأ أثناء أخذ النسخة الاحتياطية:**\n`{e}`", parse_mode="Markdown")
 
-    # Optional filter: /audit deal 15 or /audit user 123456
+
+# ================= 9. AUDIT TRAIL & SYSTEM LOGS (/audit & button) =================
+
+ACTION_TITLES = {
+    "CREATE_DEAL": "🤝 إنشاء صفقة جديدة",
+    "RELEASE_ESCROW": "☑️ إطلاق ضمان مالي",
+    "CANCEL_DEAL": "❌ إلغاء صفقة",
+    "ADMIN_FORCE_CONFIRM_SYP": "⚡ تأكيد استلام ليرة إدارياً",
+    "ADMIN_CLOSE_DISPUTED": "⚠️ إغلاق صفقة بعدم استلام",
+    "ADMIN_DELETE_OFFER": "🗑️ حذف عرض إدارياً",
+    "BAN_USER": "🚫 حظر مستخدم",
+    "UNBAN_USER": "✅ فك حظر مستخدم",
+    "MAINTENANCE_MODE_ON": "🟢 تفعيل الصيانة",
+    "MAINTENANCE_MODE_OFF": "🔴 تعطيل الصيانة",
+    "DISPUTE_RESOLVE": "⚖️ تسوية نزاع",
+    "RATE_DEAL": "⭐ تقييم صفقة",
+    "DELETE_RATING": "🗑️ حذف تقييم خاطئ",
+    "BROADCAST": "📢 بث إداري جماعي",
+}
+
+
+async def _build_audit_view(db_session: AsyncSession, f_type: str | None = None, f_id: str | None = None) -> tuple[str, InlineKeyboardMarkup]:
+    query = select(AuditLog).order_by(AuditLog.id.desc())
     filter_label = "آخر العمليات الإدارية والمالية المسجلة"
-    if len(args) >= 3:
-        f_type = args[1].lower()
-        f_id = args[2]
+    if f_type and f_id:
         query = query.where(AuditLog.target_type == f_type, AuditLog.target_id == f_id)
         filter_label = f"سجل العمليات الخاص بـ `{f_type}:{f_id}`"
 
@@ -1115,35 +1826,29 @@ async def cmd_admin_audit(message: Message, db_session: AsyncSession):
     result = await db_session.execute(query)
     logs = result.scalars().all()
 
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📁 تحميل ملف السجلات", callback_data="adm_dl_system_log"),
+            InlineKeyboardButton(text="🔄 تحديث السجل", callback_data="adm_refresh_audit")
+        ],
+        [InlineKeyboardButton(text="🔙 العودة للوحة الإدارة", callback_data="admin_main_menu")]
+    ])
+
     if not logs:
-        await message.answer(
+        return (
             "📋 **سجل التدقيق والعمليات**\n\n"
             "لا توجد سجلات مطابقة لطلبك حتى الآن.",
-            parse_mode="Markdown"
+            kb
         )
-        return
 
     lines = [
         "📋 **سجل التدقيق والعمليات**\n\n",
         f"▫️ **الفلترة:** {filter_label}\n\n",
     ]
 
-    action_names = {
-        "CREATE_DEAL": "🤝 إنشاء صفقة جديدة",
-        "RELEASE_ESCROW": "☑️ إطلاق ضمان مالي",
-        "CANCEL_DEAL": "❌ إلغاء صفقة",
-        "BAN_USER": "🚫 حظر مستخدم",
-        "UNBAN_USER": "✅ فك حظر مستخدم",
-        "MAINTENANCE_MODE_ON": "🟢 تفعيل الصيانة",
-        "MAINTENANCE_MODE_OFF": "🔴 تعطيل الصيانة",
-        "DISPUTE_RESOLVE": "⚖️ تسوية نزاع",
-        "RATE_DEAL": "⭐ تقييم صفقة",
-        "DELETE_RATING": "🗑️ حذف تقييم خاطئ",
-    }
-
     for log in logs:
         time_str = format_local_datetime(log.created_at) if log.created_at else "—"
-        act_title = escape_markdown(action_names.get(log.action, log.action))
+        act_title = escape_markdown(ACTION_TITLES.get(log.action, log.action))
         actor_type_safe = escape_markdown(log.actor_type)
         actor_tag = f"`{log.actor_id}`" if log.actor_id else "SYSTEM"
         lines.append(
@@ -1153,70 +1858,32 @@ async def cmd_admin_audit(message: Message, db_session: AsyncSession):
             f"▫️ **التوقيت:** `{time_str}`\n\n"
         )
 
-    lines.append("💡 للتدقيق في صفقة محددة: `/audit deal [رقم_الصفقة]`\n")
-    lines.append("📁 لتحميل ملف السجلات التقنية، استخدم الزر أدناه.")
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📁 تحميل ملف السجلات", callback_data="adm_dl_system_log")],
-        [InlineKeyboardButton(text="🔄 تحديث السجل", callback_data="adm_refresh_audit")]
-    ])
-
-    await message.answer("".join(lines), reply_markup=kb, parse_mode="Markdown")
+    lines.append("💡 للتدقيق في صفقة أو مستخدم محدد:\n`/audit deal [رقم]` أو `/audit user [معرف]`")
+    return "".join(lines), kb
 
 
-@admin_router.callback_query(F.data == "adm_refresh_audit")
+@admin_router.message(Command("audit"))
+async def cmd_admin_audit(message: Message, db_session: AsyncSession):
+    if not is_admin(message.from_user.id):
+        return
+
+    args = (message.text or "").split()
+    f_type = args[1].lower() if len(args) >= 3 else None
+    f_id = args[2] if len(args) >= 3 else None
+
+    text, kb = await _build_audit_view(db_session, f_type, f_id)
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@admin_router.callback_query(F.data.in_(["adm_open_audit", "adm_refresh_audit"]))
 async def cq_admin_refresh_audit(callback: CallbackQuery, db_session: AsyncSession):
     if not is_admin(callback.from_user.id):
         await callback.answer("غير مصرح لك.", show_alert=True)
         return
 
-    query = select(AuditLog).order_by(AuditLog.id.desc()).limit(10)
-    result = await db_session.execute(query)
-    logs = result.scalars().all()
-
-    if not logs:
-        await callback.answer("لا توجد سجلات بعد.")
-        return
-
-    action_names = {
-        "CREATE_DEAL": "🤝 إنشاء صفقة جديدة",
-        "RELEASE_ESCROW": "☑️ إطلاق ضمان مالي",
-        "CANCEL_DEAL": "❌ إلغاء صفقة",
-        "BAN_USER": "🚫 حظر مستخدم",
-        "UNBAN_USER": "✅ فك حظر مستخدم",
-        "MAINTENANCE_MODE_ON": "🟢 تفعيل الصيانة",
-        "MAINTENANCE_MODE_OFF": "🔴 تعطيل الصيانة",
-        "DISPUTE_RESOLVE": "⚖️ تسوية نزاع",
-        "RATE_DEAL": "⭐ تقييم صفقة",
-        "DELETE_RATING": "🗑️ حذف تقييم خاطئ",
-    }
-
-    lines = [
-        "📋 **سجل التدقيق والعمليات**\n\n",
-        "▫️ **الفلترة:** آخر العمليات الإدارية والمالية المسجلة\n\n",
-    ]
-    for log in logs:
-        time_str = format_local_datetime(log.created_at) if log.created_at else "—"
-        act_title = escape_markdown(action_names.get(log.action, log.action))
-        actor_type_safe = escape_markdown(log.actor_type)
-        actor_tag = f"`{log.actor_id}`" if log.actor_id else "SYSTEM"
-        lines.append(
-            f"🔹 **#{log.id} — {act_title}**\n"
-            f"▫️ **المنفّذ:** {actor_type_safe} ({actor_tag})\n"
-            f"▫️ **الهدف:** `{log.target_type}:{log.target_id}`\n"
-            f"▫️ **التوقيت:** `{time_str}`\n\n"
-        )
-
-    lines.append("💡 للتدقيق في صفقة محددة: `/audit deal [رقم_الصفقة]`\n")
-    lines.append("📁 لتحميل ملف السجلات التقنية، استخدم الزر أدناه.")
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📁 تحميل ملف السجلات", callback_data="adm_dl_system_log")],
-        [InlineKeyboardButton(text="🔄 تحديث السجل", callback_data="adm_refresh_audit")]
-    ])
-
+    text, kb = await _build_audit_view(db_session)
     try:
-        await callback.message.edit_text("".join(lines), reply_markup=kb, parse_mode="Markdown")
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except Exception:
         pass
     await callback.answer()
@@ -1245,5 +1912,3 @@ async def cq_admin_download_log(callback: CallbackQuery):
         await callback.answer()
     except Exception as e:
         await callback.answer(f"خطأ: {e}", show_alert=True)
-
-

@@ -375,30 +375,45 @@ Admin accounts (`settings.ADMIN_IDS`) can execute approval/rejection/counter-off
 
 ---
 
-## 13. Admin Panel & Commands (v2.8 / v3.3)
+## 13. Admin Control Center & Streamlined Commands (v3.9)
 
-Accessible to `ADMIN_IDS` via `/admin`:
+Accessible exclusively to `ADMIN_IDS` with a streamlined 8-command Bot Menu (`/start`, `/continue`, `/support`, `/admin`, `/deal`, `/user`, `/pending`, `/backup`) after removing legacy redundant commands (`/top_traders`, `/disputes`, `/market`, `/m_on`, `/m_off`, `/reply`):
 
-**Statistics & Profit:** Total users, deal status breakdown, and Net Profit (`SUM(fee_usdt)` for `COMPLETED` deals, calculated at 0.2% total fee).
-
-**Comprehensive Admin Commands:**
-- `/admin`: Interactive admin panel menu.
-- `/pending`: List pending deals in `ADMIN_APPROVAL` (ready for escrow release) and `SYP_PAYMENT_SENT` (awaiting seller confirmation).
-- `/deal [id]`: View full deal details (or prompt interactively when invoked without an ID) and execute manual controls.
-- `/stats`: Platform metrics and trade volume summary.
-- `/market`: Live offer and market summary.
-- `/top_traders`: Top traders leaderboard.
-- `/disputes`: Manage open disputes.
-- `/search [query]`: User lookup by Telegram ID/username.
-- `/reply [id] [msg]`: Admin direct message to user.
-- `/audit`: Download rotating system log (`escrow_system.log`).
-- `/broadcast`: Send broadcast message to registered users.
-- `/backup`: Trigger manual database backup.
-- `/m_on` / `/m_off`: Maintenance mode toggle.
+1. **Main Operations Dashboard (`/admin` / `admin_main_menu`):**
+   - Displays live system pulse counters (deals awaiting escrow release/confirmation, total active deals, active market offers, and maintenance mode status) with interactive navigation buttons.
+2. **Live Operations Monitoring Center (`/pending` / `adm_live_ops`):**
+   - Interactive 4-tab monitoring center:
+     - `🛡️ بانتظار الاعتماد/التأكيد`: Deals in `ADMIN_APPROVAL` and `SYP_PAYMENT_SENT`.
+     - `⏳ جميع الصفقات الجارية`: All open deals across all stages with one-tap inspection buttons (`adm_inspect_deal_<id>`).
+     - `⚠️ صفقات عدم الاستلام`: Deals closed as `DISPUTED`.
+     - `📦 العروض النشطة بالسوق`: Active market offers with one-tap admin removal (`adm_del_offer_<id>_0`) from the market and public channel.
+3. **Comprehensive Deal Lookup & Operational Intervention (`/deal [id]` / `admin_search_deal`):**
+   - Full deal inspection card showing linked `offer_id`, payment proof status, and deal ratings.
+   - `📸 عرض صورة إشعار التحويل` (`adm_view_proof_<id>`): Sends the buyer's attached SYP transfer screenshot photo directly to the admin.
+   - Quick jump buttons to both parties' full profiles: `🔴 ملف البائع` (`adm_view_user_<seller_id>`) and `🟢 ملف المشتري` (`adm_view_user_<buyer_id>`).
+   - Stage-aware administrative intervention (with confirmation gates):
+     - `☑️ اعتماد وإطلاق الضمان` (`ask_rel_<id>`) for `ADMIN_APPROVAL`.
+     - `⚡ تأكيد استلام الليرة إدارياً` (`adm_ask_force_conf_<id>`) for `SYP_PAYMENT_SENT` when the seller is unresponsive.
+     - `⚠️ إغلاق كنزاع (عدم استلام)` (`adm_ask_force_dispute_<id>`) for `AWAITING_SYP_PAYMENT` / `SYP_PAYMENT_SENT`.
+     - `❌ إلغاء الصفقة إدارياً` (`adm_ask_force_cancel_<id>`) for early open stages (`PENDING_OWNER_APPROVAL` through `AWAITING_SYP_PAYMENT`).
+     - `🗑️ حذف تقييم` (`adm_del_rating_<rating_id>`) with automatic reputation recalculation.
+4. **Comprehensive User Lookup & Management (`/user [query]` / `/search` / `admin_search_user`):**
+   - Flexible lookup by **Telegram ID (`123456`)**, **Username (`@username`)**, or **Nickname**.
+   - Displays full trader dossier: registration date, ban status, saved BEP-20 wallet (`saved_usdt_address`), saved local SYP account (`saved_payment_info`), deal breakdown (active, completed, cancelled/expired, disputed), total traded volume (`USDT` & `ل.س`), active offers count, and reputation percentage.
+   - Interactive management sub-screens:
+     - `🚫 حظر المستخدم فوراً` / `✅ فك الحظر عن المستخدم` (`admin_toggle_ban_`).
+     - `📋 صفقات المستخدم` (`adm_user_deals_<uid>`): Lists user's deals with direct inspection buttons.
+     - `⭐ التقييمات` (`adm_user_ratings_<uid>`): Lists all ratings received by the user with one-tap deletion (`adm_del_user_rating_<rating_id>_<uid>`) and immediate reputation recalculation.
+     - `📦 العروض النشطة` (`adm_user_offers_<uid>`): Lists user's active offers with one-tap administrative deletion (`adm_del_offer_<offer_id>_<uid>`).
+     - `✉️ إرسال رسالة مباشرة` (`adm_msg_user_<uid>`): Sends an official admin message directly to the user from inside their profile card.
+5. **Unified Financial & Market Reports (`/stats` / `admin_stats`):**
+   - Combines net platform fee profit (`SUM(fee_usdt)`), executed trade volume (`USDT` & `ل.س`), active sell/buy orderbook liquidity, and monthly/cumulative deal metrics in a single dashboard.
+6. **Audit Trail, Broadcast & Instant Backup (`/audit`, `/broadcast`, `/backup`):**
+   - Filterable audit log viewer (`adm_open_audit`) with rotating log download (`escrow_system.log`), rate-limited broadcast (`25 msg/sec`), and one-tap gzip database backup (`adm_trigger_backup`).
 
 ---
 
-## 14. System Resilience, Bot Commands & Production Hardening (v2.9 / v3.8)
+## 14. System Resilience, Bot Commands & Production Hardening (v2.9 / v3.9)
 
 1. **Smart Critical Error Alerting (`error_alert.py`):** Deduplicated alerts dispatched to admins with deep project-frame traceback extraction (filtering out `site-packages` frames to pinpoint the exact project handler line); full logs written to `escrow_system.log`.
 2. **Connection Pool & Statement Timeout Resilience (`db/session.py`, `bot/main.py`):** `pool_pre_ping=True`, `pool_recycle=1800`, `pool_timeout=30`, `connect_args={"command_timeout": 30}` for asyncpg to prevent hung SQL statements or deadlocked `FOR UPDATE` rows, plus automatic `session.rollback()` inside `DbSessionMiddleware` on unhandled exceptions.
@@ -415,9 +430,9 @@ Accessible to `ADMIN_IDS` via `/admin`:
 
 ---
 
-## 15. User Profile, Offer Creation Wizard & Loyalty System (v3.0 / v3.7)
+## 15. User Profile, Offer Creation Wizard & Loyalty System (v3.0 / v3.9)
 
-1. **Profile Card & Post-Deal Star Rating System (`deal_ratings`, `bot/services/rating_service.py`):** Trader badge, completed deal count, and `reputation_score` on a `0%–100%` percentage scale (default `100%`). Immediately upon deal completion (`COMPLETED` via `man_rel_`), both buyer and seller receive a one-tap 1–5 star rating card (`rate_deal_<deal_id>_<stars>`), strictly enforced once per party per deal via `uq_rating_per_deal_rater`, updating `users.reputation_score` automatically (`ROUND(AVG(stars) * 20)`). Admins can inspect deal ratings and delete erroneous ratings (`adm_del_rating_<rating_id>`) directly from `/deal [id]`, triggering automatic reputation recalculation and `DELETE_RATING` audit logging.
+1. **Profile Card & Post-Deal Star Rating System (`deal_ratings`, `bot/services/rating_service.py`):** Trader badge, completed deal count, and `reputation_score` on a `0%–100%` percentage scale (default `100%`). Immediately upon deal completion (`COMPLETED` via `man_rel_`), both buyer and seller receive a one-tap 1–5 star rating card (`rate_deal_<deal_id>_<stars>`), strictly enforced once per party per deal via `uq_rating_per_deal_rater`, updating `users.reputation_score` automatically (`ROUND(AVG(stars) * 20)`). Admins can inspect and delete erroneous ratings directly from `/deal [id]` (`adm_del_rating_`) or from the user's dossier `/user` (`adm_user_ratings_`), triggering automatic reputation recalculation and `DELETE_RATING` audit logging.
 2. **Offer Creation Wizard UX (`bot/handlers/offers.py`, `bot/utils/offer_wizard.py`):**
    - **Progressive Draft Header (`format_wizard_draft_header`):** Displays accumulated choices (`offer_type`, `rate`, `min_limit`, `max_limit`, `payment_methods`) at the top of each wizard step.
    - **2×2 Payment Methods Grid (`get_payment_methods_kb`):** Arranges the 4 approved payment methods in a clean 2-column grid.
@@ -444,6 +459,7 @@ To keep scope bounded, the following are intentionally excluded from MVP:
 | Date | Change |
 |---|---|
 | v1.0 - v3.3 | See previous version history. |
+| v3.9 | **Admin Control Center Overhaul & Operational Intervention v3.9:**<br>• **Streamlined Admin Bot Menu**: Reduced admin command menu to 8 essential commands (`/start`, `/continue`, `/support`, `/admin`, `/deal`, `/user`, `/pending`, `/backup`) and removed `/top_traders`, `/disputes`, `/market`, `/m_on`, `/m_off`, `/reply`.<br>• **Comprehensive User Dossier (`/user`)**: Search by Telegram ID, `@username`, or Nickname; inspect saved BEP-20 wallet, saved SYP account, deal/dispute metrics, traded volume, ratings (with one-tap deletion & reputation recalculation), active offers (with one-tap channel/market removal), ban toggle, and direct admin messaging.<br>• **Full Deal Inspection & Intervention (`/deal`)**: Added SYP payment proof photo viewer (`adm_view_proof_`), one-tap links to buyer/seller profiles, and administrative intervention controls (`adm_ask_force_conf_`, `adm_ask_force_dispute_`, `adm_ask_force_cancel_`).<br>• **Live Operations Center (`/pending`) & Unified Reports (`/stats`)**: Added 4-tab live operations monitor and merged financial profit & market liquidity analytics. |
 | v3.8 | **Post-Deal Star Ratings & Bank Transfer Validation v3.8:**<br>• **Post-Deal Star Rating (`deal_ratings`, `rating_service.py`)**: Dispatches one-tap 1–5 star rating prompts (`rate_deal_`) to both counterparties upon `COMPLETED` status, enforces one rating per user per deal, and recalculates `users.reputation_score` automatically.<br>• **Admin Rating Moderation**: Displays deal ratings in `/deal [id]` (`format_admin_deal_review_text` + `build_admin_deal_keyboard`) with direct delete buttons (`adm_del_rating_`) that recalculate target reputation and record `DELETE_RATING` audit logs.<br>• **Al-Haram / Al-Fouad Validation & Prompts**: Synchronized offer wizard instructions (`get_pm_spec`), Arabic digit normalization, and triple-name + `09xxxxxxxx` validation. |
 | v3.7 | **Wizard UX, Bot Menu Commands & Hardening Update v3.7:**<br>• **Progressive Draft Header (`format_wizard_draft_header`)**: Added live accumulated draft header at the top of each step in the Offer Creation Wizard.<br>• **3-Stage Button-Based Custom Duration Picker**: Replaced text-based custom duration input with a 3-stage interactive button flow (`Default 4h` vs `Custom` → `0–3 Hours` 2×2 grid → `5–45 Minutes` 2×3 grid) and unified duration formatting (`format_duration_hours_minutes`) across wizard summary, publish confirmation, and channel cards.<br>• **2×2 Payment Methods Grid**: Arranged the 4 approved payment methods in a compact 2×2 grid.<br>• **Official Bot Menu Commands & Deep Links**: Configured `/start`, `/continue` (with automatic cleanup of old deal cards), and `/support` (`@AlphaSupport`), plus `?start=offers` deep-link handling.<br>• **Entity Escaping & Error Alert Hardening**: Escaped all dynamic usernames, support handles, dispute reasons, and feedback notes (`escape_markdown` / `html.escape`), and enhanced `error_alert.py` to extract the deepest project-level stack frame. |
 | v3.6 | **Confidential Payout Collection & Reputation Unification v3.6:**<br>• Added Step 6 confidential payout collection (`offers.payout_details` JSONB) and buyer payment method selection in negotiations (`nego_pm_`).<br>• Unified reputation scale to `0%–100%` (default `100%`) across all user and admin views.<br>• Removed legacy `expired_grace` state in favor of immediate deletion upon expiry. |
