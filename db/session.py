@@ -5,9 +5,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Requirement 8.4: Connection pooling. 
+# Requirement 8.4: Connection pooling & statement timeout protection.
 # QueuePool is used by default in SQLAlchemy. We explicitly configure it.
 DATABASE_URL = settings.DATABASE_URL
+_connect_args = {"command_timeout": 30} if "asyncpg" in DATABASE_URL else {}
 
 engine = create_async_engine(
     DATABASE_URL,
@@ -16,6 +17,7 @@ engine = create_async_engine(
     pool_pre_ping=True,  # Ensures connections are alive before using them
     pool_recycle=1800,   # Recycle connections older than 30 minutes to prevent stale socket errors
     pool_timeout=30,     # Maximum 30 seconds wait for an available connection
+    connect_args=_connect_args,
     echo=False,
     hide_parameters=True
 )
@@ -135,9 +137,23 @@ async def ensure_schema_updated():
         ),
         (
             "deals.uq_open_deal_per_offer",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_open_deal_per_offer ON deals(offer_id) WHERE status NOT IN ('CANCELLED','EXPIRED','COMPLETED');",
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_indexes
+                    WHERE indexname = 'uq_open_deal_per_offer'
+                      AND indexdef NOT LIKE '%DISPUTED%'
+                ) THEN
+                    DROP INDEX uq_open_deal_per_offer;
+                END IF;
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_open_deal_per_offer
+                    ON deals(offer_id)
+                    WHERE status NOT IN ('CANCELLED','EXPIRED','COMPLETED','DISPUTED');
+            END $$;
+            """,
             "uq_open_deal_per_offer",
-            "SELECT offer_id, COUNT(*) FROM deals WHERE status NOT IN ('CANCELLED','EXPIRED','COMPLETED') GROUP BY offer_id HAVING COUNT(*) > 1;"
+            "SELECT offer_id, COUNT(*) FROM deals WHERE status NOT IN ('CANCELLED','EXPIRED','COMPLETED','DISPUTED') GROUP BY offer_id HAVING COUNT(*) > 1;"
         ),
         (
             "negotiations.uq_open_negotiation_per_offer",

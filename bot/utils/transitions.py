@@ -59,6 +59,23 @@ def can_remind_syp_payment(
     return expires_at <= current_time
 
 
+def can_remind_syp_confirmation(
+    current_status: str,
+    expires_at: Optional[datetime],
+    now: Optional[datetime] = None
+) -> bool:
+    """
+    Checks if a deal in SYP_PAYMENT_SENT has reached its 30-min seller confirmation
+    reminder timestamp without closing the deal (escrow funds remain safely held).
+    """
+    if current_status != "SYP_PAYMENT_SENT":
+        return False
+    if expires_at is None:
+        return False
+    current_time = now or datetime.now(timezone.utc)
+    return expires_at <= current_time
+
+
 def can_expire_negotiation(
     current_status: str,
     expires_at: Optional[datetime],

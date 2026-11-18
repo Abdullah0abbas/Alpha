@@ -758,7 +758,7 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
         return False
 
     amount_usdt = neg.proposed_amount
-    amount_syp = amount_usdt * neg.proposed_rate
+    amount_syp = (amount_usdt * neg.proposed_rate).quantize(Decimal("0.01"))
     now = datetime.now(timezone.utc)
     deposit_expires_at = now + timedelta(minutes=15)
 

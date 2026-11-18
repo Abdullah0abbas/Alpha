@@ -37,7 +37,7 @@ async def start_daily_backup_scheduler(bot: Bot, target_hour_utc: int = 0, targe
             await asyncio.sleep(sleep_duration)
 
             logger.info("Executing daily automated database backup...")
-            await perform_and_send_backup(bot, is_scheduled=True)
+            await asyncio.wait_for(perform_and_send_backup(bot, is_scheduled=True), timeout=120)
             logger.info("Daily automated database backup executed and dispatched successfully.")
 
         except asyncio.CancelledError:
@@ -53,6 +53,7 @@ from bot.utils.transitions import (
     can_expire_deal,
     can_expire_active_offer,
     can_remind_syp_payment,
+    can_remind_syp_confirmation,
     can_expire_negotiation,
     resolve_deal_parties,
     should_release_orphan_offer,
@@ -63,7 +64,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
     Unified watcher handling timeouts and reminders item-by-item:
     1. Deals in PENDING_OWNER_APPROVAL, AWAITING_USDT_DEPOSIT, CREATED where expires_at <= now.
     2. Offers in active status where expires_at <= now (immediate permanent deletion).
-    3. Deals in AWAITING_SYP_PAYMENT where expires_at <= now (one-time 30-min buyer reminder, deal stays open).
+    3. Deals in AWAITING_SYP_PAYMENT or SYP_PAYMENT_SENT where expires_at <= now (one-time 30-min reminder, deal stays open).
     4. Negotiations in PENDING_MAKER, PENDING_TAKER where expires_at <= now.
     5. Orphan reserved/negotiating offers older than 10 minutes.
 
@@ -277,7 +278,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
             logger.error(f"Error deleting offer #{offer_id}: {item_err}", exc_info=True)
 
     # ----------------------------------------------------
-    # Branch 3: SYP Payment 30-Minute Reminder (Buyer Only, Deal Stays Open)
+    # Branch 3: SYP Payment & Confirmation 30-Minute Reminders (Deal Stays Open)
     # ----------------------------------------------------
     syp_reminder_ids = []
     try:
@@ -341,6 +342,109 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                         logger.warning(f"Failed to notify buyer {buyer_id_val} of 30-min SYP reminder for deal #{deal_id_val}: {e}")
         except Exception as item_err:
             logger.error(f"Error sending SYP payment reminder for deal #{deal_id}: {item_err}", exc_info=True)
+
+    # Branch 3b: SYP_PAYMENT_SENT 30-Minute Seller Confirmation Reminder & Admin Alert
+    syp_conf_reminder_ids = []
+    try:
+        async with AsyncSessionLocal() as read_session:
+            syp_conf_stmt = select(Deal.id).where(
+                Deal.status == "SYP_PAYMENT_SENT",
+                Deal.expires_at.is_not(None),
+                Deal.expires_at <= now
+            ).limit(100)
+            syp_conf_res = await read_session.execute(syp_conf_stmt)
+            syp_conf_reminder_ids = list(syp_conf_res.scalars().all())
+    except Exception as e:
+        logger.error(f"Error querying candidate SYP confirmation reminder deal IDs: {e}", exc_info=True)
+
+    for deal_id in syp_conf_reminder_ids:
+        try:
+            async with AsyncSessionLocal() as item_session:
+                deal_res = await item_session.execute(
+                    select(Deal).where(Deal.id == deal_id).with_for_update(skip_locked=True)
+                )
+                deal = deal_res.scalar_one_or_none()
+                if not deal:
+                    continue
+
+                if not can_remind_syp_confirmation(deal.status, deal.expires_at, now):
+                    continue
+
+                # Clear expires_at so the alert triggers strictly once while keeping the deal safely open
+                deal.expires_at = None
+                deal_id_val = deal.id
+                buyer_id_val = deal.buyer_id
+                seller_id_val = deal.seller_id
+                amount_usdt_val = deal.amount_usdt
+                amount_syp_val = deal.amount_syp
+
+                await item_session.commit()
+                syp_reminders_count += 1
+                logger.info(f"Sent 30-min SYP confirmation reminder and admin alert for deal #{deal_id_val}")
+
+                if seller_id_val:
+                    seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="✅ تأكيد الاستلام", callback_data=f"ask_conf_{deal_id_val}"),
+                            InlineKeyboardButton(text="⚠️ لم أستلم", callback_data=f"dispute_deal_{deal_id_val}")
+                        ]
+                    ])
+                    seller_text = (
+                        f"⏰ **تذكير تأكيد الاستلام — صفقة #{deal_id_val}**\n\n"
+                        f"▫️ **المبلغ المحول بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n"
+                        f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n\n"
+                        f"مرت 30 دقيقة على إرفاق المشتري لإشعار التحويل دون تأكيد الاستلام من طرفك.\n"
+                        f"يرجى مراجعة حسابك وتأكيد الاستلام، أو الضغط على **لم أستلم** في حال وجود مشكلة."
+                    )
+                    try:
+                        await bot.send_message(
+                            chat_id=seller_id_val,
+                            text=seller_text,
+                            reply_markup=seller_kb,
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to notify seller {seller_id_val} of 30-min SYP confirmation reminder for deal #{deal_id_val}: {e}")
+
+                if buyer_id_val:
+                    buyer_text = (
+                        f"ℹ️ **تحديث صفقة #{deal_id_val}**\n\n"
+                        f"مرت 30 دقيقة على إرسالك لإشعار التحويل دون تأكيد البائع بعد.\n"
+                        f"تم إرسال تذكير للبائع وإشعار الإدارة لمتابعة الصفقة، ورصيد الضمان (`{format_usdt(amount_usdt_val)} USDT`) محجوز بالكامل لصالحك بأمان.\n"
+                        f"للاستفسار يمكنك التواصل مع الدعم الفني: @{escaped_support}"
+                    )
+                    try:
+                        await bot.send_message(
+                            chat_id=buyer_id_val,
+                            text=buyer_text,
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to notify buyer {buyer_id_val} of 30-min SYP confirmation status for deal #{deal_id_val}: {e}")
+
+                admin_alert_text = (
+                    f"⏰ **تنبيه تأخر تأكيد استلام الليرة (30 دقيقة) — صفقة #{deal_id_val}**\n\n"
+                    f"▫️ **البائع:** `{seller_id_val}`\n"
+                    f"▫️ **المشتري:** `{buyer_id_val}`\n"
+                    f"▫️ **الكمية:** `{format_usdt(amount_usdt_val)} USDT`\n"
+                    f"▫️ **المبلغ بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n\n"
+                    f"أرسل المشتري إشعار الدفع منذ أكثر من 30 دقيقة ولم يقم البائع بتأكيد الاستلام حتى الآن."
+                )
+                admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal_id_val}")]
+                ])
+                for admin_id in settings.ADMIN_IDS:
+                    try:
+                        await bot.send_message(
+                            chat_id=admin_id,
+                            text=admin_alert_text,
+                            reply_markup=admin_kb,
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to notify admin {admin_id} of 30-min SYP confirmation delay on deal #{deal_id_val}: {e}")
+        except Exception as item_err:
+            logger.error(f"Error sending SYP confirmation reminder for deal #{deal_id}: {item_err}", exc_info=True)
 
     # ----------------------------------------------------
     # Branch 4: Expired Negotiations (Max 100 per cycle)
@@ -453,7 +557,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                 live_deal_res = await item_session.execute(
                     select(Deal.id).where(
                         Deal.offer_id == offer_id,
-                        Deal.status.not_in(["COMPLETED", "CANCELLED", "EXPIRED"])
+                        Deal.status.not_in(["COMPLETED", "CANCELLED", "EXPIRED", "DISPUTED"])
                     ).limit(1)
                 )
                 has_live_deal = live_deal_res.scalar_one_or_none() is not None
@@ -520,12 +624,15 @@ async def start_expiry_watcher(bot: Bot, interval_seconds: int = 30):
     
     while True:
         try:
-            # Run startup recovery scan
-            await run_startup_recovery(bot)
+            # Run startup recovery scan with timeout protection
+            try:
+                await asyncio.wait_for(run_startup_recovery(bot), timeout=120)
+            except asyncio.TimeoutError:
+                logger.error("Startup recovery timed out after 120s; continuing to periodic loop.")
             
             while True:
                 try:
-                    await process_expiries(bot)
+                    await asyncio.wait_for(process_expiries(bot), timeout=120)
                 except asyncio.CancelledError:
                     raise
                 except Exception as loop_err:

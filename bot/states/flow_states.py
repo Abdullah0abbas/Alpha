@@ -37,6 +37,7 @@ class FeedbackFSM(StatesGroup):
 
 class AdminFSM(StatesGroup):
     waiting_for_user_search_id = State()
+    waiting_for_deal_search_id = State()
     waiting_for_broadcast_text = State()
 
 class ProfileFSM(StatesGroup):

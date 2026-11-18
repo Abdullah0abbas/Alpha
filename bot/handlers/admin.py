@@ -38,7 +38,10 @@ def get_admin_main_kb(maintenance_on: bool) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔍 استعلام عن مستخدم", callback_data="admin_search_user")
         ],
         [
-            InlineKeyboardButton(text="📢 رسالة بث جماعي", callback_data="admin_broadcast"),
+            InlineKeyboardButton(text="🔍 استعلام عن صفقة", callback_data="admin_search_deal"),
+            InlineKeyboardButton(text="📢 رسالة بث جماعي", callback_data="admin_broadcast")
+        ],
+        [
             InlineKeyboardButton(text=f"🛠️ وضع الصيانة: {m_icon}", callback_data="admin_toggle_maintenance")
         ],
         [
@@ -593,46 +596,126 @@ async def cmd_admin_pending(message: Message, db_session: AsyncSession):
         return
 
     result = await db_session.execute(
-        select(Deal).where(Deal.status == "ADMIN_APPROVAL").order_by(Deal.created_at.desc())
+        select(Deal)
+        .where(Deal.status.in_(["ADMIN_APPROVAL", "SYP_PAYMENT_SENT"]))
+        .order_by(Deal.created_at.desc())
     )
-    pending_deals = result.scalars().all()
+    all_pending = list(result.scalars().all())
 
-    if not pending_deals:
+    if not all_pending:
         await message.answer(
-            "✅ **لا توجد أي صفقات معلقة بانتظار الاعتماد حالياً.**\n\nكافة الصفقات تم تدقيقها وإطلاقها.",
+            "✅ **لا توجد أي صفقات معلقة بانتظار الاعتماد أو تأكيد الاستلام حالياً.**\n\nكافة الصفقات تم تدقيقها وإطلاقها.",
             parse_mode="Markdown"
         )
         return
 
+    approval_deals = [d for d in all_pending if d.status == "ADMIN_APPROVAL"]
+    syp_sent_deals = [d for d in all_pending if d.status == "SYP_PAYMENT_SENT"]
+    ordered_deals = approval_deals + syp_sent_deals
+
     await message.answer(
-        f"🛡️ **الصفقات المعلقة بانتظار الاعتماد الإداري:** `{len(pending_deals)}` صفقة\n\n"
-        "يمكنك مراجعة كل صفقة واعتماد إطلاق الرصيد:",
+        f"🛡️ **الصفقات المعلقة للمتابعة الإدارية:** `{len(ordered_deals)}` صفقة\n"
+        f"▫️ **بانتظار إطلاق الضمان (`ADMIN_APPROVAL`):** `{len(approval_deals)}`\n"
+        f"▫️ **بانتظار تأكيد استلام البائع (`SYP_PAYMENT_SENT`):** `{len(syp_sent_deals)}`\n\n"
+        "يمكنك مراجعة كل صفقة واتخاذ الإجراء المناسب:",
         parse_mode="Markdown"
     )
 
-    for deal in pending_deals:
+    for deal in ordered_deals:
         admin_text = await format_admin_deal_review_text(deal, db_session)
-        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")],
-            [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")]
-        ])
+        admin_kb = await build_admin_deal_keyboard(deal, db_session)
         await message.answer(admin_text, reply_markup=admin_kb, parse_mode="Markdown")
 
 
-@admin_router.message(Command("deal"))
-async def cmd_admin_inspect_deal(message: Message, db_session: AsyncSession):
+@admin_router.callback_query(F.data == "admin_search_deal")
+async def cq_admin_search_deal(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك بالوصول.", show_alert=True)
+        return
+
+    await state.set_state(AdminFSM.waiting_for_deal_search_id)
+    text = (
+        "🔍 **الاستعلام عن صفقة / عملية ربط**\n\n"
+        "أرسل رقم الصفقة أو عملية الربط المطلوب فحصها (أرقام فقط):"
+    )
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
+    ])
+    try:
+        sent_msg = await callback.message.edit_text(text, reply_markup=cancel_kb, parse_mode="Markdown")
+        await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
+    except Exception:
+        sent_msg = await callback.message.answer(text, reply_markup=cancel_kb, parse_mode="Markdown")
+        await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
+    await callback.answer()
+
+
+@admin_router.message(AdminFSM.waiting_for_deal_search_id)
+async def process_deal_search(message: Message, state: FSMContext, db_session: AsyncSession):
     if not is_admin(message.from_user.id):
         return
 
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
+    raw_input = (message.text or "").strip().lstrip("#")
+    raw_input = raw_input.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789"))
+    if not raw_input.isdigit():
+        warn_msg = await message.answer(
+            "⚠️ **رقم غير صالح!** يرجى إرسال رقم الصفقة / عملية الربط بالأرقام فقط:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
+            ]),
+            parse_mode="Markdown"
+        )
+        await state.update_data(prompt_msg_id=warn_msg.message_id, prompt_chat_id=warn_msg.chat.id)
+        return
+
+    deal_id = int(raw_input)
+    result = await db_session.execute(select(Deal).where(Deal.id == deal_id))
+    deal = result.scalar_one_or_none()
+
+    await state.clear()
+    if not deal:
+        await message.answer(
+            f"❌ لم يتم العثور على أي صفقة بالمعرف `#{deal_id}`.",
+            reply_markup=get_admin_back_kb(),
+            parse_mode="Markdown"
+        )
+        return
+
+    admin_text = await format_admin_deal_review_text(deal, db_session)
+    kb = await build_admin_deal_keyboard(deal, db_session)
+    await message.answer(admin_text, reply_markup=kb, parse_mode="Markdown")
+
+
+@admin_router.message(Command("deal"))
+async def cmd_admin_inspect_deal(message: Message, state: FSMContext, db_session: AsyncSession):
+    if not is_admin(message.from_user.id):
+        return
+
+    args = (message.text or "").split()
+    if len(args) < 2:
+        await state.set_state(AdminFSM.waiting_for_deal_search_id)
+        cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ إلغاء", callback_data="admin_main_menu")]
+        ])
+        sent_msg = await message.answer(
+            "🔍 **الاستعلام عن صفقة / عملية ربط**\n\n"
+            "أرسل رقم الصفقة أو عملية الربط المطلوب فحصها (أرقام فقط):",
+            reply_markup=cancel_kb,
+            parse_mode="Markdown"
+        )
+        await state.update_data(prompt_msg_id=sent_msg.message_id, prompt_chat_id=sent_msg.chat.id)
+        return
+
+    deal_arg = args[1].lstrip("#").translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789"))
+    if not deal_arg.isdigit():
         await message.answer(
             "⚠️ **طريقة الاستخدام:**\n`/deal [رقم_الصفقة]`\n\n*(مثال: `/deal 15`)*",
             parse_mode="Markdown"
         )
         return
 
-    deal_id = int(args[1])
+    await state.clear()
+    deal_id = int(deal_arg)
     result = await db_session.execute(select(Deal).where(Deal.id == deal_id))
     deal = result.scalar_one_or_none()
 

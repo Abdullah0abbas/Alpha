@@ -17,7 +17,8 @@ from bot.handlers.offers import (
     format_usdt,
     format_payment_methods,
     humanize_time_remaining,
-    start_offer_creation
+    start_offer_creation,
+    build_offer_type_screen
 )
 from bot.utils.formatters import escape_markdown
 from bot.utils.deal_views import build_offer_action_buttons
@@ -59,6 +60,24 @@ def get_back_to_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")]
     ])
+
+
+def build_main_welcome_text(from_user) -> str:
+    raw_name = (
+        getattr(from_user, "full_name", None)
+        or getattr(from_user, "first_name", None)
+        or "عزيزي المتداول"
+    ).strip()
+    safe_name = escape_markdown(raw_name)
+    return (
+        f"\u200f🛡️ **مرحباً {safe_name} — أهلاً بك في {BOT_NAME}**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        "🔐 **بيئة تداول P2P آمنة لبيع وشراء `USDT (BEP-20)` بالليرة السورية.**\n\n"
+        "🔹 **نشر العروض:** حدّد سعرك وحدودك وطرق الاستلام بكل مرونة.\n"
+        "🔹 **فرص السوق:** نفّذ العروض الجاهزة أو أرسل عرض تفاوض مباشر.\n"
+        "🔹 **ضمان محكم:** متابعة آلية لكل صفقة من الحجز حتى التسليم.\n\n"
+        "🔽 **ابدأ الآن باختيار الإجراء المناسب:**"
+    )
 
 # ================= 1. /start ENTRYPOINT =================
 
@@ -154,12 +173,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
         )
         return
 
-    welcome_text = (
-        f"\u200f🛡️ **{BOT_NAME}**\n"
-        f"ID : `{user_id}`\n"
-        "〰️〰️〰️〰️〰️〰️〰️\n"
-        "وسيط آلي لتداول `USDT (BEP-20)` مقابل الليرة السورية بنظام الضمان."
-    )
+    welcome_text = build_main_welcome_text(message.from_user)
     await message.answer(welcome_text, reply_markup=get_main_menu_kb(user_id), parse_mode="Markdown")
 
 
@@ -167,12 +181,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
 async def cq_back_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
-    welcome_text = (
-        f"\u200f🛡️ **{BOT_NAME}**\n"
-        f"ID : `{user_id}`\n"
-        "〰️〰️〰️〰️〰️〰️〰️\n"
-        "اختر من القائمة أدناه:"
-    )
+    welcome_text = build_main_welcome_text(callback.from_user)
     try:
         await callback.message.edit_text(welcome_text, reply_markup=get_main_menu_kb(user_id), parse_mode="Markdown")
     except Exception:
@@ -199,21 +208,7 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
         payout_details={},
         payment_methods=[]
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🟢 شراء USDT", callback_data="offer_type_buy"),
-            InlineKeyboardButton(text="🔴 بيع USDT", callback_data="offer_type_sell")
-        ],
-        [
-            InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
-        ]
-    ])
-    text = (
-        "➕ **إنشاء عرض جديد**\n"
-        "〰️〰️〰️〰️〰️〰️〰️\n"
-        "🟢 **شراء USDT :** تدفع ليرة سورية وتستلم `USDT`\n"
-        "🔴 **بيع USDT :** تودع `USDT` وتستلم ليرة سورية"
-    )
+    text, kb = build_offer_type_screen(back_to_main=True)
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except Exception:

@@ -87,6 +87,7 @@ CREATED
 - **Rule 1 (Offer Expiry):** When an active offer's duration expires without active applicants, it is **deleted immediately** from the channel and database.
 - **Rule 2 (USDT Deposit Timeout):** If the seller fails to deposit USDT within 15 minutes of approval, the deal is cancelled. The offer is reverted to `active` status in the market. Admins receive an alert with party IDs.
 - **Rule 3 (SYP Payment Soft Timeout):** If the buyer takes more than 30 minutes to send SYP, the deal remains active (reserved), but the buyer is warned to contact support (`@AlphaSupport`) before proceeding with the transfer.
+- **Rule 3b (SYP Receipt Confirmation 30-Min Reminder & Admin Alert):** Once the buyer attaches the SYP payment screenshot (`SYP_PAYMENT_SENT`), a 30-minute confirmation window (`expires_at = now + 30m`) starts. If the seller does not confirm receipt within 30 minutes, the deal remains safely open (`expires_at` cleared to `None`), the seller receives a one-time confirmation reminder, the buyer receives a reassurance update, and all `ADMIN_IDS` receive an immediate alert with a direct deal inspection button (`adm_inspect_deal_`).
 - **Rule 4 (Approval Timeout):** If the offer owner fails to approve/reject a deal request within 30 minutes, the deal is cancelled AND the offer is **deleted** for non-responsiveness.
 - **Cancellation Restriction:** The offer owner cannot cancel the deal once approved (in `CREATED` or `AWAITING_USDT_DEPOSIT` states). If no deposit is made, the deal expires automatically.
 
@@ -127,7 +128,7 @@ An **offer itself** (before any deal is requested against it) has a maker-define
 When an `active` offer's `expires_at` timestamp elapses without an active applicant, the background task in `bot/tasks.py` transitions its status directly to `deleted`, removes its public channel post, and notifies the offer maker.
 
 **Orphan Offers Safety Net (v3.3+):**
-If an offer is stuck in `reserved` or `negotiating` status without an active deal (`deals.status NOT IN ('CANCELLED','EXPIRED','COMPLETED')`) or open negotiation (`negotiations.status IN ('PENDING_MAKER','PENDING_TAKER')`), and more than **10 minutes** have passed since `offers.status_changed_at`, a background task in `bot/tasks.py` automatically reverts `offers.status` to `"active"` and updates the channel message.
+If an offer is stuck in `reserved` or `negotiating` status without an active deal (`deals.status NOT IN ('CANCELLED','EXPIRED','COMPLETED','DISPUTED')`) or open negotiation (`negotiations.status IN ('PENDING_MAKER','PENDING_TAKER')`), and more than **10 minutes** have passed since `offers.status_changed_at`, a background task in `bot/tasks.py` automatically reverts `offers.status` to `"active"` and updates the channel message.
 
 ---
 
@@ -253,7 +254,7 @@ SEQUENCE:
 ### 5.1 Critical Constraints & Indexes
 - `deals.deposit_address` and `deals.deposit_index` must be `UNIQUE`.
 - `chk_deals_different_parties`: `CHECK (seller_id <> buyer_id)` on `deals`.
-- `uq_open_deal_per_offer`: `CREATE UNIQUE INDEX uq_open_deal_per_offer ON deals(offer_id) WHERE status NOT IN ('CANCELLED','EXPIRED','COMPLETED')`.
+- `uq_open_deal_per_offer`: `CREATE UNIQUE INDEX uq_open_deal_per_offer ON deals(offer_id) WHERE status NOT IN ('CANCELLED','EXPIRED','COMPLETED','DISPUTED')`.
 - `uq_open_negotiation_per_offer`: `CREATE UNIQUE INDEX uq_open_negotiation_per_offer ON negotiations(offer_id) WHERE status IN ('PENDING_MAKER','PENDING_TAKER')`.
 - `payment_proofs` remains in schema for potential future re-introduction of reference checks without migration.
 
@@ -276,7 +277,7 @@ The system enforces two independent protection layers against spam and automated
 
 ### 6.1.1 — Active Elements Fixed Ceiling:
 - **Active Offers per user:** Maximum 5 (`offers.status IN ('active', 'reserved', 'negotiating')`).
-- **Active Operations per user (Deals & Negotiations):** Maximum 5 (`deals.status NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')` + `negotiations.status IN ('PENDING_MAKER', 'PENDING_TAKER')`).
+- **Active Operations per user (Deals & Negotiations):** Maximum 5 (`deals.status NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED', 'DISPUTED')` + `negotiations.status IN ('PENDING_MAKER', 'PENDING_TAKER')`).
 - Applies to **both counterparties (Maker & Taker)**.
 
 ### 6.1.2 — Rolling Time Window:
@@ -382,8 +383,8 @@ Accessible to `ADMIN_IDS` via `/admin`:
 
 **Comprehensive Admin Commands:**
 - `/admin`: Interactive admin panel menu.
-- `/pending`: List pending deals awaiting owner or admin action.
-- `/deal [id]`: View full deal details and execute manual controls.
+- `/pending`: List pending deals in `ADMIN_APPROVAL` (ready for escrow release) and `SYP_PAYMENT_SENT` (awaiting seller confirmation).
+- `/deal [id]`: View full deal details (or prompt interactively when invoked without an ID) and execute manual controls.
 - `/stats`: Platform metrics and trade volume summary.
 - `/market`: Live offer and market summary.
 - `/top_traders`: Top traders leaderboard.
@@ -397,14 +398,17 @@ Accessible to `ADMIN_IDS` via `/admin`:
 
 ---
 
-## 14. System Resilience, Bot Commands & Production Hardening (v2.9 / v3.7)
+## 14. System Resilience, Bot Commands & Production Hardening (v2.9 / v3.8)
 
 1. **Smart Critical Error Alerting (`error_alert.py`):** Deduplicated alerts dispatched to admins with deep project-frame traceback extraction (filtering out `site-packages` frames to pinpoint the exact project handler line); full logs written to `escrow_system.log`.
-2. **Connection Pool Resilience:** `pool_pre_ping=True`, `pool_recycle=1800`.
-3. **Supervisor Pattern:** Background tasks in `bot/tasks.py` restart automatically on exception.
-4. **Rate-limited Broadcast & Safe Entity Escaping:** Strict Markdown (`escape_markdown`, `safe_username`) and HTML (`html.escape`) escaping across all user inputs, usernames, support handles, dispute reasons, and feedback notes.
-5. **Seamless FSM Interruption (`command_cancel.py`):** Intercepts slash commands and clears stale dialog state.
-6. **Official Bot Menu Commands & Deep Linking (`bot/main.py`, `bot/handlers/base.py`):**
+2. **Connection Pool & Statement Timeout Resilience (`db/session.py`, `bot/main.py`):** `pool_pre_ping=True`, `pool_recycle=1800`, `pool_timeout=30`, `connect_args={"command_timeout": 30}` for asyncpg to prevent hung SQL statements or deadlocked `FOR UPDATE` rows, plus automatic `session.rollback()` inside `DbSessionMiddleware` on unhandled exceptions.
+3. **Self-Healing Polling Supervisor & Background Watchdog (`bot/main.py`, `bot/tasks.py`):**
+   - Outer supervisor loop (`while True` with exponential backoff up to 60s) around `AiohttpSession(timeout=30)` and `dp.start_polling(bot, polling_timeout=20)` so network drops or Telegram server stalls never terminate or freeze the bot.
+   - `supervise_background_workers` watchdog checks `start_expiry_watcher` and `start_daily_backup_scheduler` every 30s and automatically respawns either task if it ever exits unexpectedly, with `asyncio.wait_for(..., timeout=120)` execution bounds on each cycle.
+4. **Non-Blocking Daily Automated Backup (`bot/services/backup_service.py`):** Exports all 10 tables (including `deal_ratings`, `payout_details`, `seller_fee_usdt`, `buyer_fee_usdt`), offloads JSON serialization, gzip compression, and 30-day rolling disk retention in `/backups/` to a worker thread via `asyncio.to_thread`, and dispatches the `.json.gz` file to all `ADMIN_IDS` daily at `00:00 UTC`.
+5. **Rate-limited Broadcast & Safe Entity Escaping:** Strict Markdown (`escape_markdown`, `safe_username`) and HTML (`html.escape`) escaping across all user inputs, usernames, support handles, dispute reasons, and feedback notes.
+6. **Seamless FSM Interruption (`command_cancel.py`):** Intercepts slash commands and clears stale dialog state.
+7. **Official Bot Menu Commands & Deep Linking (`bot/main.py`, `bot/handlers/base.py`):**
    - `/start`: Main menu and deep-link router (`?start=offer_<id>` for direct offer interaction, `?start=offers` for opening the market browser from channel cards, and `?start=ref_<id>` for referrals).
    - `/continue`: Resumes the user's active deal by re-sending the live interactive deal card while automatically deleting previous card messages (`seller_card_msg_id` / `buyer_card_msg_id`) to prevent stale duplicate buttons; also surfaces pending owner approvals and active negotiations.
    - `/support`: Displays the unified technical support card (`@AlphaSupport`) with instructions for submitting inquiries or dispute evidence.

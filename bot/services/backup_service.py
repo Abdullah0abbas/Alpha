@@ -1,6 +1,7 @@
 import os
 import json
 import gzip
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -11,13 +12,13 @@ from sqlalchemy.future import select
 from db.session import AsyncSessionLocal
 from db.models import (
     User, Offer, Deal, Negotiation, Dispute,
-    PaymentProof, BlockchainTransaction, SystemSetting, AuditLog
+    PaymentProof, BlockchainTransaction, SystemSetting, AuditLog, DealRating
 )
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-BACKUP_FORMAT_VERSION = "3.2"
+BACKUP_FORMAT_VERSION = "3.8"
 BACKUP_DIR = os.path.join(os.getcwd(), "backups")
 
 def serialize_val(val):
@@ -29,13 +30,39 @@ def serialize_val(val):
         return val.hex()
     return val
 
+
+def _write_backup_gzip_and_cleanup(filepath: str, backup_payload: dict) -> None:
+    """
+    Runs in a worker thread via asyncio.to_thread so JSON serialization, gzip compression,
+    and disk retention cleanup never block the main asyncio event loop.
+    """
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    json_bytes = json.dumps(backup_payload, ensure_ascii=False, indent=2).encode("utf-8")
+    with gzip.open(filepath, "wb") as f:
+        f.write(json_bytes)
+
+    # Retention: keep last 30 backups on disk, delete older ones
+    try:
+        existing_files = sorted(
+            [os.path.join(BACKUP_DIR, f) for f in os.listdir(BACKUP_DIR) if f.startswith("escrow_backup_")],
+            key=os.path.getmtime
+        )
+        if len(existing_files) > 30:
+            for old_file in existing_files[:-30]:
+                try:
+                    os.remove(old_file)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"Error during backup retention cleanup: {e}")
+
+
 async def create_database_backup() -> tuple[str, str, dict]:
     """
     Exports all database tables into a clean, gzip-compressed JSON file,
     saves it to /backups/, cleans old backups, and returns:
     (file_path, filename, stats_dict)
     """
-    os.makedirs(BACKUP_DIR, exist_ok=True)
     timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filename = f"escrow_backup_{timestamp_str}.json.gz"
     filepath = os.path.join(BACKUP_DIR, filename)
@@ -78,8 +105,10 @@ async def create_database_backup() -> tuple[str, str, dict]:
                 "max_limit": serialize_val(o.max_limit),
                 "payment_methods": o.payment_methods,
                 "status": o.status,
+                "status_changed_at": serialize_val(o.status_changed_at),
                 "channel_message_id": o.channel_message_id,
                 "payout_info": o.payout_info,
+                "payout_details": o.payout_details,
                 "expires_at": serialize_val(o.expires_at),
                 "negotiable": o.negotiable,
                 "negotiable_type": o.negotiable_type,
@@ -101,12 +130,16 @@ async def create_database_backup() -> tuple[str, str, dict]:
                 "amount_usdt": serialize_val(d.amount_usdt),
                 "amount_syp": serialize_val(d.amount_syp),
                 "fee_usdt": serialize_val(d.fee_usdt),
+                "seller_fee_usdt": serialize_val(getattr(d, "seller_fee_usdt", None)),
+                "buyer_fee_usdt": serialize_val(getattr(d, "buyer_fee_usdt", None)),
                 "deposit_address": d.deposit_address,
                 "deposit_index": d.deposit_index,
                 "buyer_payout_address": d.buyer_payout_address,
                 "seller_payment_info": d.seller_payment_info,
                 "status": d.status,
                 "expires_at": serialize_val(d.expires_at),
+                "seller_card_msg_id": d.seller_card_msg_id,
+                "buyer_card_msg_id": d.buyer_card_msg_id,
                 "created_at": serialize_val(d.created_at),
                 "updated_at": serialize_val(d.updated_at)
             }
@@ -151,7 +184,23 @@ async def create_database_backup() -> tuple[str, str, dict]:
             for dp in disps
         ]
 
-        # 6. Payment Proofs
+        # 6. Deal Ratings
+        ratings_res = await session.execute(select(DealRating))
+        ratings = ratings_res.scalars().all()
+        stats["deal_ratings"] = len(ratings)
+        ratings_data = [
+            {
+                "id": r.id,
+                "deal_id": r.deal_id,
+                "rater_id": r.rater_id,
+                "target_id": r.target_id,
+                "stars": r.stars,
+                "created_at": serialize_val(r.created_at)
+            }
+            for r in ratings
+        ]
+
+        # 7. Payment Proofs
         proofs_res = await session.execute(select(PaymentProof))
         proofs = proofs_res.scalars().all()
         stats["payment_proofs"] = len(proofs)
@@ -167,7 +216,7 @@ async def create_database_backup() -> tuple[str, str, dict]:
             for p in proofs
         ]
 
-        # 7. Blockchain Transactions
+        # 8. Blockchain Transactions
         tx_res = await session.execute(select(BlockchainTransaction))
         txs = tx_res.scalars().all()
         stats["blockchain_transactions"] = len(txs)
@@ -183,7 +232,7 @@ async def create_database_backup() -> tuple[str, str, dict]:
             for t in txs
         ]
 
-        # 8. System Settings
+        # 9. System Settings
         settings_res = await session.execute(select(SystemSetting))
         settings_rows = settings_res.scalars().all()
         stats["system_settings"] = len(settings_rows)
@@ -196,7 +245,7 @@ async def create_database_backup() -> tuple[str, str, dict]:
             for s in settings_rows
         ]
 
-        # 9. Audit Logs
+        # 10. Audit Logs
         audit_res = await session.execute(select(AuditLog))
         audit_rows = audit_res.scalars().all()
         stats["audit_logs"] = len(audit_rows)
@@ -226,31 +275,15 @@ async def create_database_backup() -> tuple[str, str, dict]:
         "deals": deals_data,
         "negotiations": negs_data,
         "disputes": disps_data,
+        "deal_ratings": ratings_data,
         "payment_proofs": proofs_data,
         "blockchain_transactions": txs_data,
         "system_settings": settings_data,
         "audit_logs": audit_data
     }
 
-    # Write compressed gzip
-    json_bytes = json.dumps(backup_payload, ensure_ascii=False, indent=2).encode("utf-8")
-    with gzip.open(filepath, "wb") as f:
-        f.write(json_bytes)
-
-    # Retention: keep last 30 backups on disk, delete older ones
-    try:
-        existing_files = sorted(
-            [os.path.join(BACKUP_DIR, f) for f in os.listdir(BACKUP_DIR) if f.startswith("escrow_backup_")],
-            key=os.path.getmtime
-        )
-        if len(existing_files) > 30:
-            for old_file in existing_files[:-30]:
-                try:
-                    os.remove(old_file)
-                except Exception:
-                    pass
-    except Exception as e:
-        logger.warning(f"Error during backup retention cleanup: {e}")
+    # Offload JSON dump + gzip compression + file retention to a background thread
+    await asyncio.to_thread(_write_backup_gzip_and_cleanup, filepath, backup_payload)
 
     return filepath, filename, stats
 
@@ -276,6 +309,7 @@ async def perform_and_send_backup(bot: Bot, recipient_id: int | None = None, is_
         f"▫️ **الصفقات:** `{stats.get('deals', 0)}`\n"
         f"▫️ **العروض:** `{stats.get('offers', 0)}`\n"
         f"▫️ **المفاوضات:** `{stats.get('negotiations', 0)}`\n"
+        f"▫️ **التقييمات:** `{stats.get('deal_ratings', 0)}`\n"
         f"▫️ **النزاعات:** `{stats.get('disputes', 0)}`\n\n"
         f"تم حفظ النسخة محلياً في مسار `/backups/`."
     )

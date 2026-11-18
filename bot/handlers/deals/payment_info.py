@@ -143,7 +143,7 @@ async def apply_buyer_payout_wallet(
 
     if deal.status == "AWAITING_SYP_PAYMENT":
         deal.status = "SYP_PAYMENT_SENT"
-        deal.expires_at = None
+        deal.expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
         await db_session.commit()
 
         if isinstance(event, CallbackQuery):

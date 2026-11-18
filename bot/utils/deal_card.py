@@ -287,7 +287,13 @@ def render_deal_card(
     else:
         lines.append(f"⏳ **الوضع الحالي:** {turn_desc}")
 
-    if deal.expires_at and deal.status in ("PENDING_OWNER_APPROVAL", "AWAITING_USDT_DEPOSIT", "CREATED"):
+    if deal.expires_at and deal.status in (
+        "PENDING_OWNER_APPROVAL",
+        "AWAITING_USDT_DEPOSIT",
+        "CREATED",
+        "AWAITING_SYP_PAYMENT",
+        "SYP_PAYMENT_SENT",
+    ):
         remaining_str = humanize_time_remaining(deal.expires_at)
         lines.append(f"⏳ **المهلة المتبقية:** {remaining_str}")
 

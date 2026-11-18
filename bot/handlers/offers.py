@@ -135,6 +135,35 @@ def get_wizard_summary_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def build_offer_type_screen(back_to_main: bool = False) -> tuple[str, InlineKeyboardMarkup]:
+    """Unified builder for Step 1 (Offer Type selection) across menu button, /create_offer, and Back navigation."""
+    text = (
+        f"📝 **إنشاء عرض تداول جديد — {BOT_NAME}**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        "اختر نوع العملية التي ترغب بنشرها في السوق:\n\n"
+        "🔴 **بيع `USDT (BEP-20)`**\n"
+        "▫️ تحدّد سعر الصرف الذي يناسبك\n"
+        "▫️ تحدّد أقل وأعلى كمية تقبل بيعها\n"
+        "▫️ تحدّد وسيلة استلامك بالليرة السورية\n\n"
+        "🟢 **شراء `USDT (BEP-20)`**\n"
+        "▫️ تحدّد سعر الشراء الذي يناسبك\n"
+        "▫️ تحدّد أقل وأعلى كمية ترغب بشرائها\n"
+        "▫️ تحدّد وسائل الدفع المتاحة لديك بالليرة\n\n"
+        "👇 **اختر نوع العرض للمتابعة:**"
+    )
+    footer_btn = (
+        InlineKeyboardButton(text="🔙 العودة للقائمة الرئيسية", callback_data="menu_back_main")
+        if back_to_main
+        else InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔴 عرض بيع USDT", callback_data="offer_type_sell")],
+        [InlineKeyboardButton(text="🟢 عرض شراء USDT", callback_data="offer_type_buy")],
+        [footer_btn]
+    ])
+    return text, kb
+
+
 # ==============================================================================
 # CANCEL CONFIRMATION DIALOG (GATEKEEPER)
 # ==============================================================================
@@ -186,18 +215,9 @@ async def _render_current_step(message: Message, state: FSMContext, db_session: 
     data = await state.get_data()
 
     if cur_state == OfferCreateFSM.waiting_for_type.state:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🔴 عرض بيع", callback_data="offer_type_sell"),
-                InlineKeyboardButton(text="🟢 عرض شراء", callback_data="offer_type_buy")
-            ],
-            [InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")]
-        ])
+        text, kb = build_offer_type_screen(back_to_main=False)
         await message.edit_text(
-            "📝 **إنشاء عرض تداول جديد**\n\n"
-            "حدد نوع العملية التي ترغب بنشرها في السوق:\n\n"
-            "▫️ 🔴 **بيع USDT:** تقديم `USDT` واستلام ليرة سورية.\n"
-            "▫️ 🟢 **شراء USDT:** دفع ليرة سورية واستلام `USDT`.",
+            text,
             reply_markup=kb,
             parse_mode="Markdown"
         )
@@ -275,18 +295,9 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
         payment_methods=[]
     )
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔴 عرض بيع", callback_data="offer_type_sell"),
-            InlineKeyboardButton(text="🟢 عرض شراء", callback_data="offer_type_buy")
-        ],
-        [InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")]
-    ])
+    text, kb = build_offer_type_screen(back_to_main=False)
     await message.answer(
-        "📝 **إنشاء عرض تداول جديد**\n\n"
-        "حدد نوع العملية التي ترغب بنشرها في السوق:\n\n"
-        "▫️ 🔴 **بيع USDT:** تقديم `USDT` واستلام ليرة سورية.\n"
-        "▫️ 🟢 **شراء USDT:** دفع ليرة سورية واستلام `USDT`.",
+        text,
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -325,18 +336,9 @@ async def process_offer_type(callback: CallbackQuery, state: FSMContext):
 @offers_router.callback_query(OfferCreateFSM.waiting_for_rate, F.data == "wiz_back_rate")
 async def back_to_offer_type(callback: CallbackQuery, state: FSMContext):
     """Navigate back from Rate input to Offer Type."""
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔴 عرض بيع", callback_data="offer_type_sell"),
-            InlineKeyboardButton(text="🟢 عرض شراء", callback_data="offer_type_buy")
-        ],
-        [InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")]
-    ])
+    text, kb = build_offer_type_screen(back_to_main=False)
     await callback.message.edit_text(
-        "📝 **إنشاء عرض تداول جديد**\n\n"
-        "حدد نوع العملية التي ترغب بنشرها في السوق:\n\n"
-        "▫️ 🔴 **بيع USDT:** تقديم `USDT` واستلام ليرة سورية.\n"
-        "▫️ 🟢 **شراء USDT:** دفع ليرة سورية واستلام `USDT`.",
+        text,
         reply_markup=kb,
         parse_mode="Markdown"
     )

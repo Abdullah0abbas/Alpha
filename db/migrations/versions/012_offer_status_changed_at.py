@@ -31,7 +31,7 @@ def upgrade() -> None:
         'deals',
         ['offer_id'],
         unique=True,
-        postgresql_where=sa.text("status NOT IN ('CANCELLED','EXPIRED','COMPLETED')")
+        postgresql_where=sa.text("status NOT IN ('CANCELLED','EXPIRED','COMPLETED','DISPUTED')")
     )
     op.create_index(
         'uq_open_negotiation_per_offer',

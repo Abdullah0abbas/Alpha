@@ -345,7 +345,7 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         )
     else:
         deal.status = "SYP_PAYMENT_SENT"
-        deal.expires_at = None
+        deal.expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
         await db_session.commit()
 
         # Push deal card ONLY to buyer:
@@ -631,6 +631,7 @@ async def manual_syp_confirmed(callback: CallbackQuery, db_session: AsyncSession
 
     # Atomic 1-transaction 1-commit: SYP_PAYMENT_SENT -> SYP_PAYMENT_CONFIRMED -> ADMIN_APPROVAL
     deal.status = "ADMIN_APPROVAL"
+    deal.expires_at = None
     if getattr(callback.message, "photo", None):
         # Detach seller_card_msg_id from the proof photo so push_deal_card sends a new text card below it without deleting the photo
         deal.seller_card_msg_id = None
