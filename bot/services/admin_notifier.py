@@ -209,12 +209,23 @@ async def notify_api_verification_failure(
     deal: Deal,
     failure_stage: str,
     error_reason: str,
+    db_session: AsyncSession | None = None,
 ) -> None:
     """
     Sends an actionable alert to Channel #3 (ADMIN_API_FAILURES_CHANNEL_ID)
     whenever the blockchain API / RPC / Watcher fails to verify a deposit or broadcast a payout,
     providing one-click manual confirmation buttons for the admin.
+    Automatically freezes deal.expires_at if the deal is in deposit stage so the expiry watcher
+    never auto-cancels a deal while it awaits manual admin intervention.
     """
+    if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and getattr(deal, "expires_at", None) is not None:
+        deal.expires_at = None
+        if db_session is not None:
+            try:
+                await db_session.commit()
+            except Exception as commit_err:
+                logger.warning(f"Failed to freeze expires_at on API failure for deal #{deal.id}: {commit_err}")
+
     seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
     buyer_fee = getattr(deal, "buyer_fee_usdt", None) or Decimal("0")
     expected_deposit = deal.amount_usdt + seller_fee
@@ -224,7 +235,7 @@ async def notify_api_verification_failure(
         f"⚠️ **تنبيه فشل التحقق التلقائي (API / RPC) — صفقة #{deal.id}**\n"
         f"〰️〰️〰️〰️〰️〰️〰️\n"
         f"▫️ **المرحلة المتأثرة:** {escape_markdown(failure_stage)}\n"
-        f"▫️ **الحالة الحالية للصفقة:** `{deal.status}`\n"
+        f"▫️ **الحالة الحالية للصفقة:** `{deal.status}` (تم تجميد عداد الإلغاء التلقائي 🛡️)\n"
         f"▫️ **سبب الفشل التقني:** `{escape_markdown(error_reason[:200])}`\n\n"
         f"💰 **بيانات المطابقة اليدوية:**\n"
         f"▫️ **المبلغ المتوقع إيداعه:** `{format_usdt(expected_deposit)} USDT`\n"
@@ -236,7 +247,7 @@ async def notify_api_verification_failure(
     )
 
     rows = []
-    if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT"):
+    if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT", "CANCELLED", "EXPIRED"):
         rows.append([
             InlineKeyboardButton(
                 text="✅ تأكيد استلام إيداع الـ USDT يدوياً",
@@ -268,14 +279,24 @@ async def notify_deposit_amount_mismatch(
     deal: Deal,
     actual_amount: Decimal,
     tx_hash: str | None = None,
+    db_session: AsyncSession | None = None,
 ) -> None:
     """
     Handles underpaid or overpaid USDT escrow deposits strictly:
     - Never auto-confirms if there is any shortage or excess.
+    - Freezes deal.expires_at immediately so the deal is never auto-cancelled while funds are in the wallet.
     - Notifies the Seller of the exact received amount and exact remaining/excess balance.
     - Sends an immediate actionable alert to Channel #3 (ADMIN_API_FAILURES_CHANNEL_ID)
       with the exact remaining/excess amount and a manual confirmation button.
     """
+    if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and getattr(deal, "expires_at", None) is not None:
+        deal.expires_at = None
+        if db_session is not None:
+            try:
+                await db_session.commit()
+            except Exception as commit_err:
+                logger.warning(f"Failed to freeze expires_at on deposit mismatch for deal #{deal.id}: {commit_err}")
+
     seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
     expected_deposit = deal.amount_usdt + seller_fee
     support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip("@")

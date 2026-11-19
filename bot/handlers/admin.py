@@ -1316,9 +1316,38 @@ async def cq_admin_do_manual_deposit(callback: CallbackQuery, db_session: AsyncS
         await callback.answer("الصفقة غير موجودة.", show_alert=True)
         return
 
-    if deal.status not in ("CREATED", "AWAITING_USDT_DEPOSIT"):
+    if deal.status not in ("CREATED", "AWAITING_USDT_DEPOSIT", "CANCELLED", "EXPIRED"):
         await callback.answer(f"لا يمكن تنفيذ هذا الإجراء، حالة الصفقة الحالية: {deal.status}", show_alert=True)
         return
+
+    was_closed = deal.status in ("CANCELLED", "EXPIRED")
+    recovered_offer = None
+
+    # If recovering a timed-out/cancelled deal where the seller deposited late, ensure no other open deal exists on the same offer
+    if was_closed and deal.offer_id:
+        conflict_res = await db_session.execute(
+            select(Deal.id).where(
+                Deal.offer_id == deal.offer_id,
+                Deal.id != deal.id,
+                Deal.status.not_in(["CANCELLED", "EXPIRED", "COMPLETED", "DISPUTED"])
+            ).limit(1)
+        )
+        conflicting_deal_id = conflict_res.scalar_one_or_none()
+        if conflicting_deal_id:
+            await callback.answer(
+                f"⚠️ لا يمكن استعادة الصفقة لأن العرض مرتبط حالياً بصفقة أخرى جارية (#{conflicting_deal_id}).",
+                show_alert=True
+            )
+            return
+
+        offer_res = await db_session.execute(
+            select(Offer).where(Offer.id == deal.offer_id).with_for_update()
+        )
+        offer = offer_res.scalar_one_or_none()
+        if offer and offer.status in ("active", "expired", "cancelled"):
+            offer.status = "reserved"
+            offer.status_changed_at = datetime.now(timezone.utc)
+            recovered_offer = offer
 
     seller_info_val = ""
     if isinstance(deal.seller_payment_info, dict):
@@ -1340,9 +1369,19 @@ async def cq_admin_do_manual_deposit(callback: CallbackQuery, db_session: AsyncS
         target_id=deal.id,
         actor_id=callback.from_user.id,
         actor_type="ADMIN",
-        details={"new_status": deal.status, "deposit_address": deal.deposit_address}
+        details={
+            "new_status": deal.status,
+            "deposit_address": deal.deposit_address,
+            "recovered_from_timeout": was_closed,
+        }
     )
     await db_session.commit()
+
+    if recovered_offer:
+        try:
+            await update_channel_offer_message(callback.bot, recovered_offer)
+        except Exception as e:
+            logger.warning(f"Failed to update channel offer message on deal #{deal.id} recovery: {e}")
 
     await push_deal_card(deal.id, callback.bot)
 

@@ -222,12 +222,20 @@ async def handle_critical_error(event: ErrorEvent, bot: Bot):
                 action_payload = f"وسائط ({len(m.caption)} حرفاً)"
             else:
                 action_payload = "وسائط"
+            try:
+                await m.answer("⚠️ عذراً، حدث خطأ تقني مؤقت وتم إشعار الإدارة تلقائياً للمتابعة.")
+            except Exception:
+                pass
         elif update.callback_query:
             cq = update.callback_query
             user_id = cq.from_user.id if cq.from_user else None
             username = cq.from_user.username if cq.from_user else None
             action_type = "زر تفاعلي (Callback)"
             action_payload = cq.data or ""
+            try:
+                await cq.answer("⚠️ عذراً، حدث خطأ تقني مؤقت وتم إشعار الإدارة تلقائياً.", show_alert=True)
+            except Exception:
+                pass
 
     # Step 3: Extract traceback & code location
     file_location, line_number, func_name, code_line = _extract_project_location(exception)

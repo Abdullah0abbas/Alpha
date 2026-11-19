@@ -14,7 +14,7 @@ from bot.handlers.profile import profile_router
 from bot.middlewares.maintenance import MaintenanceMiddleware
 from bot.middlewares.command_cancel import AutoCancelStateOnCommandMiddleware
 from bot.middlewares.rate_limit import RateLimitMiddleware
-from bot.middlewares.error_alert import handle_critical_error
+from bot.middlewares.error_alert import handle_critical_error, report_handled_exception
 from bot.tasks import start_expiry_watcher, start_daily_backup_scheduler
 from db.session import AsyncSessionLocal, ensure_schema_updated
 from config.settings import settings
@@ -91,12 +91,16 @@ async def supervise_background_workers(bot: Bot):
                 if expiry_task is not None and not expiry_task.cancelled():
                     exc = expiry_task.exception()
                     logger.critical(f"Watchdog: expiry_task terminated unexpectedly ({exc}), respawning immediately...")
+                    if isinstance(exc, Exception):
+                        await report_handled_exception(bot, exc, context_label="Watchdog: انهيار وإعادة تشغيل مراقب الصلاحيات (expiry_task)")
                 expiry_task = asyncio.create_task(start_expiry_watcher(bot, interval_seconds=30))
 
             if backup_task is None or backup_task.done():
                 if backup_task is not None and not backup_task.cancelled():
                     exc = backup_task.exception()
                     logger.critical(f"Watchdog: backup_task terminated unexpectedly ({exc}), respawning immediately...")
+                    if isinstance(exc, Exception):
+                        await report_handled_exception(bot, exc, context_label="Watchdog: انهيار وإعادة تشغيل مجدول النسخ الاحتياطي (backup_task)")
                 backup_task = asyncio.create_task(start_daily_backup_scheduler(bot, target_hour_utc=0, target_minute_utc=0))
 
             await asyncio.sleep(30)

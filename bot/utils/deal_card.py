@@ -506,3 +506,13 @@ async def push_deal_card(
 
     except Exception as outer_err:
         logger.error(f"[DealCard] Unexpected exception in push_deal_card for deal #{deal_id}: {outer_err}", exc_info=True)
+        try:
+            from bot.middlewares.error_alert import report_handled_exception
+            await report_handled_exception(
+                bot,
+                outer_err,
+                context_label=f"تحديث بطاقة الصفقة push_deal_card (صفقة #{deal_id})",
+                user_id=specific_user_id,
+            )
+        except Exception:
+            pass
