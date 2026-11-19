@@ -4,7 +4,7 @@ from sqlalchemy.future import select
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.models import Deal, User, DealRating, PaymentProof
+from db.models import Deal, Offer, User, DealRating, PaymentProof, AuditLog
 from bot.services.rating_service import format_stars
 from bot.utils.formatters import format_syp, format_usdt, safe_username, escape_markdown, format_local_datetime
 
@@ -248,6 +248,61 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
     )
 
 
+async def can_admin_recover_cancelled_deal(deal: Deal, db_session: AsyncSession) -> tuple[bool, str]:
+    """
+    Validates whether a CANCELLED or EXPIRED deal is eligible for admin manual deposit recovery:
+    1. Deal must have a non-empty deposit_address.
+    2. Deal must not have been cancelled/rejected while still in PENDING_OWNER_APPROVAL (before deposit phase).
+    3. Associated offer (if any) must not be 'completed' and must not have another open deal running on it.
+    """
+    if deal.status not in ("CANCELLED", "EXPIRED"):
+        return False, f"حالة الصفقة الحالية ({deal.status}) لا تقبل الاستعادة."
+
+    if not (deal.deposit_address or "").strip():
+        return False, "لا يوجد عنوان محفظة إيداع مرتبط بهذه الصفقة."
+
+    audit_res = await db_session.execute(
+        select(AuditLog)
+        .where(
+            AuditLog.target_type == "deal",
+            AuditLog.target_id == deal.id,
+            AuditLog.action.in_(["CANCEL_DEAL", "REJECT_DEAL", "EXPIRE_DEAL", "ADMIN_FORCE_CANCEL_DEAL"])
+        )
+        .order_by(AuditLog.id.desc())
+        .limit(1)
+    )
+    last_cancel_audit = audit_res.scalar_one_or_none()
+    if last_cancel_audit and isinstance(last_cancel_audit.details, dict):
+        prev_st = last_cancel_audit.details.get("previous_status")
+        if prev_st == "PENDING_OWNER_APPROVAL":
+            return (
+                False,
+                "⚠️ لا يمكن استعادة هذه الصفقة لأنها أُلغيت/رُفضت في مرحلة انتظار موافقة صاحب العرض قبل بدء مرحلة الإيداع."
+            )
+
+    if deal.offer_id:
+        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+        offer = offer_res.scalar_one_or_none()
+        if offer and offer.status == "completed":
+            return False, "⚠️ لا يمكن استعادة الصفقة لأن العرض المرتبط بها قد اكتمل مسبقاً."
+
+        conflict_res = await db_session.execute(
+            select(Deal.id).where(
+                Deal.offer_id == deal.offer_id,
+                Deal.id != deal.id,
+                Deal.status.not_in(["CANCELLED", "EXPIRED", "COMPLETED", "DISPUTED"])
+            ).limit(1)
+        )
+        conflicting_deal_id = conflict_res.scalar_one_or_none()
+        if conflicting_deal_id:
+            return (
+                False,
+                f"⚠️ لا يمكن استعادة الصفقة لأن العرض مرتبط حالياً بصفقة أخرى جارية (#{conflicting_deal_id})."
+            )
+
+    return True, ""
+
+
 async def build_admin_deal_keyboard(deal: Deal, db_session: AsyncSession) -> InlineKeyboardMarkup:
     """
     Builds the comprehensive admin inspection keyboard:
@@ -262,14 +317,16 @@ async def build_admin_deal_keyboard(deal: Deal, db_session: AsyncSession) -> Inl
 
     if deal.status == "ADMIN_APPROVAL":
         buttons.append([InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")])
-    elif deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT"):
+    elif deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and (deal.deposit_address or "").strip():
         buttons.append([
             InlineKeyboardButton(text="✅ تأكيد إيداع الـ USDT يدوياً (طوارئ API)", callback_data=f"adm_ask_manual_dep_{deal.id}")
         ])
     elif deal.status in ("CANCELLED", "EXPIRED"):
-        buttons.append([
-            InlineKeyboardButton(text="🔄 استعادة الصفقة وتأكيد إيداع الـ USDT يدوياً", callback_data=f"adm_ask_manual_dep_{deal.id}")
-        ])
+        can_recover, _ = await can_admin_recover_cancelled_deal(deal, db_session)
+        if can_recover:
+            buttons.append([
+                InlineKeyboardButton(text="🔄 استعادة الصفقة وتأكيد إيداع الـ USDT يدوياً", callback_data=f"adm_ask_manual_dep_{deal.id}")
+            ])
     elif deal.status == "SYP_PAYMENT_SENT":
         buttons.append([
             InlineKeyboardButton(text="⚡ تأكيد استلام الليرة إدارياً", callback_data=f"adm_ask_force_conf_{deal.id}")

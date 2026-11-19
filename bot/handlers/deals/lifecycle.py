@@ -89,6 +89,19 @@ async def reject_deal_request(callback: CallbackQuery, db_session: AsyncSession)
         offer.status = "active"
         offer.status_changed_at = datetime.now(timezone.utc)
 
+    add_audit(
+        session=db_session,
+        action="REJECT_DEAL",
+        target_type="deal",
+        target_id=deal.id,
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN" if callback.from_user.id in settings.ADMIN_IDS else "USER",
+        details={
+            "previous_status": "PENDING_OWNER_APPROVAL",
+            "actor_id": callback.from_user.id,
+        }
+    )
+
     await db_session.commit()
     if offer:
         await update_channel_offer_message(callback.bot, offer)

@@ -2,10 +2,12 @@ from decimal import Decimal
 import logging
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from db.models import Deal, User
+from db.session import AsyncSessionLocal
 from config.settings import settings
 from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown, format_local_datetime
 
@@ -204,6 +206,31 @@ async def notify_usdt_deposit_confirmed(
     )
 
 
+async def _freeze_deal_expiry(deal: Deal, db_session: AsyncSession | None = None) -> None:
+    """
+    Safely freezes deal.expires_at = None in PostgreSQL when a deposit verification failure
+    or amount discrepancy occurs, even if the caller did not pass an active db_session.
+    """
+    if deal.status not in ("CREATED", "AWAITING_USDT_DEPOSIT"):
+        return
+
+    deal.expires_at = None
+    try:
+        if db_session is not None:
+            await db_session.execute(
+                update(Deal).where(Deal.id == deal.id).values(expires_at=None)
+            )
+            await db_session.commit()
+        else:
+            async with AsyncSessionLocal() as fallback_session:
+                await fallback_session.execute(
+                    update(Deal).where(Deal.id == deal.id).values(expires_at=None)
+                )
+                await fallback_session.commit()
+    except Exception as commit_err:
+        logger.warning(f"Failed to freeze expires_at in DB for deal #{deal.id}: {commit_err}")
+
+
 async def notify_api_verification_failure(
     bot: Bot,
     deal: Deal,
@@ -218,13 +245,7 @@ async def notify_api_verification_failure(
     Automatically freezes deal.expires_at if the deal is in deposit stage so the expiry watcher
     never auto-cancels a deal while it awaits manual admin intervention.
     """
-    if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and getattr(deal, "expires_at", None) is not None:
-        deal.expires_at = None
-        if db_session is not None:
-            try:
-                await db_session.commit()
-            except Exception as commit_err:
-                logger.warning(f"Failed to freeze expires_at on API failure for deal #{deal.id}: {commit_err}")
+    await _freeze_deal_expiry(deal, db_session)
 
     seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
     buyer_fee = getattr(deal, "buyer_fee_usdt", None) or Decimal("0")
@@ -289,13 +310,7 @@ async def notify_deposit_amount_mismatch(
     - Sends an immediate actionable alert to Channel #3 (ADMIN_API_FAILURES_CHANNEL_ID)
       with the exact remaining/excess amount and a manual confirmation button.
     """
-    if deal.status in ("CREATED", "AWAITING_USDT_DEPOSIT") and getattr(deal, "expires_at", None) is not None:
-        deal.expires_at = None
-        if db_session is not None:
-            try:
-                await db_session.commit()
-            except Exception as commit_err:
-                logger.warning(f"Failed to freeze expires_at on deposit mismatch for deal #{deal.id}: {commit_err}")
+    await _freeze_deal_expiry(deal, db_session)
 
     seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
     expected_deposit = deal.amount_usdt + seller_fee

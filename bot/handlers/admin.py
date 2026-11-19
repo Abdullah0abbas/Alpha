@@ -14,7 +14,11 @@ from db.models import User, Deal, Offer, SystemSetting, Dispute, DealRating, Pay
 from bot.states.flow_states import AdminFSM
 from bot.middlewares.maintenance import set_cached_maintenance
 from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown, format_local_datetime
-from bot.utils.deal_views import format_admin_deal_review_text, build_admin_deal_keyboard
+from bot.utils.deal_views import (
+    format_admin_deal_review_text,
+    build_admin_deal_keyboard,
+    can_admin_recover_cancelled_deal,
+)
 from bot.utils.deal_card import push_deal_card
 from bot.services.backup_service import perform_and_send_backup
 from bot.services.rating_service import recalculate_user_reputation, format_stars
@@ -1281,6 +1285,16 @@ async def cq_admin_ask_manual_deposit(callback: CallbackQuery, db_session: Async
         await callback.answer("الصفقة غير موجودة.", show_alert=True)
         return
 
+    if not (deal.deposit_address or "").strip():
+        await callback.answer("⚠️ لا يوجد عنوان محفظة إيداع مرتبط بهذه الصفقة.", show_alert=True)
+        return
+
+    if deal.status in ("CANCELLED", "EXPIRED"):
+        can_recover, reason = await can_admin_recover_cancelled_deal(deal, db_session)
+        if not can_recover:
+            await callback.answer(reason, show_alert=True)
+            return
+
     seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
     expected_dep = format_usdt(deal.amount_usdt + seller_fee)
 
@@ -1320,34 +1334,34 @@ async def cq_admin_do_manual_deposit(callback: CallbackQuery, db_session: AsyncS
         await callback.answer(f"لا يمكن تنفيذ هذا الإجراء، حالة الصفقة الحالية: {deal.status}", show_alert=True)
         return
 
+    if not (deal.deposit_address or "").strip():
+        await callback.answer("⚠️ لا يوجد عنوان محفظة إيداع مرتبط بهذه الصفقة.", show_alert=True)
+        return
+
     was_closed = deal.status in ("CANCELLED", "EXPIRED")
     recovered_offer = None
 
-    # If recovering a timed-out/cancelled deal where the seller deposited late, ensure no other open deal exists on the same offer
-    if was_closed and deal.offer_id:
-        conflict_res = await db_session.execute(
-            select(Deal.id).where(
-                Deal.offer_id == deal.offer_id,
-                Deal.id != deal.id,
-                Deal.status.not_in(["CANCELLED", "EXPIRED", "COMPLETED", "DISPUTED"])
-            ).limit(1)
-        )
-        conflicting_deal_id = conflict_res.scalar_one_or_none()
-        if conflicting_deal_id:
-            await callback.answer(
-                f"⚠️ لا يمكن استعادة الصفقة لأن العرض مرتبط حالياً بصفقة أخرى جارية (#{conflicting_deal_id}).",
-                show_alert=True
-            )
+    if was_closed:
+        can_recover, reason = await can_admin_recover_cancelled_deal(deal, db_session)
+        if not can_recover:
+            await callback.answer(reason, show_alert=True)
             return
 
-        offer_res = await db_session.execute(
-            select(Offer).where(Offer.id == deal.offer_id).with_for_update()
-        )
-        offer = offer_res.scalar_one_or_none()
-        if offer and offer.status in ("active", "expired", "cancelled"):
-            offer.status = "reserved"
-            offer.status_changed_at = datetime.now(timezone.utc)
-            recovered_offer = offer
+        if deal.offer_id:
+            offer_res = await db_session.execute(
+                select(Offer).where(Offer.id == deal.offer_id).with_for_update()
+            )
+            offer = offer_res.scalar_one_or_none()
+            if offer and offer.status == "completed":
+                await callback.answer(
+                    "⚠️ لا يمكن استعادة الصفقة لأن العرض المرتبط بها قد اكتمل مسبقاً.",
+                    show_alert=True
+                )
+                return
+            if offer and offer.status in ("active", "expired", "cancelled", "deleted"):
+                offer.status = "reserved"
+                offer.status_changed_at = datetime.now(timezone.utc)
+                recovered_offer = offer
 
     seller_info_val = ""
     if isinstance(deal.seller_payment_info, dict):

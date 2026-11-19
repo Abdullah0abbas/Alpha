@@ -14,6 +14,7 @@ from config.settings import settings
 
 from bot.services.backup_service import perform_and_send_backup
 from bot.services.admin_notifier import dispatch_admin_notification
+from bot.services.audit_service import add_audit
 from bot.middlewares.error_alert import report_handled_exception
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,16 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                                 offer.status_changed_at = now
 
                 resolved_maker_id, resolved_taker_id = resolve_deal_parties(maker_id_val, seller_id_val, buyer_id_val)
+
+                add_audit(
+                    session=item_session,
+                    action="EXPIRE_DEAL",
+                    target_type="deal",
+                    target_id=deal_id_val,
+                    actor_id=None,
+                    actor_type="SYSTEM",
+                    details={"previous_status": prev_status}
+                )
 
                 await item_session.commit()
                 expired_deals_count += 1
