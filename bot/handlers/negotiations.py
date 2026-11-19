@@ -169,21 +169,23 @@ async def process_taker_amount(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
+    neg_type = data.get("negotiable_type", "both")
     min_limit = Decimal(str(data.get("min_limit", "0")))
     max_limit = Decimal(str(data.get("max_limit", "0")))
-    if (min_limit > 0 and amount_val < min_limit) or (max_limit > 0 and amount_val > max_limit):
-        await message.answer(
-            "⚠️ **الكمية خارج حدود العرض**\n\n"
-            f"▫️ **الحدود المتاحة:** من `{format_usdt(min_limit)} USDT` إلى `{format_usdt(max_limit)} USDT`\n\n"
-            "يرجى إدخال كمية ضمن هذا النطاق:",
-            reply_markup=cancel_kb,
-            parse_mode="Markdown"
-        )
-        return
+    if neg_type not in ("amount", "both"):
+        if (min_limit > 0 and amount_val < min_limit) or (max_limit > 0 and amount_val > max_limit):
+            await message.answer(
+                "⚠️ **الكمية خارج حدود العرض**\n\n"
+                f"▫️ **الحدود المتاحة:** من `{format_usdt(min_limit)} USDT` إلى `{format_usdt(max_limit)} USDT`\n\n"
+                "يرجى إدخال كمية ضمن هذا النطاق:",
+                reply_markup=cancel_kb,
+                parse_mode="Markdown"
+            )
+            return
 
     await state.update_data(proposed_amount=str(amount_val))
 
-    if data.get("negotiable_type") in ("both", "rate"):
+    if neg_type in ("both", "rate"):
         rate_str = format_syp(Decimal(data['current_rate']))
         await message.answer(
             f"▫️ **الكمية المقترحة:** `{format_usdt(amount_val)} USDT`\n"
@@ -239,13 +241,14 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
             await message.answer("⚠️ عذراً، هذا العرض لم يعد متاحاً للتفاوض حالياً.")
             return
 
-        min_limit = Decimal(str(offer.min_limit))
-        max_limit = Decimal(str(offer.max_limit))
-        if amount_val < min_limit or amount_val > max_limit:
-            await db_session.commit()
-            await state.clear()
-            await message.answer("⚠️ عذراً، الكمية المقترحة أصبحت خارج حدود العرض الحالية.")
-            return
+        if offer.negotiable_type not in ("amount", "both"):
+            min_limit = Decimal(str(offer.min_limit))
+            max_limit = Decimal(str(offer.max_limit))
+            if amount_val < min_limit or amount_val > max_limit:
+                await db_session.commit()
+                await state.clear()
+                await message.answer("⚠️ عذراً، الكمية المقترحة أصبحت خارج حدود العرض الحالية.")
+                return
 
         # Lock offer to negotiating and update status_changed_at atomically
         offer.status = "negotiating"
@@ -509,18 +512,6 @@ async def process_maker_counter_amount(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    min_limit = Decimal(str(data.get("min_limit", "0")))
-    max_limit = Decimal(str(data.get("max_limit", "0")))
-    if (min_limit > 0 and amount_val < min_limit) or (max_limit > 0 and amount_val > max_limit):
-        await message.answer(
-            "⚠️ **الكمية خارج حدود العرض**\n\n"
-            f"▫️ **الحدود المتاحة:** من `{format_usdt(min_limit)} USDT` إلى `{format_usdt(max_limit)} USDT`\n\n"
-            "يرجى إدخال كمية ضمن هذا النطاق:",
-            reply_markup=cancel_kb,
-            parse_mode="Markdown"
-        )
-        return
-
     await state.update_data(counter_amount=str(amount_val))
 
     if data.get("negotiable_type") == "both":
@@ -576,7 +567,7 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
 
         offer_res = await db_session.execute(select(Offer).where(Offer.id == neg.offer_id))
         offer = offer_res.scalar_one_or_none()
-        if offer:
+        if offer and offer.negotiable_type not in ("amount", "both"):
             min_limit = Decimal(str(offer.min_limit))
             max_limit = Decimal(str(offer.max_limit))
             if amount_val < min_limit or amount_val > max_limit:
@@ -763,7 +754,7 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
     min_limit = Decimal(str(offer.min_limit))
     max_limit = Decimal(str(offer.max_limit))
     proposed_amount = Decimal(str(neg.proposed_amount))
-    if proposed_amount < min_limit or proposed_amount > max_limit:
+    if offer.negotiable_type not in ("amount", "both") and (proposed_amount < min_limit or proposed_amount > max_limit):
         neg.status = "REJECTED"
         offer.status = "active"
         offer.status_changed_at = datetime.now(timezone.utc)

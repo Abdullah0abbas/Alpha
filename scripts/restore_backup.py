@@ -21,6 +21,7 @@ if PROJECT_ROOT not in sys.path:
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from bot.utils.sanitize import sanitize_exception_message
 from db.models import (
     AuditLog,
     BlockchainTransaction,
@@ -35,7 +36,8 @@ from db.models import (
 )
 from db.session import engine, ensure_schema_updated
 
-SUPPORTED_MAJOR_VERSIONS = {"3.8", "3.9"}
+# Core tables required in every backup version; newer tables default to [] if absent in older 3.x backups
+CORE_REQUIRED_TABLES = {"users", "offers", "deals"}
 
 # Strict FK-safe restoration order
 ORDERED_TABLES = [
@@ -86,6 +88,15 @@ DATETIME_FIELDS = {
 }
 
 
+def _get_target_db_display() -> tuple[str, str]:
+    """Returns (host_with_port, database_name) safely without exposing credentials."""
+    url = engine.url
+    host = url.host or "localhost"
+    port = f":{url.port}" if url.port else ""
+    db_name = url.database or "unknown_db"
+    return f"{host}{port}", db_name
+
+
 def _parse_row(table_name: str, model_cls: Any, raw_row: dict[str, Any]) -> dict[str, Any]:
     valid_cols = {c.name for c in model_cls.__table__.columns}
     dec_cols = DECIMAL_FIELDS.get(table_name, set())
@@ -117,16 +128,18 @@ def load_and_validate_backup(filepath: str) -> dict[str, Any]:
         raise ValueError("Invalid backup structure: missing 'metadata' key.")
 
     meta = payload["metadata"]
-    version = str(meta.get("version", ""))
-    if version not in SUPPORTED_MAJOR_VERSIONS:
+    version = str(meta.get("version", "")).strip()
+    if not version or not (version.startswith("2.") or version.startswith("3.")):
         raise ValueError(
-            f"Unsupported backup format version '{version}'. Supported versions: {sorted(SUPPORTED_MAJOR_VERSIONS)}"
+            f"Unsupported backup format version '{version}'. Expected 2.x or 3.x backup format."
         )
 
     for tbl_name, _ in ORDERED_TABLES:
         if tbl_name not in payload:
-            raise ValueError(f"Invalid backup structure: missing table section '{tbl_name}'.")
-        if not isinstance(payload[tbl_name], list):
+            if tbl_name in CORE_REQUIRED_TABLES:
+                raise ValueError(f"Invalid backup structure: missing core table section '{tbl_name}'.")
+            payload[tbl_name] = []
+        elif not isinstance(payload[tbl_name], list):
             raise ValueError(f"Invalid backup structure: section '{tbl_name}' must be a list.")
 
     return payload
@@ -136,7 +149,8 @@ async def run_restore(filepath: str, dry_run: bool = False, force: bool = False)
     try:
         payload = load_and_validate_backup(filepath)
     except Exception as exc:
-        print(f"[ERROR] Validation failed: {exc}", file=sys.stderr)
+        safe_msg = sanitize_exception_message(exc, max_len=300)
+        print(f"[ERROR] Validation failed ({type(exc).__name__}): {safe_msg}", file=sys.stderr)
         return 1
 
     meta = payload["metadata"]
@@ -152,18 +166,20 @@ async def run_restore(filepath: str, dry_run: bool = False, force: bool = False)
         default=0,
     )
     target_deposit_seq = max(saved_seq_val, max_deal_deposit_idx)
+    db_host, db_name = _get_target_db_display()
 
+    print(f"[INFO] Target Database  : {db_name} @ {db_host}")
     print(f"[INFO] Backup File      : {os.path.basename(filepath)}")
     print(f"[INFO] Format Version   : {version}")
     print(f"[INFO] Created At       : {created_at}")
-    print("-" * 50)
+    print("-" * 55)
     for tbl_name, _ in ORDERED_TABLES:
         print(f"[TABLE] {tbl_name:<25} : {len(payload.get(tbl_name, []))} rows")
     print(
         f"[SEQ]   deposit_index_seq        : target={target_deposit_seq} "
         f"(saved={saved_seq_val}, max_deal_index={max_deal_deposit_idx})"
     )
-    print("-" * 50)
+    print("-" * 55)
 
     if dry_run:
         print("[DRY-RUN] Validation complete. No database changes were made.")
@@ -184,17 +200,32 @@ async def run_restore(filepath: str, dry_run: bool = False, force: bool = False)
             if non_empty and not force:
                 summary = ", ".join(f"{t}({c})" for t, c in non_empty)
                 print(
-                    f"[ABORT] Target database tables are not empty: {summary}. "
+                    f"[ABORT] Target database '{db_name}' ({db_host}) is not empty: {summary}. "
                     "Use --force to truncate and overwrite existing data.",
                     file=sys.stderr,
                 )
                 return 2
 
             if non_empty and force:
+                summary = ", ".join(f"{t}({c})" for t, c in non_empty)
+                print(
+                    f"\n⚠️  [WARNING] You are about to PERMANENTLY WIPE all existing data in:\n"
+                    f"    • Host     : {db_host}\n"
+                    f"    • Database : {db_name}\n"
+                    f"    • Non-empty: {summary}\n"
+                )
+                try:
+                    confirm = input("Type 'YES' (in uppercase) to confirm destructive overwrite: ").strip()
+                except EOFError:
+                    confirm = ""
+                if confirm != "YES":
+                    print("[ABORT] Confirmation not received. Restore cancelled safely.", file=sys.stderr)
+                    return 2
+
                 # Truncate in reverse dependency order inside the same transaction
                 rev_names = ", ".join(t for t, _ in reversed(ORDERED_TABLES))
                 await conn.execute(text(f"TRUNCATE TABLE {rev_names} RESTART IDENTITY CASCADE"))
-                print("[INFO] Existing data truncated (--force).")
+                print(f"[INFO] Existing data in '{db_name}' truncated (--force confirmed).")
 
             # 2. Insert rows in FK order preserving original primary keys
             for tbl_name, model_cls in ORDERED_TABLES:
@@ -232,10 +263,14 @@ async def run_restore(filepath: str, dry_run: bool = False, force: bool = False)
             else:
                 await conn.execute(text("SELECT setval('deposit_index_seq', 1, false)"))
 
-        print("[SUCCESS] Database restore completed atomically.")
+        print(f"[SUCCESS] Database restore to '{db_name}' ({db_host}) completed atomically.")
         return 0
     except Exception as exc:
-        print(f"[ERROR] Restore transaction rolled back due to error: {type(exc).__name__}", file=sys.stderr)
+        safe_err = sanitize_exception_message(exc, max_len=300)
+        print(
+            f"[ERROR] Restore transaction rolled back ({type(exc).__name__}): {safe_err}",
+            file=sys.stderr,
+        )
         return 3
     finally:
         await engine.dispose()
@@ -254,7 +289,7 @@ def main() -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Truncate and overwrite target tables if they are not empty",
+        help="Truncate and overwrite target tables if they are not empty (requires interactive YES confirmation)",
     )
     args = parser.parse_args()
     exit_code = asyncio.run(run_restore(args.backup_file, dry_run=args.dry_run, force=args.force))
