@@ -137,10 +137,15 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
     current_status = deal.status
     status_label = STATUS_ARABIC_MAP.get(current_status, current_status)
 
+    deposit_tx = (getattr(deal, "deposit_tx_hash", None) or "").strip()
+    payout_tx = (getattr(deal, "payout_tx_hash", None) or "").strip()
+    dep_tx_line = f"\n▫️ **TxHash الإيداع:** `{escape_markdown(deposit_tx)}`" if deposit_tx else ""
+    pay_tx_line = f"\n▫️ **TxHash الإطلاق:** `{escape_markdown(payout_tx)}`" if payout_tx else ""
+
     if current_status in ("ADMIN_APPROVAL", "SYP_PAYMENT_CONFIRMED"):
         verification_lines = (
             "📌 **سجل التحقق**\n"
-            "✅ إيداع الضمان: مؤكد ومحجوز\n"
+            f"✅ إيداع الضمان: مؤكد ومحجوز{dep_tx_line}\n"
             "✅ تحويل الليرة: مؤكد استلامه من البائع\n"
             f"▫️ {proof_status_line}\n"
             f"▫️ محفظة المستلم: {'مسجلة ومتحقق منها ✅' if has_buyer_wallet else 'غير مسجلة بعد ⚠️'}\n\n"
@@ -149,10 +154,10 @@ async def format_admin_deal_review_text(deal: Deal, db_session: AsyncSession) ->
     elif current_status == "COMPLETED":
         verification_lines = (
             "📌 **سجل التحقق**\n"
-            "✅ إيداع الضمان: مكتمل\n"
+            f"✅ إيداع الضمان: مكتمل{dep_tx_line}\n"
             "✅ تحويل الليرة: مؤكد ومكتمل\n"
             f"▫️ {proof_status_line}\n"
-            "✅ محفظة المستلم: تم إطلاق الرصيد إليها"
+            f"✅ محفظة المستلم: تم إطلاق الرصيد إليها{pay_tx_line}"
         )
     elif current_status in ("PENDING_OWNER_APPROVAL", "CREATED", "AWAITING_USDT_DEPOSIT"):
         payout_status = "مسجلة ✅" if has_buyer_wallet else "غير مسجلة بعد ⏳"

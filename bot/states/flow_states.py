@@ -40,6 +40,7 @@ class AdminFSM(StatesGroup):
     waiting_for_deal_search_id = State()
     waiting_for_broadcast_text = State()
     waiting_for_direct_user_msg = State()
+    waiting_for_payout_tx_hash = State()
 
 class ProfileFSM(StatesGroup):
     waiting_for_nickname = State()

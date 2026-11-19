@@ -261,3 +261,130 @@ async def notify_api_verification_failure(
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="Markdown"
     )
+
+
+async def notify_deposit_amount_mismatch(
+    bot: Bot,
+    deal: Deal,
+    actual_amount: Decimal,
+    tx_hash: str | None = None,
+) -> None:
+    """
+    Handles underpaid or overpaid USDT escrow deposits strictly:
+    - Never auto-confirms if there is any shortage or excess.
+    - Notifies the Seller of the exact received amount and exact remaining/excess balance.
+    - Sends an immediate actionable alert to Channel #3 (ADMIN_API_FAILURES_CHANNEL_ID)
+      with the exact remaining/excess amount and a manual confirmation button.
+    """
+    seller_fee = getattr(deal, "seller_fee_usdt", None) or Decimal("0")
+    expected_deposit = deal.amount_usdt + seller_fee
+    support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip("@")
+    support_link = f"https://t.me/{support_username}"
+    tx_line = f"▫️ **هاش المعاملة (TxHash):** `{escape_markdown(tx_hash)}`\n" if tx_hash else ""
+
+    if actual_amount < expected_deposit:
+        remaining = expected_deposit - actual_amount
+        # 1. Notify Seller with exact remaining amount and re-check / support buttons
+        seller_text = (
+            f"⚠️ **رصد إيداع غير مكتمل (نقص في المبلغ) — صفقة #{deal.id}**\n"
+            f"〰️〰️〰️〰️〰️〰️〰️\n"
+            f"▫️ **المبلغ المطلوب إيداعه:** `{format_usdt(expected_deposit)} USDT`\n"
+            f"▫️ **المبلغ الواصل في المحفظة:** `{format_usdt(actual_amount)} USDT`\n"
+            f"🔴 **المبلغ المتبقي المطلوب إرساله:** `{format_usdt(remaining)} USDT`\n\n"
+            f"📥 **محفظة الإيداع (`BEP-20`):**\n"
+            f"`{escape_markdown(deal.deposit_address)}`\n\n"
+            f"⚠️ لا يمكن للبوت تأكيد الإيداع آلياً لوجود نقص بمقدار `{format_usdt(remaining)} USDT`.\n"
+            f"يرجى تحويل المبلغ المتبقي إلى نفس العنوان أعلاه ثم الضغط على **تأكيد الإيداع** مجدداً، أو التواصل مع الإدارة."
+        )
+        seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 أرسلت المتبقي — إعادة فحص الرصيد", callback_data=f"man_dep_{deal.id}")],
+            [InlineKeyboardButton(text="👨‍💻 التواصل مع الدعم الفني", url=support_link)]
+        ])
+        try:
+            await bot.send_message(
+                chat_id=deal.seller_id,
+                text=seller_text,
+                reply_markup=seller_kb,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send underpayment notice to seller {deal.seller_id} for deal #{deal.id}: {e}")
+
+        # 2. Notify Admin Channel #3 (ADMIN_API_FAILURES_CHANNEL_ID)
+        admin_text = (
+            f"⚠️ **إيداع USDT ناقص (يتطلب مراجعة أو استكمال) — صفقة #{deal.id}**\n"
+            f"〰️〰️〰️〰️〰️〰️〰️\n"
+            f"▫️ **المبلغ المطلوب إيداعه:** `{format_usdt(expected_deposit)} USDT`\n"
+            f"▫️ **المبلغ الواصل فعلياً:** `{format_usdt(actual_amount)} USDT`\n"
+            f"🔴 **المبلغ المتبقي (النقص):** `{format_usdt(remaining)} USDT`\n"
+            f"{tx_line}"
+            f"▫️ **محفظة الضمان (`#{deal.deposit_index}`):**\n`{escape_markdown(deal.deposit_address)}`\n"
+            f"▫️ **البائع:** `{deal.seller_id}` | **المشتري:** `{deal.buyer_id}`\n\n"
+            f"ℹ️ تم إشعار البائع بوجود نقص قدره `{format_usdt(remaining)} USDT` لاستكماله، أو يمكنك قبول المبلغ وتأكيد الإيداع يدوياً:"
+        )
+        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ تجاوز النقص وتأكيد الإيداع يدوياً", callback_data=f"adm_ask_manual_dep_{deal.id}")],
+            [
+                InlineKeyboardButton(text=f"🔍 فحص الصفقة #{deal.id}", callback_data=f"adm_inspect_deal_{deal.id}"),
+                InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{deal.seller_id}")
+            ]
+        ])
+        await dispatch_admin_notification(
+            bot=bot,
+            category="api_failures",
+            text=admin_text,
+            reply_markup=admin_kb,
+            parse_mode="Markdown"
+        )
+
+    elif actual_amount > expected_deposit:
+        excess = actual_amount - expected_deposit
+        # 1. Notify Seller
+        seller_text = (
+            f"ℹ️ **رصد إيداع بمبلغ أكبر من المطلوب — صفقة #{deal.id}**\n"
+            f"〰️〰️〰️〰️〰️〰️〰️\n"
+            f"▫️ **المبلغ المطلوب للصفقة:** `{format_usdt(expected_deposit)} USDT`\n"
+            f"▫️ **المبلغ الواصل في المحفظة:** `{format_usdt(actual_amount)} USDT`\n"
+            f"🟢 **مقدار الزيادة المرصودة:** `+{format_usdt(excess)} USDT`\n\n"
+            f"تم تحويل الطلب للإدارة لاعتماد الإيداع يدوياً وتسوية فرق المبلغ. يمكنك أيضاً التواصل مع الدعم الفني:"
+        )
+        seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👨‍💻 التواصل مع الدعم الفني", url=support_link)]
+        ])
+        try:
+            await bot.send_message(
+                chat_id=deal.seller_id,
+                text=seller_text,
+                reply_markup=seller_kb,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send overpayment notice to seller {deal.seller_id} for deal #{deal.id}: {e}")
+
+        # 2. Notify Admin Channel #3 (ADMIN_API_FAILURES_CHANNEL_ID)
+        admin_text = (
+            f"ℹ️ **إيداع USDT زائد عن المطلوب (يتطلب تأكيداً يدوياً) — صفقة #{deal.id}**\n"
+            f"〰️〰️〰️〰️〰️〰️〰️\n"
+            f"▫️ **المبلغ المطلوب إيداعه:** `{format_usdt(expected_deposit)} USDT`\n"
+            f"▫️ **المبلغ الواصل فعلياً:** `{format_usdt(actual_amount)} USDT`\n"
+            f"🟢 **مقدار الزيادة:** `+{format_usdt(excess)} USDT`\n"
+            f"{tx_line}"
+            f"▫️ **محفظة الضمان (`#{deal.deposit_index}`):**\n`{escape_markdown(deal.deposit_address)}`\n"
+            f"▫️ **البائع:** `{deal.seller_id}` | **المشتري:** `{deal.buyer_id}`\n\n"
+            f"🛠️ يرجى مراجعة المحفظة وتأكيد الإيداع يدوياً بالأزرار أدناه:"
+        )
+        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ اعتماد الإيداع يدوياً ومتابعة الصفقة", callback_data=f"adm_ask_manual_dep_{deal.id}")],
+            [
+                InlineKeyboardButton(text=f"🔍 فحص الصفقة #{deal.id}", callback_data=f"adm_inspect_deal_{deal.id}"),
+                InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{deal.seller_id}")
+            ]
+        ])
+        await dispatch_admin_notification(
+            bot=bot,
+            category="api_failures",
+            text=admin_text,
+            reply_markup=admin_kb,
+            parse_mode="Markdown"
+        )
+

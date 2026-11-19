@@ -37,41 +37,54 @@ class AutoCancelStateOnCommandMiddleware(BaseMiddleware):
         state: FSMContext | None = data.get("state")
         bot: Bot | None = data.get("bot")
         
+        msg: Message | None = None
+        cb: CallbackQuery | None = None
+        if isinstance(event, Message):
+            msg = event
+        elif isinstance(event, CallbackQuery):
+            cb = event
+        elif isinstance(event, Update):
+            msg = event.message
+            cb = event.callback_query
+
+        actor_id = (msg.from_user.id if (msg and msg.from_user) else None) or (cb.from_user.id if (cb and cb.from_user) else None)
+        is_slash_cmd = bool(msg and msg.text and msg.text.startswith("/"))
+        is_top_nav_cb = bool(
+            cb and cb.data and (
+                cb.data in self.TOP_LEVEL_NAV_CALLBACKS
+                or cb.data.startswith("menu_")
+                or cb.data.startswith("adm_inspect_deal_")
+                or cb.data == "cancel_action"
+                or cb.data.endswith("_back")
+                or cb.data == "admin_main_menu"
+            )
+        )
+
+        if actor_id and (is_slash_cmd or is_top_nav_cb):
+            try:
+                from bot.handlers.deals.settlement import _ADMIN_PENDING_TX_RELEASE
+                _ADMIN_PENDING_TX_RELEASE.pop(actor_id, None)
+            except Exception:
+                pass
+
         if state:
             current_state = await state.get_state()
             if current_state is not None:
-                msg: Message | None = None
-                cb: CallbackQuery | None = None
-
-                if isinstance(event, Message):
-                    msg = event
-                elif isinstance(event, CallbackQuery):
-                    cb = event
-                elif isinstance(event, Update):
-                    msg = event.message
-                    cb = event.callback_query
-
                 should_cancel = False
                 chat_id = None
 
                 # 1. If user sent any slash command
-                if msg and msg.text and msg.text.startswith("/"):
+                if is_slash_cmd and msg:
                     should_cancel = True
                     chat_id = msg.chat.id
                     cmd_name = msg.text.split()[0]
-                    logger.info(f"User {msg.from_user.id if msg.from_user else 'unknown'} interrupted state '{current_state}' with command '{cmd_name}'. Auto-clearing & cleaning prompt.")
+                    logger.info(f"User {actor_id or 'unknown'} interrupted state '{current_state}' with command '{cmd_name}'. Auto-clearing & cleaning prompt.")
 
                 # 2. If user clicked a top-level navigation button
-                elif cb and cb.data:
-                    cb_data = cb.data
-                    if (cb_data in self.TOP_LEVEL_NAV_CALLBACKS 
-                        or cb_data.startswith("menu_") 
-                        or cb_data == "cancel_action" 
-                        or cb_data.endswith("_back")
-                        or cb_data == "admin_main_menu"):
-                        should_cancel = True
-                        chat_id = cb.message.chat.id if cb.message else None
-                        logger.info(f"User {cb.from_user.id if cb.from_user else 'unknown'} interrupted state '{current_state}' with button '{cb_data}'. Auto-clearing & cleaning prompt.")
+                elif is_top_nav_cb and cb:
+                    should_cancel = True
+                    chat_id = cb.message.chat.id if cb.message else None
+                    logger.info(f"User {actor_id or 'unknown'} interrupted state '{current_state}' with button '{cb.data}'. Auto-clearing & cleaning prompt.")
 
                 if should_cancel:
                     # Clean up old prompt message if stored in state data

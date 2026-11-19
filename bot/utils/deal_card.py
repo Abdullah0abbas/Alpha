@@ -227,6 +227,13 @@ def get_deal_action_keyboard(
                 InlineKeyboardButton(text="🔍 تفاصيل الصفقة", callback_data=f"adm_inspect_deal_{deal.id}")
             ])
 
+    elif status == "COMPLETED":
+        payout_tx = (getattr(deal, "payout_tx_hash", None) or "").strip()
+        if payout_tx.startswith("0x") and len(payout_tx) == 66:
+            buttons.append([
+                InlineKeyboardButton(text="🔗 عرض المعاملة على BscScan", url=f"https://bscscan.com/tx/{payout_tx}")
+            ])
+
     if not buttons:
         return None
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -327,7 +334,10 @@ def render_deal_card(
         else:
             lines.append(f"🔐 **المطلوب إيداعه:** `{total_dep_str} USDT` (العمولة: مجانية)")
         lines.append("🌐 **الشبكة:** `BEP-20`")
-        lines.append(f"📥 **عنوان الإيداع:**\n`{deal.deposit_address}`")
+        if deal.status == "AWAITING_USDT_DEPOSIT":
+            lines.append(f"📥 **عنوان الإيداع:**\n`{escape_markdown(deal.deposit_address)}`")
+        else:
+            lines.append("🔒 **عنوان الإيداع:** سيظهر فور الضغط على زر «🔐 إيداع الضمان» وبدء مهلة الإيداع (15 دقيقة).")
 
     elif deal.status in ("AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT", "SYP_PAYMENT_CONFIRMED", "ADMIN_APPROVAL"):
         seller_method = "غير محدد"
@@ -350,7 +360,10 @@ def render_deal_card(
 
     if deal.status in ("ADMIN_APPROVAL", "COMPLETED") and deal.buyer_payout_address:
         lines.append("〰️〰️〰️〰️〰️〰️〰️")
-        lines.append(f"💵 **عنوان USDT (BEP-20):**\n`{deal.buyer_payout_address}`")
+        lines.append(f"💵 **عنوان USDT (BEP-20):**\n`{escape_markdown(deal.buyer_payout_address)}`")
+        payout_tx = (getattr(deal, "payout_tx_hash", None) or "").strip()
+        if payout_tx:
+            lines.append(f"🔗 **رمز معاملة الإطلاق (TxHash):**\n`{escape_markdown(payout_tx)}`")
 
     lines.append("")
 

@@ -109,6 +109,8 @@ async def ensure_schema_updated():
         ("deals.buyer_card_msg_id", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS buyer_card_msg_id BIGINT;"),
         ("deals.seller_fee_usdt", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS seller_fee_usdt NUMERIC DEFAULT 0.0;"),
         ("deals.buyer_fee_usdt", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS buyer_fee_usdt NUMERIC DEFAULT 0.0;"),
+        ("deals.deposit_tx_hash", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS deposit_tx_hash VARCHAR(128);"),
+        ("deals.payout_tx_hash", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS payout_tx_hash VARCHAR(128);"),
     ]
 
     index_and_constraint_ddls = [
