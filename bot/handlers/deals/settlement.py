@@ -1,16 +1,16 @@
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 import logging
-import re
 
 from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import or_
 
 from db.models import Deal, Offer, User, PaymentProof, Dispute, DealRating, BlockchainTransaction
-from bot.states.flow_states import DealPaymentFSM, AdminFSM
+from bot.states.flow_states import DealPaymentFSM
 from bot.services.audit_service import add_audit
 from bot.services.channel import update_channel_offer_message
 from bot.services.admin_notifier import dispatch_admin_notification, notify_usdt_deposit_confirmed
@@ -846,51 +846,38 @@ async def manual_admin_approval(callback: CallbackQuery, db_session: AsyncSessio
     await callback.answer()
 
 
-# Tracks pending TxHash input per admin ID so an admin can click the button in a channel/group or private chat and reply seamlessly
-_ADMIN_PENDING_TX_RELEASE: dict[int, dict] = {}
-
-_EVM_TX_HASH_RE = re.compile(r"(0x[a-fA-F0-9]{64})")
-_RAW_HEX64_RE = re.compile(r"\b([a-fA-F0-9]{64})\b")
-
-
-def _extract_and_validate_tx_hash(raw_text: str) -> tuple[bool, str, bool]:
+async def is_tx_hash_already_used(db_session: AsyncSession, tx_hash: str, exclude_deal_id: int | None = None) -> bool:
     """
-    Extracts and validates a transaction hash or reference from admin input.
-    Supports:
-    - Full BscScan URLs (e.g. https://bscscan.com/tx/0x...)
-    - Standard 66-char 0x... EVM transaction hashes
-    - 64-char hex strings (normalized to 0x...)
-    - Alphanumeric transfer references (8 to 100 chars)
-    Returns: (is_valid, cleaned_hash, is_onchain_hex)
+    Verifies that a blockchain transaction hash (TxHash) has never been used in any other deal
+    (checks Deal.deposit_tx_hash, Deal.payout_tx_hash, and BlockchainTransaction.tx_hash).
     """
-    text_val = (raw_text or "").strip()
-    if not text_val:
-        return False, "", False
+    cleaned = (tx_hash or "").strip()
+    if not cleaned:
+        return False
 
-    evm_match = _EVM_TX_HASH_RE.search(text_val)
-    if evm_match:
-        return True, evm_match.group(1), True
+    deal_query = select(Deal.id).where(
+        or_(Deal.deposit_tx_hash == cleaned, Deal.payout_tx_hash == cleaned)
+    )
+    if exclude_deal_id is not None:
+        deal_query = deal_query.where(Deal.id != exclude_deal_id)
 
-    hex64_match = _RAW_HEX64_RE.search(text_val)
-    if hex64_match:
-        return True, f"0x{hex64_match.group(1)}", True
+    deal_res = await db_session.execute(deal_query.limit(1))
+    if deal_res.scalar_one_or_none() is not None:
+        return True
 
-    # Allow clean alphanumeric/hyphen/underscore transfer reference (e.g. internal transfer ID) if 8..100 chars and no spaces
-    if 8 <= len(text_val) <= 100 and re.fullmatch(r"[A-Za-z0-9_\-:]+", text_val):
-        return True, text_val, False
+    tx_query = select(BlockchainTransaction.id).where(BlockchainTransaction.tx_hash == cleaned)
+    if exclude_deal_id is not None:
+        tx_query = tx_query.where(BlockchainTransaction.deal_id != exclude_deal_id)
 
-    return False, "", False
+    tx_res = await db_session.execute(tx_query.limit(1))
+    return tx_res.scalar_one_or_none() is not None
 
 
 @settlement_router.callback_query(F.data.startswith("ask_rel_"))
-async def ask_admin_release(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext | None = None):
+async def ask_admin_release(callback: CallbackQuery, db_session: AsyncSession):
     if callback.from_user.id not in settings.ADMIN_IDS:
         await callback.answer("غير مصرح: هذه الصلاحية للإدارة فقط.", show_alert=True)
         return
-
-    _ADMIN_PENDING_TX_RELEASE.pop(callback.from_user.id, None)
-    if state:
-        await state.clear()
 
     deal_id = int(callback.data.split("_")[-1])
     result = await db_session.execute(select(Deal).where(Deal.id == deal_id))
@@ -937,11 +924,11 @@ async def ask_admin_release(callback: CallbackQuery, db_session: AsyncSession, s
         f"▫️ **الشبكة:** `BEP-20`\n"
         f"📥 **محفظة استلام المشتري:**\n"
         f"`{buyer_wallet_escaped}`\n\n"
-        f"اختر طريقة اعتماد وإطلاق الصفقة (يُنصح بإرفاق رمز المعاملة `TxHash` لتوثيقه في بطاقة المشتري والسجل):"
+        f"سيتم إطلاق رصيد الضمان فوراً إلى محفظة المشتري وإتمام الصفقة.\n"
+        f"⚠️ **تنبيه:** هذا الإجراء نهائي ولا يمكن التراجع عنه. هل ترغب بالتأكيد؟"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔗 إطلاق مع توثيق رمز المعاملة (TxHash)", callback_data=f"ask_tx_rel_{deal.id}")],
-        [InlineKeyboardButton(text="⚡ إطلاق فوري مباشر (بدون TxHash)", callback_data=f"man_rel_{deal.id}")],
+        [InlineKeyboardButton(text="✅ نعم، تأكيد وإطلاق الضمان", callback_data=f"man_rel_{deal.id}")],
         [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"back_admin_deal_{deal.id}")]
     ])
     try:
@@ -951,106 +938,11 @@ async def ask_admin_release(callback: CallbackQuery, db_session: AsyncSession, s
     await callback.answer()
 
 
-@settlement_router.callback_query(F.data.startswith("ask_tx_rel_"))
-async def ask_tx_admin_release(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext | None = None):
-    if callback.from_user.id not in settings.ADMIN_IDS:
-        await callback.answer("غير مصرح: هذه الصلاحية للإدارة فقط.", show_alert=True)
-        return
-
-    deal_id = int(callback.data.split("_")[-1])
-    result = await db_session.execute(select(Deal).where(Deal.id == deal_id))
-    deal = result.scalar_one_or_none()
-
-    if not deal:
-        await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
-        return
-
-    allowed, err_msg = can_admin_release_escrow(deal.status, callback.from_user.id, settings.ADMIN_IDS)
-    if not allowed:
-        await callback.answer(err_msg, show_alert=True)
-        return
-
-    buyer_addr = (deal.buyer_payout_address or "").strip()
-    if not buyer_addr or buyer_addr in ["PENDING", "غير محدد", "N/A"]:
-        await callback.answer("⚠️ لا يمكن الإطلاق: عنوان محفظة المشتري غير مسجل بعد.", show_alert=True)
-        return
-
-    seller_info_val = ""
-    if isinstance(deal.seller_payment_info, dict):
-        seller_info_val = str(deal.seller_payment_info.get("info") or "").strip()
-    elif isinstance(deal.seller_payment_info, str):
-        seller_info_val = deal.seller_payment_info.strip()
-
-    if not seller_info_val or seller_info_val in ["PENDING", "غير محدد", "N/A"]:
-        await callback.answer("⚠️ لا يمكن الإطلاق: بيانات حساب استلام البائع غير مسجلة بعد.", show_alert=True)
-        return
-
-    await db_session.commit()
-
-    buyer_fee = getattr(deal, "buyer_fee_usdt", None) or Decimal("0")
-    net_buyer_str = format_usdt(deal.amount_usdt - buyer_fee)
-    buyer_wallet_escaped = escape_markdown(buyer_addr)
-
-    prompt_text = (
-        f"🔗 **إرفاق رمز المعاملة (TxHash) — صفقة #{deal.id}**\n"
-        f"〰️〰️〰️〰️〰️〰️〰️\n"
-        f"▫️ **صافي المبلغ المحول للمشتري:** `{net_buyer_str} USDT` (`BEP-20`)\n"
-        f"📥 **محفظة استلام المشتري:**\n"
-        f"`{buyer_wallet_escaped}`\n\n"
-        f"⌨️ **أرسل الآن رمز المعاملة (`TxHash`) أو رابط العملية على `BscScan` ليتم حفظه وإتمام الصفقة فوراً:**"
-    )
-    prompt_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡ تخطي وإطلاق مباشر (بدون TxHash)", callback_data=f"man_rel_{deal.id}")],
-        [InlineKeyboardButton(text="↩️ رجوع", callback_data=f"ask_rel_{deal.id}")]
-    ])
-
-    origin_chat_id = callback.message.chat.id if callback.message else callback.from_user.id
-    origin_msg_id = callback.message.message_id if callback.message else None
-    is_channel_msg = bool(callback.message and getattr(callback.message.chat, "type", "") == "channel")
-
-    _ADMIN_PENDING_TX_RELEASE[callback.from_user.id] = {
-        "deal_id": deal.id,
-        "origin_chat_id": origin_chat_id,
-        "origin_msg_id": origin_msg_id,
-    }
-    if state:
-        await state.set_state(AdminFSM.waiting_for_payout_tx_hash)
-        await state.update_data(
-            release_deal_id=deal.id,
-            origin_chat_id=origin_chat_id,
-            origin_msg_id=origin_msg_id,
-        )
-
-    if is_channel_msg:
-        # In a broadcast channel admins cannot send regular user messages, so also send the prompt to the admin's private chat
-        try:
-            dm_msg = await callback.bot.send_message(
-                chat_id=callback.from_user.id,
-                text=prompt_text,
-                reply_markup=prompt_kb,
-                parse_mode="Markdown"
-            )
-            _ADMIN_PENDING_TX_RELEASE[callback.from_user.id]["dm_msg_id"] = dm_msg.message_id
-            await callback.answer("تم فتح نافذة إدخال الـ TxHash في محادثتك الخاصة مع البوت ✅", show_alert=True)
-        except Exception:
-            await callback.answer("يرجى إرسال رمز المعاملة (TxHash) في محادثتك الخاصة مع البوت.", show_alert=True)
-    else:
-        try:
-            await callback.message.edit_text(prompt_text, reply_markup=prompt_kb, parse_mode="Markdown")
-        except Exception:
-            await callback.message.answer(prompt_text, reply_markup=prompt_kb, parse_mode="Markdown")
-        await callback.answer()
-
-
 @settlement_router.callback_query(F.data.startswith("back_admin_deal_"))
-async def cq_back_admin_deal(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext | None = None):
+async def cq_back_admin_deal(callback: CallbackQuery, db_session: AsyncSession):
     if callback.from_user.id not in settings.ADMIN_IDS:
         await callback.answer("غير مصرح لك.", show_alert=True)
         return
-
-    _ADMIN_PENDING_TX_RELEASE.pop(callback.from_user.id, None)
-    if state:
-        await state.clear()
 
     deal_id = int(callback.data.split("_")[-1])
     result = await db_session.execute(select(Deal).where(Deal.id == deal_id))
@@ -1079,14 +971,12 @@ async def _execute_admin_escrow_release(
     bot: Bot,
     db_session: AsyncSession,
     payout_tx_hash: str | None = None,
-    origin_chat_id: int | None = None,
-    origin_msg_id: int | None = None,
     callback: CallbackQuery | None = None,
-    admin_message: Message | None = None,
 ) -> bool:
     """
-    Executes atomic escrow release (ADMIN_APPROVAL -> COMPLETED), records optional payout_tx_hash,
-    updates audit log and blockchain_transactions, and notifies both counterparties.
+    Executes atomic escrow release (ADMIN_APPROVAL -> COMPLETED), records automatic payout_tx_hash
+    (rejecting any duplicate TxHash), updates audit log and blockchain_transactions,
+    and notifies both counterparties.
     """
     result = await db_session.execute(
         select(Deal).where(Deal.id == deal_id).with_for_update()
@@ -1094,37 +984,25 @@ async def _execute_admin_escrow_release(
     deal = result.scalar_one_or_none()
 
     if not deal:
-        err_text = "عذراً، لم يتم العثور على الصفقة."
         if callback:
-            await callback.answer(err_text, show_alert=True)
-        elif admin_message:
-            await admin_message.answer(err_text)
+            await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
         return False
 
     if deal.status == "COMPLETED":
-        err_text = "تم اعتماد وإطلاق هذه الصفقة مسبقاً."
         if callback:
-            await callback.answer(err_text, show_alert=True)
-        elif admin_message:
-            await admin_message.answer(err_text)
+            await callback.answer("تم اعتماد وإطلاق هذه الصفقة مسبقاً.", show_alert=True)
         return False
 
     if deal.status != "ADMIN_APPROVAL":
-        err_text = "لا يمكن إطلاق هذه الصفقة — لم تصل بعد لمرحلة الاعتماد الإداري."
         if callback:
-            await callback.answer(err_text, show_alert=True)
-        elif admin_message:
-            await admin_message.answer(err_text)
+            await callback.answer("لا يمكن إطلاق هذه الصفقة — لم تصل بعد لمرحلة الاعتماد الإداري.", show_alert=True)
         return False
 
     # Strict gate: Buyer payout address must be valid before release
     buyer_addr = (deal.buyer_payout_address or "").strip()
     if not buyer_addr or buyer_addr in ["PENDING", "غير محدد", "N/A"]:
-        err_text = "⚠️ لا يمكن الإطلاق: عنوان محفظة المشتري غير مسجل بعد. يجب انتظار إدخاله أولاً."
         if callback:
-            await callback.answer(err_text, show_alert=True)
-        elif admin_message:
-            await admin_message.answer(err_text)
+            await callback.answer("⚠️ لا يمكن الإطلاق: عنوان محفظة المشتري غير مسجل بعد. يجب انتظار إدخاله أولاً.", show_alert=True)
         return False
 
     # Strict gate: Seller payment info must be valid before release
@@ -1135,12 +1013,16 @@ async def _execute_admin_escrow_release(
         seller_info_val = deal.seller_payment_info.strip()
 
     if not seller_info_val or seller_info_val in ["PENDING", "غير محدد", "N/A"]:
-        err_text = "⚠️ لا يمكن الإطلاق: بيانات حساب استلام البائع غير مسجلة بعد."
         if callback:
-            await callback.answer(err_text, show_alert=True)
-        elif admin_message:
-            await admin_message.answer(err_text)
+            await callback.answer("⚠️ لا يمكن الإطلاق: بيانات حساب استلام البائع غير مسجلة بعد.", show_alert=True)
         return False
+
+    # Strict gate: Prevent duplicate TxHash reuse across deals
+    if payout_tx_hash:
+        if await is_tx_hash_already_used(db_session, payout_tx_hash, exclude_deal_id=deal.id):
+            if callback:
+                await callback.answer("⚠️ رمز المعاملة (TxHash) المرصود مستخدم مسبقاً في صفقة أخرى!", show_alert=True)
+            return False
 
     deal.status = "COMPLETED"
     if payout_tx_hash:
@@ -1150,24 +1032,15 @@ async def _execute_admin_escrow_release(
     buyer_fee = getattr(deal, "buyer_fee_usdt", None) or Decimal("0")
     net_buyer_usdt = deal.amount_usdt - buyer_fee
 
-    # Record in BlockchainTransaction table inside a savepoint if payout_tx_hash is provided
-    if payout_tx_hash and hasattr(db_session, "begin_nested"):
-        try:
-            async with db_session.begin_nested():
-                existing_tx_res = await db_session.execute(
-                    select(BlockchainTransaction).where(BlockchainTransaction.tx_hash == payout_tx_hash)
-                )
-                if not existing_tx_res.scalar_one_or_none():
-                    tx_row = BlockchainTransaction(
-                        deal_id=deal.id,
-                        tx_hash=payout_tx_hash,
-                        direction="release",
-                        amount=net_buyer_usdt,
-                        confirmed_at=datetime.now(timezone.utc),
-                    )
-                    db_session.add(tx_row)
-        except Exception as tx_err:
-            logger.warning(f"Optional BlockchainTransaction insert skipped for deal #{deal.id}: {tx_err}")
+    if payout_tx_hash and hasattr(db_session, "add"):
+        tx_row = BlockchainTransaction(
+            deal_id=deal.id,
+            tx_hash=payout_tx_hash,
+            direction="release",
+            amount=net_buyer_usdt,
+            confirmed_at=datetime.now(timezone.utc),
+        )
+        db_session.add(tx_row)
 
     # Increment completed_deals_count for both buyer and seller
     buyer_user_res = await db_session.execute(select(User).where(User.telegram_id == deal.buyer_id))
@@ -1241,30 +1114,6 @@ async def _execute_admin_escrow_release(
             await callback.message.edit_text(admin_done_text, parse_mode="Markdown")
         except Exception as e:
             logger.warning(f"Failed to edit admin callback message after release for deal #{deal.id}: {e}")
-    else:
-        if origin_chat_id and origin_msg_id:
-            try:
-                await bot.edit_message_text(
-                    chat_id=origin_chat_id,
-                    message_id=origin_msg_id,
-                    text=admin_done_text,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to edit origin admin message after TxHash release for deal #{deal.id}: {e}")
-        if admin_message and (not origin_chat_id or admin_message.chat.id != origin_chat_id):
-            try:
-                await admin_message.answer(admin_done_text, parse_mode="Markdown")
-            except Exception:
-                pass
-        elif admin_message:
-            try:
-                await admin_message.answer(
-                    f"✅ **تم توثيق الـ TxHash وإطلاق الصفقة #{deal.id} بنجاح.**",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
 
     # Synchronize Deal Cards for counterparties
     try:
@@ -1340,14 +1189,10 @@ async def _execute_admin_escrow_release(
 
 
 @settlement_router.callback_query(F.data.startswith("man_rel_"))
-async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext | None = None):
+async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession):
     if callback.from_user.id not in settings.ADMIN_IDS:
         await callback.answer("غير مصرح: هذه الصلاحية للإدارة فقط.", show_alert=True)
         return
-
-    _ADMIN_PENDING_TX_RELEASE.pop(callback.from_user.id, None)
-    if state:
-        await state.clear()
 
     deal_id = int(callback.data.split("_")[-1])
     await _execute_admin_escrow_release(
@@ -1357,60 +1202,6 @@ async def manual_admin_release(callback: CallbackQuery, db_session: AsyncSession
         db_session=db_session,
         payout_tx_hash=None,
         callback=callback,
-    )
-
-
-@settlement_router.message(
-    AdminFSM.waiting_for_payout_tx_hash,
-    F.text,
-    ~F.text.startswith("/")
-)
-@settlement_router.message(
-    F.from_user.id.func(lambda uid: uid in _ADMIN_PENDING_TX_RELEASE),
-    F.text,
-    ~F.text.startswith("/")
-)
-async def process_admin_payout_tx_hash(message: Message, state: FSMContext, db_session: AsyncSession):
-    if message.from_user.id not in settings.ADMIN_IDS:
-        return
-
-    state_data = await state.get_data()
-    pending_info = _ADMIN_PENDING_TX_RELEASE.get(message.from_user.id) or {}
-    deal_id = state_data.get("release_deal_id") or pending_info.get("deal_id")
-    origin_chat_id = state_data.get("origin_chat_id") or pending_info.get("origin_chat_id")
-    origin_msg_id = state_data.get("origin_msg_id") or pending_info.get("origin_msg_id")
-
-    if not deal_id:
-        _ADMIN_PENDING_TX_RELEASE.pop(message.from_user.id, None)
-        await state.clear()
-        return
-
-    is_valid, cleaned_tx, _ = _extract_and_validate_tx_hash(message.text or "")
-    if not is_valid:
-        retry_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡ تخطي وإطلاق مباشر (بدون TxHash)", callback_data=f"man_rel_{deal_id}")],
-            [InlineKeyboardButton(text="↩️ إلغاء ورجوع", callback_data=f"ask_rel_{deal_id}")]
-        ])
-        await message.answer(
-            f"⚠️ **رمز المعاملة (`TxHash`) غير صالح!**\n\n"
-            f"يرجى إرسال رمز المعاملة الصحيح (`0x...` المكون من 66 محرفاً، أو رابط العملية من `BscScan`) للصفقة `#{deal_id}`:",
-            reply_markup=retry_kb,
-            parse_mode="Markdown"
-        )
-        return
-
-    _ADMIN_PENDING_TX_RELEASE.pop(message.from_user.id, None)
-    await state.clear()
-
-    await _execute_admin_escrow_release(
-        deal_id=int(deal_id),
-        admin_id=message.from_user.id,
-        bot=message.bot,
-        db_session=db_session,
-        payout_tx_hash=cleaned_tx,
-        origin_chat_id=origin_chat_id,
-        origin_msg_id=origin_msg_id,
-        admin_message=message,
     )
 
 

@@ -60,13 +60,6 @@ class AutoCancelStateOnCommandMiddleware(BaseMiddleware):
             )
         )
 
-        if actor_id and (is_slash_cmd or is_top_nav_cb):
-            try:
-                from bot.handlers.deals.settlement import _ADMIN_PENDING_TX_RELEASE
-                _ADMIN_PENDING_TX_RELEASE.pop(actor_id, None)
-            except Exception:
-                pass
-
         if state:
             current_state = await state.get_state()
             if current_state is not None:

@@ -165,6 +165,8 @@ async def ensure_schema_updated():
         ),
         ("deal_ratings.ix_deal_id", "CREATE INDEX IF NOT EXISTS ix_deal_ratings_deal_id ON deal_ratings (deal_id);", None, None),
         ("deal_ratings.ix_target_id", "CREATE INDEX IF NOT EXISTS ix_deal_ratings_target_id ON deal_ratings (target_id);", None, None),
+        ("deals.uq_deals_deposit_tx_hash", "CREATE UNIQUE INDEX IF NOT EXISTS uq_deals_deposit_tx_hash ON deals (deposit_tx_hash) WHERE deposit_tx_hash IS NOT NULL;", None, None),
+        ("deals.uq_deals_payout_tx_hash", "CREATE UNIQUE INDEX IF NOT EXISTS uq_deals_payout_tx_hash ON deals (payout_tx_hash) WHERE payout_tx_hash IS NOT NULL;", None, None),
     ]
 
     try:
