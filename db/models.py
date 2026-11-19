@@ -18,7 +18,7 @@ class User(Base):
     saved_payment_info: Mapped[str | None] = mapped_column(String(200), nullable=True)
     kyc_status: Mapped[str] = mapped_column(String(20), server_default="unverified", default="unverified") # unverified, pending, verified
     reward_points: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
-    reputation_score: Mapped[Decimal] = mapped_column(Numeric, server_default="100")
+    reputation_score: Mapped[Decimal] = mapped_column(Numeric, server_default="100", default=Decimal("100"))
     completed_deals_count: Mapped[int] = mapped_column(Integer, server_default="0")
     is_banned: Mapped[bool] = mapped_column(Boolean, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

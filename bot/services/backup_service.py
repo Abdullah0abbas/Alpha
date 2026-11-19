@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from aiogram import Bot
 from aiogram.types import FSInputFile
+from sqlalchemy import text
 from sqlalchemy.future import select
 
 from db.session import AsyncSessionLocal
@@ -18,7 +19,7 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-BACKUP_FORMAT_VERSION = "3.8"
+BACKUP_FORMAT_VERSION = "3.9"
 BACKUP_DIR = os.path.join(os.getcwd(), "backups")
 
 def serialize_val(val):
@@ -140,6 +141,8 @@ async def create_database_backup() -> tuple[str, str, dict]:
                 "expires_at": serialize_val(d.expires_at),
                 "seller_card_msg_id": d.seller_card_msg_id,
                 "buyer_card_msg_id": d.buyer_card_msg_id,
+                "deposit_tx_hash": getattr(d, "deposit_tx_hash", None),
+                "payout_tx_hash": getattr(d, "payout_tx_hash", None),
                 "created_at": serialize_val(d.created_at),
                 "updated_at": serialize_val(d.updated_at)
             }
@@ -264,11 +267,27 @@ async def create_database_backup() -> tuple[str, str, dict]:
             for a in audit_rows
         ]
 
+        # 11. deposit_index_seq state
+        deposit_seq_info = {"last_value": 1, "is_called": False}
+        try:
+            seq_res = await session.execute(
+                text("SELECT last_value, is_called FROM deposit_index_seq")
+            )
+            seq_row = seq_res.first()
+            if seq_row is not None:
+                deposit_seq_info = {
+                    "last_value": int(seq_row[0]),
+                    "is_called": bool(seq_row[1]),
+                }
+        except Exception as seq_err:
+            logger.warning(f"Failed to read deposit_index_seq during backup: {seq_err}")
+
     backup_payload = {
         "metadata": {
             "created_at": datetime.now(timezone.utc).isoformat(),
             "version": BACKUP_FORMAT_VERSION,
-            "table_stats": stats
+            "table_stats": stats,
+            "deposit_index_seq": deposit_seq_info,
         },
         "users": users_data,
         "offers": offers_data,

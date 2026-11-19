@@ -6,6 +6,7 @@ from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.future import select
 from sqlalchemy import or_
 
@@ -346,14 +347,25 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         return
 
     try:
-        proof = PaymentProof(
-            deal_id=deal.id,
-            transaction_reference=ref,
-            amount=deal.amount_syp,
-            submitted_by=message.from_user.id
+        async with db_session.begin_nested():
+            proof = PaymentProof(
+                deal_id=deal.id,
+                transaction_reference=ref,
+                amount=deal.amount_syp,
+                submitted_by=message.from_user.id
+            )
+            db_session.add(proof)
+            await db_session.flush()
+    except IntegrityError:
+        await message.answer(
+            "⚠️ **هذه الصورة استُخدمت سابقاً!**\n\n"
+            "يرجى إرسال لقطة شاشة جديدة لإشعار التحويل الخاص بهذه العملية.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+            ]),
+            parse_mode="Markdown"
         )
-        db_session.add(proof)
-        await db_session.commit()
+        return
     except Exception as e:
         logger.warning(f"PaymentProof creation log: {e}")
         await report_handled_exception(
