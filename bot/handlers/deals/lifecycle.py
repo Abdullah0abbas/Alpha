@@ -36,8 +36,10 @@ async def approve_deal_request(callback: CallbackQuery, db_session: AsyncSession
         await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
         return
 
-    # Check that caller is the maker
-    offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+    # Check that caller is the maker and lock the offer
+    offer_res = await db_session.execute(
+        select(Offer).where(Offer.id == deal.offer_id).with_for_update()
+    )
     offer = offer_res.scalar_one_or_none()
     creator_id = offer.user_id if offer else None
 
@@ -50,6 +52,16 @@ async def approve_deal_request(callback: CallbackQuery, db_session: AsyncSession
         return
 
     now = datetime.now(timezone.utc)
+    if deal.expires_at is not None and deal.expires_at <= now:
+        await db_session.commit()
+        await callback.answer("⚠️ انتهت المهلة الزمنية للموافقة على هذا الطلب.", show_alert=True)
+        return
+
+    if not offer or offer.status != "reserved":
+        await db_session.commit()
+        await callback.answer("⚠️ العرض المرتبط بهذه الصفقة لم يعد متاحاً.", show_alert=True)
+        return
+
     deal.status = "CREATED"
     await db_session.flush()
     deal.status = "AWAITING_USDT_DEPOSIT"

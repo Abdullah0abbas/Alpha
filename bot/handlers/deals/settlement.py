@@ -119,6 +119,12 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
         await callback.answer(err_msg, show_alert=True)
         return
 
+    now = datetime.now(timezone.utc)
+    if deal.expires_at is not None and deal.expires_at <= now:
+        await db_session.commit()
+        await callback.answer("⚠️ انتهت مهلة إيداع الضمان لهذه الصفقة.", show_alert=True)
+        return
+
     deal.status = "USDT_DEPOSITED"
 
     usdt_str = format_usdt(deal.amount_usdt)

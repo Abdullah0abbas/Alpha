@@ -814,6 +814,20 @@ async def cq_admin_delete_offer(callback: CallbackQuery, db_session: AsyncSessio
 
     owner_id = offer.user_id
     offer.status = "deleted"
+    offer.status_changed_at = datetime.now(timezone.utc)
+
+    # Close any open negotiations on this offer so they never remain dangling
+    open_negs_res = await db_session.execute(
+        select(Negotiation)
+        .where(
+            Negotiation.offer_id == offer_id,
+            Negotiation.status.in_(["PENDING_MAKER", "PENDING_TAKER"])
+        )
+        .with_for_update()
+    )
+    open_negs = list(open_negs_res.scalars().all())
+    for neg in open_negs:
+        neg.status = "REJECTED"
 
     add_audit(
         session=db_session,
@@ -822,7 +836,7 @@ async def cq_admin_delete_offer(callback: CallbackQuery, db_session: AsyncSessio
         target_id=offer_id,
         actor_id=callback.from_user.id,
         actor_type="ADMIN",
-        details={"owner_id": owner_id}
+        details={"owner_id": owner_id, "closed_negotiations": [n.id for n in open_negs]}
     )
     await db_session.commit()
 
@@ -839,6 +853,19 @@ async def cq_admin_delete_offer(callback: CallbackQuery, db_session: AsyncSessio
         )
     except Exception:
         pass
+
+    for neg in open_negs:
+        try:
+            await callback.bot.send_message(
+                chat_id=neg.taker_id,
+                text=(
+                    f"ℹ️ **إغلاق جلسة التفاوض — عرض #{offer_id}**\n\n"
+                    f"تم إغلاق جلسة التفاوض رقم `#{neg.id}` نظراً لإزالة العرض من السوق من قِبل الإدارة."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
 
     await callback.answer(f"✅ تم حذف العرض #{offer_id} وإزالته من القناة العامة.", show_alert=True)
 
@@ -943,24 +970,33 @@ async def _render_live_ops_center(
     item_rows = []
 
     if filter_key == "pending":
+        app_cnt_res = await db_session.execute(
+            select(func.count(Deal.id)).where(Deal.status == "ADMIN_APPROVAL")
+        )
+        app_cnt = app_cnt_res.scalar() or 0
+        syp_cnt_res = await db_session.execute(
+            select(func.count(Deal.id)).where(Deal.status == "SYP_PAYMENT_SENT")
+        )
+        syp_cnt = syp_cnt_res.scalar() or 0
+        total_pending = app_cnt + syp_cnt
+
         res = await db_session.execute(
             select(Deal)
             .where(Deal.status.in_(["ADMIN_APPROVAL", "SYP_PAYMENT_SENT"]))
             .order_by(Deal.created_at.desc())
+            .limit(12)
         )
         deals = list(res.scalars().all())
-        app_cnt = sum(1 for d in deals if d.status == "ADMIN_APPROVAL")
-        syp_cnt = sum(1 for d in deals if d.status == "SYP_PAYMENT_SENT")
 
         lines = [
-            f"📡 **غرفة العمليات — صفقات بانتظار الاعتماد والتأكيد ({len(deals)})**\n"
+            f"📡 **غرفة العمليات — صفقات بانتظار الاعتماد والتأكيد ({total_pending})**\n"
             f"▫️ **بانتظار إطلاق الضمان (`ADMIN_APPROVAL`):** `{app_cnt}`\n"
             f"▫️ **بانتظار تأكيد استلام الليرة (`SYP_PAYMENT_SENT`):** `{syp_cnt}`\n\n"
         ]
         if not deals:
             lines.append("✅ لا توجد أي صفقات معلقة بانتظار التدخل حالياً.")
         else:
-            for d in deals[:12]:
+            for d in deals:
                 badge = "🛡️ إطلاق ضمان" if d.status == "ADMIN_APPROVAL" else "💸 تأكيد ليرة"
                 lines.append(
                     f"🔸 **صفقة #{d.id}** ({badge})\n"
@@ -975,19 +1011,25 @@ async def _render_live_ops_center(
                 ])
 
     elif filter_key == "active":
+        total_active_res = await db_session.execute(
+            select(func.count(Deal.id)).where(Deal.status.in_(OPEN_DEAL_STATUSES))
+        )
+        total_active = total_active_res.scalar() or 0
+
         res = await db_session.execute(
             select(Deal)
             .where(Deal.status.in_(OPEN_DEAL_STATUSES))
             .order_by(Deal.id.desc())
+            .limit(12)
         )
         deals = list(res.scalars().all())
         lines = [
-            f"⏳ **غرفة العمليات — جميع الصفقات الجارية الآن ({len(deals)})**\n\n"
+            f"⏳ **غرفة العمليات — جميع الصفقات الجارية الآن ({total_active})**\n\n"
         ]
         if not deals:
             lines.append("لا توجد أي صفقات جارية أو مفتوحة في النظام حالياً.")
         else:
-            for d in deals[:12]:
+            for d in deals:
                 lines.append(
                     f"🔸 **صفقة #{d.id}** — `{d.status}`\n"
                     f"   • الكمية: `{format_usdt(d.amount_usdt)} USDT` (`{format_syp(d.amount_syp)}` ل.س)\n"
@@ -1654,6 +1696,14 @@ async def cq_admin_do_force_cancel(callback: CallbackQuery, db_session: AsyncSes
 
     if deal.status in ["COMPLETED", "CANCELLED", "EXPIRED", "DISPUTED"]:
         await callback.answer(f"الصفقة مغلقة مسبقاً بالحالة: {deal.status}", show_alert=True)
+        return
+
+    if deal.status not in ("PENDING_OWNER_APPROVAL", "CREATED", "AWAITING_USDT_DEPOSIT"):
+        await db_session.commit()
+        await callback.answer(
+            "⚠️ لا يمكن الإلغاء المباشر بعد إيداع الضمان؛ يجب تحويل الصفقة للنزاع أو التسوية اليدوية لإرجاع الرصيد للبائع.",
+            show_alert=True,
+        )
         return
 
     prev_status = deal.status

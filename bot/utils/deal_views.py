@@ -339,8 +339,6 @@ async def build_admin_deal_keyboard(deal: Deal, db_session: AsyncSession) -> Inl
         "PENDING_OWNER_APPROVAL",
         "CREATED",
         "AWAITING_USDT_DEPOSIT",
-        "USDT_DEPOSITED",
-        "AWAITING_SYP_PAYMENT",
     ):
         buttons.append([
             InlineKeyboardButton(text="❌ إلغاء الصفقة إدارياً", callback_data=f"adm_ask_force_cancel_{deal.id}")

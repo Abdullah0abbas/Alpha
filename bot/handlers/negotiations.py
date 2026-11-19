@@ -284,12 +284,12 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
 
         # Get Taker stats
         taker_deals_res = await db_session.execute(
-            select(Deal).where(
+            select(func.count(Deal.id)).where(
                 or_(Deal.buyer_id == taker_id, Deal.seller_id == taker_id),
                 Deal.status == "COMPLETED"
             )
         )
-        taker_completed_count = len(taker_deals_res.scalars().all())
+        taker_completed_count = taker_deals_res.scalar() or 0
 
     await state.clear()
 
@@ -360,6 +360,12 @@ async def maker_accept_negotiation(callback: CallbackQuery, db_session: AsyncSes
     if neg.status != "PENDING_MAKER":
         await db_session.commit()
         await callback.answer("تم اتخاذ قرار مسبقاً بشأن هذا التفاوض.", show_alert=True)
+        return
+
+    now = datetime.now(timezone.utc)
+    if neg.expires_at is not None and neg.expires_at <= now:
+        await db_session.commit()
+        await callback.answer("⚠️ انتهت المهلة الزمنية لجلسة التفاوض.", show_alert=True)
         return
 
     success = await _finalize_negotiated_deal(callback.bot, neg, db_session, callback.message)
@@ -455,6 +461,9 @@ async def maker_start_counter(callback: CallbackQuery, db_session: AsyncSession,
 
     offer_res = await db_session.execute(select(Offer).where(Offer.id == neg.offer_id))
     offer = offer_res.scalar_one_or_none()
+    if not offer or offer.status not in ("active", "negotiating"):
+        await callback.answer("⚠️ العرض المرتبط بهذه المفاوضة لم يعد متاحاً.", show_alert=True)
+        return
 
     await state.update_data(
         neg_id=neg.id,
@@ -567,7 +576,13 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
 
         offer_res = await db_session.execute(select(Offer).where(Offer.id == neg.offer_id))
         offer = offer_res.scalar_one_or_none()
-        if offer and offer.negotiable_type not in ("amount", "both"):
+        if not offer or offer.status not in ("active", "negotiating") or (offer.expires_at and offer.expires_at <= now):
+            await db_session.commit()
+            await state.clear()
+            await message.answer("⚠️ عذراً، العرض المرتبط بهذه المفاوضة لم يعد متاحاً.")
+            return
+
+        if offer.negotiable_type not in ("amount", "both"):
             min_limit = Decimal(str(offer.min_limit))
             max_limit = Decimal(str(offer.max_limit))
             if amount_val < min_limit or amount_val > max_limit:
@@ -585,12 +600,12 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
         neg.expires_at = expires_at
 
         maker_deals_res = await db_session.execute(
-            select(Deal).where(
+            select(func.count(Deal.id)).where(
                 or_(Deal.buyer_id == neg.maker_id, Deal.seller_id == neg.maker_id),
                 Deal.status == "COMPLETED"
             )
         )
-        maker_completed_count = len(maker_deals_res.scalars().all())
+        maker_completed_count = maker_deals_res.scalar() or 0
         await db_session.commit()
 
     await state.clear()
@@ -658,6 +673,12 @@ async def taker_accept_counter(callback: CallbackQuery, db_session: AsyncSession
     if neg.status != "PENDING_TAKER":
         await db_session.commit()
         await callback.answer("تم اتخاذ قرار مسبقاً بشأن هذا العرض.", show_alert=True)
+        return
+
+    now = datetime.now(timezone.utc)
+    if neg.expires_at is not None and neg.expires_at <= now:
+        await db_session.commit()
+        await callback.answer("⚠️ انتهت المهلة الزمنية لجلسة التفاوض.", show_alert=True)
         return
 
     success = await _finalize_negotiated_deal(callback.bot, neg, db_session, callback.message)
@@ -736,13 +757,23 @@ async def taker_reject_counter(callback: CallbackQuery, db_session: AsyncSession
 # ================= 4. CONVERT ACCEPTED NEGOTIATION TO DEAL =================
 
 async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: AsyncSession, origin_message: Message) -> bool:
+    now = datetime.now(timezone.utc)
+    if neg.expires_at is not None and neg.expires_at <= now:
+        await db_session.commit()
+        if isinstance(origin_message, Message):
+            try:
+                await origin_message.answer("⚠️ انتهت المهلة الزمنية لجلسة التفاوض.")
+            except Exception:
+                pass
+        return False
+
     # Lock the associated offer
     offer_res = await db_session.execute(
         select(Offer).where(Offer.id == neg.offer_id).with_for_update()
     )
     offer = offer_res.scalar_one_or_none()
 
-    if not offer or offer.status != "negotiating":
+    if not offer or offer.status != "negotiating" or (offer.expires_at and offer.expires_at <= now):
         await db_session.commit()
         if isinstance(origin_message, Message):
             try:
