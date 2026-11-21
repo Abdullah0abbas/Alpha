@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 import logging
 from sqlalchemy.future import select
+from sqlalchemy import func
 
 from db.session import AsyncSessionLocal
 from db.models import Deal, Offer, Negotiation
@@ -56,6 +57,8 @@ from bot.utils.deal_card import push_deal_card
 from bot.utils.transitions import (
     can_expire_deal,
     can_expire_active_offer,
+    can_expire_pending_approval_offer,
+    PENDING_OFFER_APPROVAL_TIMEOUT_HOURS,
     can_remind_usdt_deposited,
     can_remind_syp_payment,
     can_remind_syp_confirmation,
@@ -303,6 +306,88 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
         except Exception as item_err:
             logger.error(f"Error deleting offer #{offer_id}: {item_err}", exc_info=True)
             await report_handled_exception(bot, item_err, context_label=f"حذف عرض منتهي #{offer_id} (process_expiries)")
+
+    # ----------------------------------------------------
+    # Branch 2b: Pending-Approval Offers (>24h Unreviewed Custom Note Auto-Expiry)
+    # ----------------------------------------------------
+    pending_note_cutoff = now - timedelta(hours=PENDING_OFFER_APPROVAL_TIMEOUT_HOURS)
+    pending_note_candidate_ids = []
+    try:
+        async with AsyncSessionLocal() as read_session:
+            pending_note_stmt = select(Offer.id).where(
+                Offer.status == "pending_approval",
+                func.coalesce(Offer.status_changed_at, Offer.created_at) <= pending_note_cutoff,
+            ).limit(100)
+            pending_note_res = await read_session.execute(pending_note_stmt)
+            pending_note_candidate_ids = list(pending_note_res.scalars().all())
+    except Exception as e:
+        logger.error(f"Error querying candidate pending_approval offer IDs: {e}", exc_info=True)
+
+    for offer_id in pending_note_candidate_ids:
+        try:
+            async with AsyncSessionLocal() as item_session:
+                offer_res = await item_session.execute(
+                    select(Offer).where(Offer.id == offer_id).with_for_update(skip_locked=True)
+                )
+                offer = offer_res.scalar_one_or_none()
+                if not offer:
+                    continue
+
+                if not can_expire_pending_approval_offer(
+                    offer.status,
+                    offer.status_changed_at,
+                    offer.created_at,
+                    now,
+                ):
+                    continue
+
+                offer.status = "expired"
+                offer.status_changed_at = now
+                offer_id_val = offer.id
+                user_id_val = offer.user_id
+                note_val = offer.note
+
+                add_audit(
+                    session=item_session,
+                    action="EXPIRE_PENDING_OFFER_NOTE",
+                    target_type="offer",
+                    target_id=str(offer_id_val),
+                    actor_id=None,
+                    actor_type="SYSTEM",
+                    details={
+                        "reason": "PENDING_NOTE_APPROVAL_24H_TIMEOUT",
+                        "user_id": user_id_val,
+                        "note": note_val,
+                    },
+                )
+                await item_session.commit()
+                deleted_offers_count += 1
+                logger.info(
+                    f"Pending-approval offer #{offer_id_val} auto-expired after {PENDING_OFFER_APPROVAL_TIMEOUT_HOURS}h at {now.isoformat()}"
+                )
+
+                expired_pending_text = (
+                    f"⌛ **انتهاء مهلة مراجعة العرض #{offer_id_val}**\n\n"
+                    f"انقضت مهلة `{PENDING_OFFER_APPROVAL_TIMEOUT_HOURS}` ساعة دون البت في الملاحظة المخصصة للعرض رقم `#{offer_id_val}`، "
+                    f"لذا تم إلغاء العرض تلقائياً وتحرير مقعده من سقف عروضك.\n"
+                    f"يمكنك إنشاء عرض جديد في أي وقت عبر /create_offer."
+                )
+                if user_id_val:
+                    try:
+                        await bot.send_message(
+                            user_id_val,
+                            expired_pending_text,
+                            parse_mode="Markdown",
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to notify user {user_id_val} of expired pending_approval offer #{offer_id_val}: {e}"
+                        )
+        except Exception as item_err:
+            logger.error(f"Error expiring pending_approval offer #{offer_id}: {item_err}", exc_info=True)
+            await report_handled_exception(
+                bot, item_err, context_label=f"إنهاء مهلة مراجعة عرض معلق #{offer_id} (process_expiries)"
+            )
 
     # ----------------------------------------------------
     # Branch 3: Post-Deposit 30-Minute Reminders (Deal Stays Open)

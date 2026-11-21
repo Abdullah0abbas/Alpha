@@ -116,12 +116,18 @@ async def _build_admin_dashboard_view(db_session: AsyncSession) -> tuple[str, In
     )
     active_offers_cnt = active_offers_res.scalar_one() or 0
 
+    pending_notes_res = await db_session.execute(
+        select(func.count(Offer.id)).where(Offer.status == "pending_approval")
+    )
+    pending_notes_cnt = pending_notes_res.scalar_one() or 0
+
     m_status_ar = "🟢 مفعل (الوصول محصور بالأدمن)" if is_m else "🔴 معطل (متاح لجميع المستخدمين)"
 
     text = (
         f"👑 **غرفة العمليات والإدارة — {BOT_NAME}**\n\n"
         f"📡 **نبض النظام اللحظي:**\n"
         f"▫️ **بانتظار الاعتماد أو التأكيد:** `{pending_cnt}` صفقة\n"
+        f"▫️ **عروض بانتظار اعتماد الملاحظة:** `{pending_notes_cnt}` عرض\n"
         f"▫️ **إجمالي الصفقات الجارية الآن:** `{active_deals_cnt}` صفقة\n"
         f"▫️ **العروض النشطة في السوق:** `{active_offers_cnt}` عرض\n"
         f"▫️ **حالة الصيانة:** {m_status_ar}\n\n"
@@ -132,7 +138,7 @@ async def _build_admin_dashboard_view(db_session: AsyncSession) -> tuple[str, In
         "• `/backup` — سحب نسخة احتياطية مشفرة فوراً\n\n"
         "اختر القسم المطلوب من لوحة التحكم:"
     )
-    return text, get_admin_main_kb(is_m, pending_cnt)
+    return text, get_admin_main_kb(is_m, pending_cnt + pending_notes_cnt)
 
 
 # ================= 1. ADMIN MENU ENTRYPOINT =================
@@ -472,11 +478,11 @@ async def send_user_card(event_or_msg, user: User, db_session: AsyncSession, is_
     )
     user_vol_usdt, user_vol_syp = vol_res.one()
 
-    # Active offers count
+    # Active & pending-approval offers count
     offers_cnt_res = await db_session.execute(
         select(func.count(Offer.id)).where(
             Offer.user_id == uid,
-            Offer.status.in_(["active", "negotiating", "reserved"])
+            Offer.status.in_(["active", "pending_approval", "negotiating", "reserved"])
         )
     )
     active_offers_cnt = offers_cnt_res.scalar_one() or 0
@@ -753,26 +759,40 @@ async def cq_admin_user_offers(callback: CallbackQuery, db_session: AsyncSession
     uid = int(callback.data.split("_")[-1])
     offers_res = await db_session.execute(
         select(Offer)
-        .where(Offer.user_id == uid, Offer.status.in_(["active", "negotiating", "reserved"]))
+        .where(Offer.user_id == uid, Offer.status.in_(["active", "pending_approval", "negotiating", "reserved"]))
         .order_by(Offer.id.desc())
     )
     offers = list(offers_res.scalars().all())
 
     lines = [
-        f"📦 **العروض النشطة للمستخدم** `{uid}`\n\n"
+        f"📦 **العروض النشطة والمعلقة للمستخدم** `{uid}`\n\n"
     ]
     kb_rows = []
 
     if not offers:
-        lines.append("لا توجد أي عروض نشطة أو محجوزة لهذا المستخدم حالياً.")
+        lines.append("لا توجد أي عروض نشطة أو معلقة أو محجوزة لهذا المستخدم حالياً.")
     else:
         for o in offers:
             t_ar = "🔴 بيع USDT" if o.offer_type == "sell" else "🟢 شراء USDT"
+            status_badge = "⏳ بانتظار موافقة ملاحظة (`pending_approval`)" if o.status == "pending_approval" else f"`{o.status}`"
+            note_line = f"   • 📝 الملاحظة: `{escape_markdown(str(o.note))}`\n" if o.note else ""
             lines.append(
-                f"🔹 **عرض #{o.id}** ({t_ar}) — الحالة: `{o.status}`\n"
+                f"🔹 **عرض #{o.id}** ({t_ar}) — الحالة: {status_badge}\n"
                 f"   • الكمية: `{format_usdt(o.min_limit)}` - `{format_usdt(o.max_limit)} USDT` | السعر: `{format_syp(o.rate)}` ل.س\n"
+                f"{note_line}"
             )
-            if o.status in ["active", "negotiating"]:
+            if o.status == "pending_approval":
+                kb_rows.append([
+                    InlineKeyboardButton(
+                        text=f"✅ موافقة ونشر #{o.id}",
+                        callback_data=f"adm_note_app_{o.id}"
+                    ),
+                    InlineKeyboardButton(
+                        text=f"❌ رفض مع السبب #{o.id}",
+                        callback_data=f"adm_note_rej_{o.id}"
+                    ),
+                ])
+            if o.status in ["active", "pending_approval", "negotiating"]:
                 kb_rows.append([
                     InlineKeyboardButton(
                         text=f"🗑️ حذف وإلغاء العرض #{o.id} من السوق",
@@ -978,23 +998,36 @@ async def _render_live_ops_center(
             select(func.count(Deal.id)).where(Deal.status == "SYP_PAYMENT_SENT")
         )
         syp_cnt = syp_cnt_res.scalar() or 0
-        total_pending = app_cnt + syp_cnt
+        notes_cnt_res = await db_session.execute(
+            select(func.count(Offer.id)).where(Offer.status == "pending_approval")
+        )
+        notes_cnt = notes_cnt_res.scalar() or 0
+        total_pending = app_cnt + syp_cnt + notes_cnt
 
         res = await db_session.execute(
             select(Deal)
             .where(Deal.status.in_(["ADMIN_APPROVAL", "SYP_PAYMENT_SENT"]))
             .order_by(Deal.created_at.desc())
-            .limit(12)
+            .limit(10)
         )
         deals = list(res.scalars().all())
 
+        pending_offers_res = await db_session.execute(
+            select(Offer)
+            .where(Offer.status == "pending_approval")
+            .order_by(Offer.id.desc())
+            .limit(10)
+        )
+        pending_offers = list(pending_offers_res.scalars().all())
+
         lines = [
-            f"📡 **غرفة العمليات — صفقات بانتظار الاعتماد والتأكيد ({total_pending})**\n"
+            f"📡 **غرفة العمليات — بانتظار الاعتماد والتأكيد ({total_pending})**\n"
             f"▫️ **بانتظار إطلاق الضمان (`ADMIN_APPROVAL`):** `{app_cnt}`\n"
-            f"▫️ **بانتظار تأكيد استلام الليرة (`SYP_PAYMENT_SENT`):** `{syp_cnt}`\n\n"
+            f"▫️ **بانتظار تأكيد استلام الليرة (`SYP_PAYMENT_SENT`):** `{syp_cnt}`\n"
+            f"▫️ **عروض بانتظار اعتماد الملاحظة (`pending_approval`):** `{notes_cnt}`\n\n"
         ]
-        if not deals:
-            lines.append("✅ لا توجد أي صفقات معلقة بانتظار التدخل حالياً.")
+        if not deals and not pending_offers:
+            lines.append("✅ لا توجد أي صفقات أو عروض معلقة بانتظار التدخل حالياً.")
         else:
             for d in deals:
                 badge = "🛡️ إطلاق ضمان" if d.status == "ADMIN_APPROVAL" else "💸 تأكيد ليرة"
@@ -1008,6 +1041,24 @@ async def _render_live_ops_center(
                         text=f"🔍 فتح وفحص صفقة #{d.id} ({badge})",
                         callback_data=f"adm_inspect_deal_{d.id}"
                     )
+                ])
+            for o in pending_offers:
+                t_ar = "🔴 بيع" if o.offer_type == "sell" else "🟢 شراء"
+                safe_note = escape_markdown(str(o.note or ""))
+                lines.append(
+                    f"📝 **عرض #{o.id}** ({t_ar} — ملاحظة مخصصة) | التاجر: `{o.user_id}`\n"
+                    f"   • الكمية: `{format_usdt(o.min_limit)}` - `{format_usdt(o.max_limit)} USDT` | السعر: `{format_syp(o.rate)}` ل.س\n"
+                    f"   • الملاحظة: `{safe_note}`\n"
+                )
+                item_rows.append([
+                    InlineKeyboardButton(
+                        text=f"✅ موافقة ونشر #{o.id}",
+                        callback_data=f"adm_note_app_{o.id}"
+                    ),
+                    InlineKeyboardButton(
+                        text=f"❌ رفض مع السبب #{o.id}",
+                        callback_data=f"adm_note_rej_{o.id}"
+                    ),
                 ])
 
     elif filter_key == "active":
@@ -1071,27 +1122,35 @@ async def _render_live_ops_center(
     else:  # offers
         res = await db_session.execute(
             select(Offer)
-            .where(Offer.status.in_(["active", "negotiating", "reserved"]))
+            .where(Offer.status.in_(["active", "pending_approval", "negotiating", "reserved"]))
             .order_by(Offer.id.desc())
             .limit(12)
         )
         offers = list(res.scalars().all())
         lines = [
-            f"📦 **غرفة العمليات — العروض النشطة في السوق ({len(offers)})**\n\n"
+            f"📦 **غرفة العمليات — العروض النشطة والمعلقة في السوق ({len(offers)})**\n\n"
         ]
         if not offers:
-            lines.append("لا توجد عروض نشطة في السوق حالياً.")
+            lines.append("لا توجد عروض نشطة أو معلقة في السوق حالياً.")
         else:
             for o in offers:
                 t_ar = "🔴 بيع" if o.offer_type == "sell" else "🟢 شراء"
+                status_label = "⏳ بانتظار موافقة ملاحظة" if o.status == "pending_approval" else f"`{o.status}`"
+                note_line = f"   • 📝 الملاحظة: `{escape_markdown(str(o.note))}`\n" if o.note else ""
                 lines.append(
-                    f"🔹 **عرض #{o.id}** ({t_ar}) — `{o.status}` | التاجر: `{o.user_id}`\n"
+                    f"🔹 **عرض #{o.id}** ({t_ar}) — {status_label} | التاجر: `{o.user_id}`\n"
                     f"   • الكمية: `{format_usdt(o.min_limit)}` - `{format_usdt(o.max_limit)} USDT` | السعر: `{format_syp(o.rate)}` ل.س\n"
+                    f"{note_line}"
                 )
+                if o.status == "pending_approval":
+                    item_rows.append([
+                        InlineKeyboardButton(text=f"✅ موافقة ونشر #{o.id}", callback_data=f"adm_note_app_{o.id}"),
+                        InlineKeyboardButton(text=f"❌ رفض مع السبب #{o.id}", callback_data=f"adm_note_rej_{o.id}"),
+                    ])
                 row_btns = [
                     InlineKeyboardButton(text=f"👤 التاجر {o.user_id}", callback_data=f"adm_view_user_{o.user_id}")
                 ]
-                if o.status in ["active", "negotiating"]:
+                if o.status in ["active", "pending_approval", "negotiating"]:
                     row_btns.append(
                         InlineKeyboardButton(text=f"🗑️ حذف عرض #{o.id}", callback_data=f"adm_del_offer_{o.id}_0")
                     )
@@ -2101,6 +2160,7 @@ ACTION_TITLES = {
     "ADMIN_DELETE_OFFER": "🗑️ حذف عرض إدارياً",
     "ADMIN_APPROVE_OFFER_NOTE": "✅ موافقة ونشر عرض بملاحظة مخصصة",
     "ADMIN_REJECT_OFFER_NOTE": "❌ رفض عرض بملاحظة مخصصة",
+    "EXPIRE_PENDING_OFFER_NOTE": "⌛ انتهاء مهلة مراجعة ملاحظة عرض",
     "BAN_USER": "🚫 حظر مستخدم",
     "UNBAN_USER": "✅ فك حظر مستخدم",
     "MAINTENANCE_MODE_ON": "🟢 تفعيل الصيانة",

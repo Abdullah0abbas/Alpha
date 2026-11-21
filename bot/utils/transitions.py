@@ -42,6 +42,35 @@ def can_expire_active_offer(
     return expires_at <= current_time
 
 
+PENDING_OFFER_APPROVAL_TIMEOUT_HOURS = 24
+
+
+def can_expire_pending_approval_offer(
+    current_status: str,
+    status_changed_at: Optional[datetime],
+    created_at: Optional[datetime] = None,
+    now: Optional[datetime] = None,
+    timeout_hours: float = PENDING_OFFER_APPROVAL_TIMEOUT_HOURS,
+) -> bool:
+    """
+    Checks if a 'pending_approval' offer (waiting for admin review of custom note)
+    has exceeded the 24-hour review window and should be expired automatically
+    to free the user's offer cap slot.
+    """
+    if current_status != "pending_approval":
+        return False
+    ref_time = status_changed_at or created_at
+    if ref_time is None:
+        return False
+    current_time = now or datetime.now(timezone.utc)
+    if ref_time.tzinfo is None:
+        ref_time = ref_time.replace(tzinfo=timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    elapsed_seconds = (current_time - ref_time).total_seconds()
+    return elapsed_seconds >= timeout_hours * 3600
+
+
 def can_remind_usdt_deposited(
     current_status: str,
     expires_at: Optional[datetime],

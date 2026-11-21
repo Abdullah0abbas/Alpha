@@ -69,13 +69,9 @@ def upgrade() -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_open_negotiation_per_offer "
         "ON negotiations(offer_id) WHERE status IN ('PENDING_MAKER','PENDING_TAKER');"
     )
-    op.execute("ALTER TABLE offers ADD COLUMN IF NOT EXISTS note VARCHAR(60);")
-    op.execute("ALTER TABLE offers ADD COLUMN IF NOT EXISTS duration_hours NUMERIC DEFAULT 4.0;")
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE offers DROP COLUMN IF EXISTS duration_hours;")
-    op.execute("ALTER TABLE offers DROP COLUMN IF EXISTS note;")
     op.execute("DROP INDEX IF EXISTS uq_open_negotiation_per_offer;")
     op.execute("DROP INDEX IF EXISTS uq_open_deal_per_offer;")
     op.execute("ALTER TABLE deals DROP CONSTRAINT IF EXISTS chk_deals_different_parties;")
