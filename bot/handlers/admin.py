@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, or_
 
-from db.models import User, Deal, Offer, SystemSetting, Dispute, DealRating, PaymentProof, AuditLog
+from db.models import User, Deal, Offer, SystemSetting, Dispute, DealRating, PaymentProof, AuditLog, Negotiation
 from bot.states.flow_states import AdminFSM
 from bot.middlewares.maintenance import set_cached_maintenance
 from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown, format_local_datetime
