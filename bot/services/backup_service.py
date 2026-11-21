@@ -71,6 +71,9 @@ async def create_database_backup() -> tuple[str, str, dict]:
     stats = {}
 
     async with AsyncSessionLocal() as session:
+        # Enforce a single consistent point-in-time snapshot across all tables & deposit_index_seq
+        await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+
         # 1. Users
         users_res = await session.execute(select(User))
         users = users_res.scalars().all()

@@ -351,7 +351,7 @@ async def process_offer_rate(message: Message, state: FSMContext):
     """Receive and validate exchange rate, then proceed directly to min limit or summary."""
     try:
         rate = clean_numeric_input(message.text)
-        if not rate or rate < Decimal("1") or rate > Decimal("10000000"):
+        if not rate or rate <= 0 or rate > Decimal("999999999"):
             raise ValueError()
 
         rate_val = str(rate)
@@ -428,7 +428,7 @@ async def process_min_limit(message: Message, state: FSMContext):
     """Receive and validate min limit, then proceed directly to max limit or summary."""
     try:
         min_limit = clean_numeric_input(message.text)
-        if not min_limit or min_limit < Decimal("0.01") or min_limit > Decimal("1000000"):
+        if not min_limit or min_limit <= 0 or min_limit > Decimal("999999999"):
             raise ValueError()
 
         min_val = str(min_limit)
@@ -510,7 +510,7 @@ async def process_max_limit(message: Message, state: FSMContext):
     """Receive and validate max limit, then proceed directly to payment methods or summary."""
     try:
         max_limit = clean_numeric_input(message.text)
-        if not max_limit or max_limit < Decimal("0.01") or max_limit > Decimal("1000000"):
+        if not max_limit or max_limit <= 0 or max_limit > Decimal("999999999"):
             raise ValueError()
 
         data = await state.get_data()

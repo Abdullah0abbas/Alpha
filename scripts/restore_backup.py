@@ -114,6 +114,16 @@ def _parse_row(table_name: str, model_cls: Any, raw_row: dict[str, Any]) -> dict
             cleaned[k] = datetime.fromisoformat(v)
         else:
             cleaned[k] = v
+
+    # Backfill NOT NULL fee columns if restoring from an older 2.x/3.x backup where they were absent or null
+    if table_name == "deals":
+        if cleaned.get("fee_usdt") is None:
+            cleaned["fee_usdt"] = Decimal("0.0")
+        if cleaned.get("seller_fee_usdt") is None:
+            cleaned["seller_fee_usdt"] = Decimal("0.0")
+        if cleaned.get("buyer_fee_usdt") is None:
+            cleaned["buyer_fee_usdt"] = Decimal("0.0")
+
     return cleaned
 
 
@@ -188,41 +198,43 @@ async def run_restore(filepath: str, dry_run: bool = False, force: bool = False)
     await ensure_schema_updated()
 
     try:
-        async with engine.begin() as conn:
-            # 1. Check whether target tables are empty
-            non_empty: list[tuple[str, int]] = []
+        # 1. Check whether target tables are empty in a short read block (closed before interactive input)
+        non_empty: list[tuple[str, int]] = []
+        async with engine.connect() as read_conn:
             for tbl_name, _ in ORDERED_TABLES:
-                res = await conn.execute(text(f"SELECT COUNT(*) FROM {tbl_name}"))
+                res = await read_conn.execute(text(f"SELECT COUNT(*) FROM {tbl_name}"))
                 cnt = int(res.scalar() or 0)
                 if cnt > 0:
                     non_empty.append((tbl_name, cnt))
 
-            if non_empty and not force:
-                summary = ", ".join(f"{t}({c})" for t, c in non_empty)
-                print(
-                    f"[ABORT] Target database '{db_name}' ({db_host}) is not empty: {summary}. "
-                    "Use --force to truncate and overwrite existing data.",
-                    file=sys.stderr,
-                )
+        if non_empty and not force:
+            summary = ", ".join(f"{t}({c})" for t, c in non_empty)
+            print(
+                f"[ABORT] Target database '{db_name}' ({db_host}) is not empty: {summary}. "
+                "Use --force to truncate and overwrite existing data.",
+                file=sys.stderr,
+            )
+            return 2
+
+        if non_empty and force:
+            summary = ", ".join(f"{t}({c})" for t, c in non_empty)
+            print(
+                f"\n⚠️  [WARNING] You are about to PERMANENTLY WIPE all existing data in:\n"
+                f"    • Host     : {db_host}\n"
+                f"    • Database : {db_name}\n"
+                f"    • Non-empty: {summary}\n"
+            )
+            try:
+                confirm = input("Type 'YES' (in uppercase) to confirm destructive overwrite: ").strip()
+            except EOFError:
+                confirm = ""
+            if confirm != "YES":
+                print("[ABORT] Confirmation not received. Restore cancelled safely.", file=sys.stderr)
                 return 2
 
+        async with engine.begin() as conn:
             if non_empty and force:
-                summary = ", ".join(f"{t}({c})" for t, c in non_empty)
-                print(
-                    f"\n⚠️  [WARNING] You are about to PERMANENTLY WIPE all existing data in:\n"
-                    f"    • Host     : {db_host}\n"
-                    f"    • Database : {db_name}\n"
-                    f"    • Non-empty: {summary}\n"
-                )
-                try:
-                    confirm = input("Type 'YES' (in uppercase) to confirm destructive overwrite: ").strip()
-                except EOFError:
-                    confirm = ""
-                if confirm != "YES":
-                    print("[ABORT] Confirmation not received. Restore cancelled safely.", file=sys.stderr)
-                    return 2
-
-                # Truncate in reverse dependency order inside the same transaction
+                # Truncate in reverse dependency order inside the atomic write transaction
                 rev_names = ", ".join(t for t, _ in reversed(ORDERED_TABLES))
                 await conn.execute(text(f"TRUNCATE TABLE {rev_names} RESTART IDENTITY CASCADE"))
                 print(f"[INFO] Existing data in '{db_name}' truncated (--force confirmed).")

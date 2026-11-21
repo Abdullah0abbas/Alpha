@@ -100,16 +100,10 @@ async def reject_deal_request(callback: CallbackQuery, db_session: AsyncSession)
         await callback.answer("تم اتخاذ قرار مسبقاً بشأن هذا الطلب.", show_alert=True)
         return
 
-    now = datetime.now(timezone.utc)
     deal.status = "CANCELLED"
     if offer and offer.status == "reserved":
-        if offer.expires_at and offer.expires_at <= now:
-            offer.status = "expired"
-            offer.status_changed_at = now
-            offer.expires_at = None
-        else:
-            offer.status = "active"
-            offer.status_changed_at = now
+        offer.status = "active"
+        offer.status_changed_at = datetime.now(timezone.utc)
 
     add_audit(
         session=db_session,
@@ -271,17 +265,11 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
 
     actor_id = callback.from_user.id
 
-    now = datetime.now(timezone.utc)
     deal.status = "CANCELLED"
 
     if offer and offer.status == "reserved":
-        if offer.expires_at and offer.expires_at <= now:
-            offer.status = "expired"
-            offer.status_changed_at = now
-            offer.expires_at = None
-        else:
-            offer.status = "active"
-            offer.status_changed_at = now
+        offer.status = "active"
+        offer.status_changed_at = datetime.now(timezone.utc)
 
     add_audit(
         session=db_session,

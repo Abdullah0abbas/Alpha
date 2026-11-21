@@ -129,7 +129,7 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
     ])
     try:
         amount_usdt = clean_numeric_input(message.text)
-        if not amount_usdt or amount_usdt < Decimal("0.01") or amount_usdt > Decimal("1000000"):
+        if not amount_usdt or amount_usdt <= 0 or amount_usdt > Decimal("999999999"):
             raise ValueError("Invalid amount")
     except Exception:
         await message.answer(

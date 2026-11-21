@@ -172,6 +172,9 @@ async def ensure_schema_updated():
 
     try:
         async with engine.begin() as conn:
+            # Serialize schema synchronization across processes/restarts with a transaction-level advisory lock
+            await conn.execute(text("SELECT pg_advisory_xact_lock(74839201);"))
+
             # (a) First sync Base metadata tables
             try:
                 await conn.run_sync(Base.metadata.create_all)
