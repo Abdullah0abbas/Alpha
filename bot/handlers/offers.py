@@ -15,6 +15,7 @@ from bot.states.flow_states import OfferCreateFSM
 from config.settings import settings
 from bot.middlewares.rate_limit import check_and_record_rate_limit
 from bot.services.channel import update_channel_offer_message, build_channel_offer_message
+from bot.services.admin_notifier import dispatch_admin_notification
 from bot.utils.formatters import (
     format_syp,
     format_usdt,
@@ -25,6 +26,8 @@ from bot.utils.formatters import (
     clean_numeric_input,
     format_local_datetime,
     MIN_DEAL_AMOUNT_USDT,
+    escape_markdown,
+    safe_username,
 )
 from bot.utils.validators import (
     validate_bep20_address,
@@ -42,6 +45,8 @@ from bot.utils.offer_wizard import (
     format_wizard_summary,
     format_duration_hours_minutes,
     format_wizard_draft_header,
+    SHAM_CASH_NOTE_SUGGESTIONS,
+    MAX_OFFER_NOTE_LENGTH,
 )
 from bot.utils.branding import BOT_NAME
 
@@ -125,6 +130,9 @@ def get_wizard_summary_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="✏️ التفاوض", callback_data="wiz_jump_neg"),
+            InlineKeyboardButton(text="✏️ الملاحظة", callback_data="wiz_jump_note")
+        ],
+        [
             InlineKeyboardButton(text="✏️ المدة", callback_data="wiz_jump_dur")
         ],
         [
@@ -261,6 +269,8 @@ async def _render_current_step(message: Message, state: FSMContext, db_session: 
         await _show_payout_prompt(message, state, db_session, user_id=user_id)
     elif cur_state in (OfferCreateFSM.waiting_for_negotiable_decision.state, OfferCreateFSM.waiting_for_negotiable_type.state):
         await _show_negotiation_decision(message, state)
+    elif cur_state == OfferCreateFSM.waiting_for_note.state:
+        await _show_note_step(message, state)
     elif cur_state in (OfferCreateFSM.waiting_for_duration_choice.state, OfferCreateFSM.waiting_for_custom_duration.state, OfferCreateFSM.confirm_custom_duration.state):
         await _show_duration_choice(message, state)
     elif cur_state == OfferCreateFSM.waiting_for_confirm_publish.state:
@@ -1051,8 +1061,8 @@ async def process_negotiable_decision(callback: CallbackQuery, state: FSMContext
             await state.update_data(return_to_summary=False)
             await _show_wizard_summary(callback.message, state)
         else:
-            await _show_duration_choice(callback.message, state)
-            await state.set_state(OfferCreateFSM.waiting_for_duration_choice)
+            await _show_note_step(callback.message, state)
+            await state.set_state(OfferCreateFSM.waiting_for_note)
     await callback.answer()
 
 
@@ -1083,9 +1093,160 @@ async def process_negotiable_type(callback: CallbackQuery, state: FSMContext):
         await state.update_data(return_to_summary=False)
         await _show_wizard_summary(callback.message, state)
     else:
+        await _show_note_step(callback.message, state)
+        await state.set_state(OfferCreateFSM.waiting_for_note)
+    await callback.answer()
+
+
+# ==============================================================================
+# STEP 7.5: OFFER NOTES (SHAM CASH SUGGESTIONS OR CUSTOM NOTE)
+# ==============================================================================
+
+def get_offer_note_kb(payment_methods: list[str] | None) -> InlineKeyboardMarkup:
+    """Build note step keyboard: includes 4 Sham Cash suggestions when Sham Cash is selected."""
+    rows = []
+    methods = payment_methods or []
+    if "شام كاش ليرة" in methods:
+        for idx, suggestion in enumerate(SHAM_CASH_NOTE_SUGGESTIONS):
+            rows.append([InlineKeyboardButton(text=suggestion, callback_data=f"note_sug_{idx}")])
+
+    rows.append([InlineKeyboardButton(text="تخطي", callback_data="note_skip")])
+    rows.append([
+        InlineKeyboardButton(text="رجوع ◀️", callback_data="wiz_back_note"),
+        InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _show_note_step(message: Message, state: FSMContext | None = None):
+    """Render offer notes step (with Sham Cash quick suggestions if applicable)."""
+    data = await state.get_data() if state else {}
+    header = format_wizard_draft_header(data, "note")
+    methods = data.get("payment_methods", [])
+    kb = get_offer_note_kb(methods)
+    text = (
+        f"{header}"
+        "📝 **أدخل ملاحظاتك (اختياري، حتى 40 حرف) أو اضغط تخطي للمتابعة بدون ملاحظات.**"
+    )
+    if hasattr(message, "edit_text"):
+        try:
+            await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+            return
+        except Exception:
+            pass
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@offers_router.callback_query(F.data == "wiz_back_note")
+async def back_from_note_step(callback: CallbackQuery, state: FSMContext):
+    """Navigate back from Note step to Negotiation decision."""
+    await _show_negotiation_decision(callback.message, state)
+    await state.set_state(OfferCreateFSM.waiting_for_negotiable_decision)
+    await callback.answer()
+
+
+@offers_router.callback_query(OfferCreateFSM.waiting_for_note, F.data.startswith("note_sug_"))
+async def process_note_suggestion(callback: CallbackQuery, state: FSMContext):
+    """Select one of the pre-approved Sham Cash note suggestions (publishes immediately without manual review)."""
+    idx_str = callback.data.replace("note_sug_", "")
+    if not idx_str.isdigit():
+        await callback.answer("خيار غير صالح.", show_alert=True)
+        return
+    idx = int(idx_str)
+    if idx < 0 or idx >= len(SHAM_CASH_NOTE_SUGGESTIONS):
+        await callback.answer("خيار غير صالح.", show_alert=True)
+        return
+
+    chosen_note = SHAM_CASH_NOTE_SUGGESTIONS[idx]
+    data = await state.get_data()
+    history = push_wizard_step(
+        data.get("step_history", []),
+        "note",
+        {"note": chosen_note, "is_custom_note": False}
+    )
+    await state.update_data(
+        note=chosen_note,
+        is_custom_note=False,
+        step_history=history
+    )
+
+    if data.get("return_to_summary"):
+        await state.update_data(return_to_summary=False)
+        await _show_wizard_summary(callback.message, state)
+    else:
         await _show_duration_choice(callback.message, state)
         await state.set_state(OfferCreateFSM.waiting_for_duration_choice)
     await callback.answer()
+
+
+@offers_router.callback_query(OfferCreateFSM.waiting_for_note, F.data == "note_skip")
+async def process_note_skip(callback: CallbackQuery, state: FSMContext):
+    """Skip note step (no note attached to offer)."""
+    data = await state.get_data()
+    history = push_wizard_step(
+        data.get("step_history", []),
+        "note",
+        {"note": None, "is_custom_note": False}
+    )
+    await state.update_data(
+        note=None,
+        is_custom_note=False,
+        step_history=history
+    )
+
+    if data.get("return_to_summary"):
+        await state.update_data(return_to_summary=False)
+        await _show_wizard_summary(callback.message, state)
+    else:
+        await _show_duration_choice(callback.message, state)
+        await state.set_state(OfferCreateFSM.waiting_for_duration_choice)
+    await callback.answer()
+
+
+@offers_router.message(OfferCreateFSM.waiting_for_note)
+async def process_custom_note_text(message: Message, state: FSMContext):
+    """Handle custom note text typed by the user (max 40 characters; requires admin approval unless identical to a preset)."""
+    raw_text = (message.text or "").strip()
+    cleaned_note = " ".join(raw_text.split())
+    data = await state.get_data()
+    methods = data.get("payment_methods", [])
+
+    if not cleaned_note:
+        await message.answer(
+            "⚠️ يرجى كتابة نص الملاحظة (حتى 40 حرفاً) أو الضغط على **تخطي**:",
+            reply_markup=get_offer_note_kb(methods),
+            parse_mode="Markdown"
+        )
+        return
+
+    if len(cleaned_note) > MAX_OFFER_NOTE_LENGTH:
+        await message.answer(
+            f"⚠️ **الملاحظة طويلة جداً ({len(cleaned_note)} حرفاً)**\n\n"
+            f"الحد الأقصى المسموح به هو `{MAX_OFFER_NOTE_LENGTH}` حرفاً.\n"
+            f"يرجى اختصار الملاحظة وإعادة إرسالها أو الضغط على **تخطي**:",
+            reply_markup=get_offer_note_kb(methods),
+            parse_mode="Markdown"
+        )
+        return
+
+    is_custom = cleaned_note not in SHAM_CASH_NOTE_SUGGESTIONS
+    history = push_wizard_step(
+        data.get("step_history", []),
+        "note",
+        {"note": cleaned_note, "is_custom_note": is_custom}
+    )
+    await state.update_data(
+        note=cleaned_note,
+        is_custom_note=is_custom,
+        step_history=history
+    )
+
+    if data.get("return_to_summary"):
+        await state.update_data(return_to_summary=False)
+        await _show_wizard_summary(message, state)
+    else:
+        await _show_duration_choice(message, state)
+        await state.set_state(OfferCreateFSM.waiting_for_duration_choice)
 
 
 # ==============================================================================
@@ -1118,10 +1279,10 @@ async def _show_duration_choice(message: Message, state: FSMContext | None = Non
 
 
 @offers_router.callback_query(F.data == "wiz_back_duration")
-async def back_to_negotiation_step(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Duration to Negotiation choices."""
-    await _show_negotiation_decision(callback.message, state)
-    await state.set_state(OfferCreateFSM.waiting_for_negotiable_decision)
+async def back_to_note_step(callback: CallbackQuery, state: FSMContext):
+    """Navigate back from Duration to Offer Notes step."""
+    await _show_note_step(callback.message, state)
+    await state.set_state(OfferCreateFSM.waiting_for_note)
     await callback.answer()
 
 
@@ -1368,6 +1529,15 @@ async def jump_edit_negotiation(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@offers_router.callback_query(OfferCreateFSM.waiting_for_confirm_publish, F.data == "wiz_jump_note")
+async def jump_edit_note(callback: CallbackQuery, state: FSMContext):
+    """Jump from summary to edit offer note."""
+    await state.update_data(return_to_summary=True)
+    await _show_note_step(callback.message, state)
+    await state.set_state(OfferCreateFSM.waiting_for_note)
+    await callback.answer()
+
+
 @offers_router.callback_query(OfferCreateFSM.waiting_for_confirm_publish, F.data == "wiz_jump_dur")
 async def jump_edit_duration(callback: CallbackQuery, state: FSMContext):
     """Jump from summary to edit offer duration."""
@@ -1400,19 +1570,19 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         await callback.answer(f"⚠️ {err_msg}", show_alert=True)
         return
 
-    # 2. Section 6.1.1: Active offers cap check (max 5 active offers for non-admins)
+    # 2. Section 6.1.1: Active offers cap check (max 5 active/pending offers for non-admins)
     if user_id not in settings.ADMIN_IDS:
         count_res = await db_session.execute(
             select(func.count(Offer.id)).where(
                 Offer.user_id == user_id,
-                Offer.status.in_(['active', 'reserved', 'negotiating'])
+                Offer.status.in_(['active', 'reserved', 'negotiating', 'pending_approval'])
             )
         )
         active_offers_count = count_res.scalar() or 0
         if active_offers_count >= 5:
             await state.update_data(is_publishing=False)
             await callback.answer(
-                "⚠️ تجاوزت الحد الأقصى المسموح به (5 عروض نشطة). يرجى إلغاء أو إكمال أحد عروضك الحالية أولاً.",
+                "⚠️ تجاوزت الحد الأقصى المسموح به (5 عروض نشطة أو قيد المراجعة). يرجى إلغاء أو إكمال أحد عروضك الحالية أولاً.",
                 show_alert=True
             )
             return
@@ -1428,13 +1598,16 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
             )
             return
 
-
     # 4. Extract data and prepare timestamps
     now = datetime.now(timezone.utc)
     duration_hours = float(data.get("duration_hours", 4.0))
-    expires_at = now + timedelta(hours=duration_hours)
     primary_payout_str = extract_primary_payout_info(data)
     payout_details_json = data.get("payout_details", {}) or {}
+    note_val = data.get("note")
+    is_custom_note = bool(data.get("is_custom_note", False) and note_val)
+
+    initial_status = "pending_approval" if is_custom_note else "active"
+    expires_at = None if is_custom_note else (now + timedelta(hours=duration_hours))
 
     new_offer = Offer(
         user_id=user_id,
@@ -1445,10 +1618,12 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         payment_methods=data["payment_methods"],
         payout_info=primary_payout_str,  # Backward compatibility with deals.py
         payout_details=payout_details_json,  # New JSONB storage
+        note=note_val,
+        duration_hours=Decimal(str(duration_hours)),
         negotiable=data.get("negotiable", False),
         negotiable_type=data.get("negotiable_type", "none"),
         expires_at=expires_at,
-        status="active",
+        status=initial_status,
         status_changed_at=now
     )
     db_session.add(new_offer)
@@ -1470,6 +1645,59 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         "both": "متاح على السعر والكمية ⚖️"
     }
     neg_status_ar = neg_type_labels.get(new_offer.negotiable_type, "غير متاح 🔒")
+    note_line_md = f"📝 **الملاحظة :** {escape_markdown(str(new_offer.note))}\n" if new_offer.note else ""
+
+    if is_custom_note:
+        await callback.message.edit_text(
+            f"⏳ **تم إرسال العرض للمراجعة — فرصة رقم : {new_offer.id}**\n"
+            "〰️〰️〰️〰️〰️〰️〰️\n"
+            f"⚖️ **النوع :** {offer_type_ar}\n"
+            f"💰 **الكمية :** من `{min_str}` إلى `{max_str} USDT`\n"
+            f"📊 **سعر الصرف :** `{rate_str}` ل.س\n"
+            f"🏦 **طرق الدفع :** {methods_str}\n"
+            f"🤝 **التفاوض :** {neg_status_ar}\n"
+            f"{note_line_md}"
+            f"⏳ **مدة المعاملة :** {duration_str} *(تبدأ فور الاعتماد)*\n"
+            "〰️〰️〰️〰️〰️〰️〰️\n"
+            "ℹ️ نظراً لإضافة **ملاحظة مخصصة**، تم إرسال العرض إلى الإدارة للمراجعة السريعة، وسيتم نشره تلقائياً في السوق والقناة فور الموافقة عليه.",
+            parse_mode="Markdown"
+        )
+        await state.clear()
+        await callback.answer("تم إرسال العرض لموافقة الإدارة.")
+
+        trader_res = await db_session.execute(select(User).where(User.telegram_id == user_id))
+        trader_user = trader_res.scalar_one_or_none()
+        trader_tag = safe_username(trader_user.username if trader_user else callback.from_user.username)
+        trader_nick = escape_markdown(trader_user.nickname) if (trader_user and trader_user.nickname) else "—"
+
+        admin_card_text = (
+            f"📝 **طلب اعتماد عرض بملاحظة مخصصة — عرض #{new_offer.id}**\n"
+            "〰️〰️〰️〰️〰️〰️〰️\n"
+            f"👤 **صاحب العرض:** `{user_id}` ({trader_tag} | اللقب: {trader_nick})\n"
+            f"⚖️ **النوع:** {offer_type_ar}\n"
+            f"💰 **الكمية:** من `{min_str}` إلى `{max_str} USDT`\n"
+            f"📊 **سعر الصرف:** `{rate_str}` ل.س\n"
+            f"🏦 **طرق الدفع:** {methods_str}\n"
+            f"🤝 **التفاوض:** {neg_status_ar}\n"
+            f"⏳ **المدة المطلوبة:** {duration_str}\n"
+            "〰️〰️〰️〰️〰️〰️〰️\n"
+            f"📝 **الملاحظة المخصصة للمراجعة:**\n"
+            f"`{escape_markdown(str(new_offer.note))}`"
+        )
+        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ موافقة ونشر العرض", callback_data=f"adm_note_app_{new_offer.id}"),
+                InlineKeyboardButton(text="❌ رفض مع ذكر السبب", callback_data=f"adm_note_rej_{new_offer.id}")
+            ]
+        ])
+        await dispatch_admin_notification(
+            bot=bot,
+            category="notes",
+            text=admin_card_text,
+            reply_markup=admin_kb,
+            parse_mode="Markdown"
+        )
+        return
 
     await callback.message.edit_text(
         f"✅ **تم نشر العرض بنجاح — فرصة رقم : {new_offer.id}**\n"
@@ -1479,6 +1707,7 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         f"📊 **سعر الصرف :** `{rate_str}` ل.س\n"
         f"🏦 **طرق الدفع :** {methods_str}\n"
         f"🤝 **التفاوض :** {neg_status_ar}\n"
+        f"{note_line_md}"
         f"⏳ **مدة المعاملة :** {duration_str}",
         parse_mode="Markdown"
     )
@@ -1548,6 +1777,7 @@ async def list_offers(message: Message, db_session: AsyncSession):
             "both": "متاح على السعر والكمية ⚖️"
         }
         neg_str = neg_type_labels.get(offer.negotiable_type, "غير متاح 🔒") if offer.negotiable else "غير متاح 🔒"
+        note_line = f"📝 **الملاحظة :** {escape_markdown(str(offer.note))}\n" if offer.note else ""
 
         text = (
             f"📦 **فرصة رقم : {offer.id}** (عرض #{offer.id})\n"
@@ -1557,6 +1787,7 @@ async def list_offers(message: Message, db_session: AsyncSession):
             f"📊 **سعر الصرف :** `{rate_str}` ل.س\n"
             f"🏦 **طرق الدفع :** {methods_str}\n"
             f"🤝 **التفاوض :** {neg_str}\n"
+            f"{note_line}"
             f"⏳ **مدة المعاملة :** {remaining_str}"
         )
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")

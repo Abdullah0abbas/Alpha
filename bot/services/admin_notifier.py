@@ -21,6 +21,7 @@ CHANNEL_CATEGORY_MAP = {
     "disputes": "ADMIN_DISPUTES_CHANNEL_ID",
     "errors": "ADMIN_ERRORS_CHANNEL_ID",
     "backups": "ADMIN_BACKUPS_CHANNEL_ID",
+    "notes": "ADMIN_NOTES_CHANNEL_ID",
 }
 
 

@@ -117,6 +117,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                     "both": "متاح على السعر والكمية"
                 }
                 neg_str = neg_type_labels.get(offer.negotiable_type, "غير متاح") if offer.negotiable else "غير متاح"
+                note_line = f"📝 **الملاحظة :** {escape_markdown(str(offer.note))}\n" if offer.note else ""
 
                 buttons = build_offer_action_buttons(
                     offer_id=offer.id,
@@ -136,6 +137,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                     f"📊 **سعر الصرف :** `{rate_str}` ل.س\n"
                     f"🏦 **طرق الدفع :** {methods_str}\n"
                     f"🤝 **التفاوض :** {neg_str}\n"
+                    f"{note_line}"
                     f"〰️〰️〰️〰️〰️〰️〰️\n"
                     f"{format_fee_rule_line()}",
                     reply_markup=kb,
@@ -310,6 +312,7 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         methods = format_payment_methods(off.payment_methods)
         remaining = humanize_time_remaining(off.expires_at, "4 ساعات")
         neg = "متاح" if off.negotiable and off.negotiable_type != "none" else "ثابت"
+        note_line = f"▫️ **الملاحظة:** {escape_markdown(str(off.note))}\n" if off.note else ""
 
         text_lines.append(
             f"🏷️ **عرض #{off.id}** — {off_type}\n"
@@ -317,6 +320,7 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
             f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
             f"▫️ **وسائل الدفع:** {methods}\n"
             f"▫️ **التفاوض:** {neg}\n"
+            f"{note_line}"
             f"▫️ **الصلاحية المتبقية:** {remaining}\n"
         )
 
@@ -384,6 +388,7 @@ async def cq_menu_my_offers(callback: CallbackQuery, db_session: AsyncSession):
 
     status_badges = {
         "active": "🟢 نشط في السوق",
+        "pending_approval": "⏳ بانتظار موافقة الإدارة",
         "reserved": "🟡 محجوز بصفقة",
         "negotiating": "🔵 قيد التفاوض",
         "expired": "⚪ منتهي الصلاحية",
@@ -404,17 +409,20 @@ async def cq_menu_my_offers(callback: CallbackQuery, db_session: AsyncSession):
         rate_str = format_syp(off.rate)
         min_str = format_usdt(off.min_limit)
         max_str = format_usdt(off.max_limit)
+        note_line = f"▫️ **الملاحظة:** {escape_markdown(str(off.note))}\n" if off.note else ""
 
         text_lines.append(
             f"🏷️ **عرض #{off.id}** — {type_str}\n"
             f"▫️ **الحالة:** {badge}\n"
             f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
             f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
+            f"{note_line}"
         )
 
         row = []
-        if off.status == "active":
+        if off.status in ("active", "pending_approval"):
             row.append(InlineKeyboardButton(text=f"❌ حذف #{off.id}", callback_data=f"del_off_{off.id}"))
+        if off.status == "active":
             row.append(InlineKeyboardButton(text=f"⏱️ تمديد #{off.id}", callback_data=f"ext_off_{off.id}"))
         if row:
             buttons.append(row)

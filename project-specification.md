@@ -158,12 +158,14 @@ offers
   payment_methods        TEXT[]                  -- Approved 4 rails: 'شام كاش ليرة', 'سيريتيل كاش', 'حوالة بنكية (الهرم)', 'حوالة بنكية (الفؤاد)'
   negotiable            BOOLEAN DEFAULT FALSE
   negotiable_type        VARCHAR(20) DEFAULT 'none' CHECK (negotiable_type IN ('none', 'amount', 'rate', 'both'))
-  status                TEXT DEFAULT 'active'   -- 'active', 'reserved', 'negotiating', 'completed', 'expired', 'cancelled', 'deleted'
+  status                TEXT DEFAULT 'active'   -- 'active', 'pending_approval', 'reserved', 'negotiating', 'completed', 'expired', 'cancelled', 'deleted'
   status_changed_at     TIMESTAMPTZ DEFAULT now()
   channel_message_id     INTEGER NULLABLE
   payout_info            TEXT NULLABLE           -- Legacy/primary payout string for backwards compatibility
   payout_details         JSONB DEFAULT '{}'      -- Confidential per-method payout map (or {"usdt_bep20_address": "..."} for buy offers)
-  expires_at             TIMESTAMPTZ NULLABLE    -- Maker-defined expiry (5m up to 4h)
+  note                   VARCHAR(60) NULLABLE    -- Optional offer note (max 40 chars; pre-approved Sham Cash suggestion or admin-approved custom note)
+  duration_hours         NUMERIC DEFAULT 4.0     -- Maker-selected validity duration in hours (5m up to 4h)
+  expires_at             TIMESTAMPTZ NULLABLE    -- Maker-defined expiry (computed immediately for active offers, or upon admin approval for pending_approval offers)
   created_at            TIMESTAMPTZ DEFAULT now()
 
 deals
@@ -410,13 +412,14 @@ Accessible exclusively to `ADMIN_IDS` with a streamlined 8-command Bot Menu (`/s
    - Combines net platform fee profit (`SUM(fee_usdt)`), executed trade volume (`USDT` & `ل.س`), active sell/buy orderbook liquidity, and monthly/cumulative deal metrics in a single dashboard.
 6. **Audit Trail, Broadcast & Instant Backup (`/audit`, `/broadcast`, `/backup`):**
    - Filterable audit log viewer (`adm_open_audit`) with rotating log download (`escrow_system.log`), rate-limited broadcast (`25 msg/sec`), and one-tap gzip database backup (`adm_trigger_backup`).
-7. **6 Separated Private Admin Channels (`bot/services/admin_notifier.py`, `config/settings.py`):**
+7. **7 Separated Private Admin Channels (`bot/services/admin_notifier.py`, `config/settings.py`):**
    - `ADMIN_DEPOSITS_CHANNEL_ID`: Instant detailed alert upon verified USDT escrow deposit (`notify_usdt_deposit_confirmed`).
    - `ADMIN_PAYOUTS_CHANNEL_ID`: Dedicated final-stage escrow release queue (`ADMIN_APPROVAL`) with in-channel `☑️ اعتماد وإطلاق الضمان` action button.
    - `ADMIN_API_FAILURES_CHANNEL_ID`: Dedicated channel for RPC/API verification failures (`notify_api_verification_failure`) with one-tap manual USDT deposit confirmation (`adm_ask_manual_dep_` -> `adm_do_manual_dep_`).
    - `ADMIN_DISPUTES_CHANNEL_ID`: Dedicated channel for non-receipt reports (`DISPUTED`), 30-minute seller SYP confirmation delays, and 15-minute deposit timeouts.
    - `ADMIN_ERRORS_CHANNEL_ID`: Dedicated channel for critical runtime exception alerts (`error_alert.py`).
    - `ADMIN_BACKUPS_CHANNEL_ID`: Dedicated archive channel for daily automated `.json.gz` database backups (`backup_service.py`).
+   - `ADMIN_NOTES_CHANNEL_ID`: Dedicated moderation channel for reviewing offers with custom notes (`status = 'pending_approval'`), featuring `✅ موافقة ونشر العرض` (`adm_note_app_<offer_id>`) and `❌ رفض مع ذكر السبب` (`adm_note_rej_<offer_id>`).
    - Each channel automatically falls back to `ADMIN_IDS` if its environment variable is left empty or unreachable.
 
 ---
@@ -428,8 +431,8 @@ Accessible exclusively to `ADMIN_IDS` with a streamlined 8-command Bot Menu (`/s
 3. **Self-Healing Polling Supervisor & Background Watchdog (`bot/main.py`, `bot/tasks.py`):**
    - Outer supervisor loop (`while True` with exponential backoff up to 60s) around `AiohttpSession(timeout=30)` and `dp.start_polling(bot, polling_timeout=20)` so network drops or Telegram server stalls never terminate or freeze the bot.
    - `supervise_background_workers` watchdog checks `start_expiry_watcher` and `start_daily_backup_scheduler` every 30s and automatically respawns either task if it ever exits unexpectedly, with `asyncio.wait_for(..., timeout=120)` execution bounds on each cycle.
-4. **Non-Blocking Daily Automated Backup (`bot/services/backup_service.py`):** Exports all 10 tables (including `deal_ratings`, `payout_details`, `seller_fee_usdt`, `buyer_fee_usdt`), offloads JSON serialization, gzip compression, and 30-day rolling disk retention in `/backups/` to a worker thread via `asyncio.to_thread`, and dispatches the `.json.gz` file to all `ADMIN_IDS` daily at `00:00 UTC`.
-5. **Rate-limited Broadcast & Safe Entity Escaping:** Strict Markdown (`escape_markdown`, `safe_username`) and HTML (`html.escape`) escaping across all user inputs, usernames, support handles, dispute reasons, and feedback notes.
+4. **Non-Blocking Daily Automated Backup (`bot/services/backup_service.py`):** Exports all 10 tables (including `deal_ratings`, `payout_details`, `note`, `duration_hours`, `seller_fee_usdt`, `buyer_fee_usdt`), offloads JSON serialization, gzip compression, and 30-day rolling disk retention in `/backups/` to a worker thread via `asyncio.to_thread`, and dispatches the `.json.gz` file to all `ADMIN_IDS` daily at `00:00 UTC`.
+5. **Rate-limited Broadcast & Safe Entity Escaping:** Strict Markdown (`escape_markdown`, `safe_username`) and HTML (`html.escape`) escaping across all user inputs, usernames, support handles, dispute reasons, offer notes, and feedback notes.
 6. **Seamless FSM Interruption (`command_cancel.py`):** Intercepts slash commands and clears stale dialog state.
 7. **Official Bot Menu Commands & Deep Linking (`bot/main.py`, `bot/handlers/base.py`):**
    - `/start`: Main menu and deep-link router (`?start=offer_<id>` for direct offer interaction, `?start=offers` for opening the market browser from channel cards, and `?start=ref_<id>` for referrals).
@@ -438,15 +441,20 @@ Accessible exclusively to `ADMIN_IDS` with a streamlined 8-command Bot Menu (`/s
 
 ---
 
-## 15. User Profile, Offer Creation Wizard & Loyalty System (v3.0 / v3.9)
+## 15. User Profile, Offer Creation Wizard & Loyalty System (v3.0 / v4.0)
 
 1. **Profile Card & Post-Deal Star Rating System (`deal_ratings`, `bot/services/rating_service.py`):** Trader badge, completed deal count, and `reputation_score` on a `0%–100%` percentage scale (default `100%`). Immediately upon deal completion (`COMPLETED` via `man_rel_`), both buyer and seller receive a one-tap 1–5 star rating card (`rate_deal_<deal_id>_<stars>`), strictly enforced once per party per deal via `uq_rating_per_deal_rater`, updating `users.reputation_score` automatically (`ROUND(AVG(stars) * 20)`). Admins can inspect and delete erroneous ratings directly from `/deal [id]` (`adm_del_rating_`) or from the user's dossier `/user` (`adm_user_ratings_`), triggering automatic reputation recalculation and `DELETE_RATING` audit logging.
 2. **Offer Creation Wizard UX (`bot/handlers/offers.py`, `bot/utils/offer_wizard.py`):**
-   - **Progressive Draft Header (`format_wizard_draft_header`):** Displays accumulated choices (`offer_type`, `rate`, `min_limit`, `max_limit`, `payment_methods`) at the top of each wizard step.
+   - **Progressive Draft Header (`format_wizard_draft_header`):** Displays accumulated choices (`offer_type`, `rate`, `min_limit`, `max_limit`, `payment_methods`, `negotiable`, `note`) at the top of each wizard step.
    - **2×2 Payment Methods Grid (`get_payment_methods_kb`):** Arranges the 4 approved payment methods in a clean 2-column grid.
    - **Saved Rails Validation & Confirmation Gate:** Validates saved BEP-20 wallet (`users.saved_usdt_address`) and method-specific local payment accounts (`users.saved_payment_info`) before offering one-tap reuse.
+   - **Offer Notes & Custom Note Admin Moderation (`OfferCreateFSM.waiting_for_note`, `offers.note`):**
+     - Available for **all offers** (optional, up to **40 characters**, or `تخطي`).
+     - When **`شام كاش ليرة`** is selected among the offer's payment methods, 4 pre-approved suggestion buttons appear (`اسم ثلاثي حصرا`, `حسابي موثق`, `لا يقبل طرف ثالث`, `اريد حساب شام كاش موثق حصرا ⛔⛔`).
+     - Selecting a pre-approved suggestion or skipping publishes the offer immediately (`status = 'active'`).
+     - Typing a custom note saves the offer as `status = 'pending_approval'` (preserving `duration_hours` so `expires_at` begins only upon approval) and dispatches an interactive review card to `ADMIN_NOTES_CHANNEL_ID` with `✅ موافقة ونشر العرض` (`adm_note_app_`) and `❌ رفض مع ذكر السبب` (`adm_note_rej_` -> `AdminFSM.waiting_for_note_reject_reason`).
    - **3-Stage Custom Duration Picker:** Buttons for Default (`4 hours`) or Custom (`0–3 hours` × `5–45 minutes`).
-   - **Final Summary & Jump-Edit:** Full summary screen (`format_wizard_summary`) with individual jump-edit buttons (`✏️ السعر`, `✏️ الكمية`, `✏️ الدفع`, `✏️ الحساب`, `✏️ التفاوض`, `✏️ المدة`) that return directly to the summary after editing.
+   - **Final Summary & Jump-Edit:** Full summary screen (`format_wizard_summary`) with individual jump-edit buttons (`✏️ السعر`, `✏️ الكمية`, `✏️ الدفع`, `✏️ الحساب`, `✏️ التفاوض`, `✏️ الملاحظة`, `✏️ المدة`) that return directly to the summary after editing.
 3. **Golden Points Loyalty Program:** Operational flag `REWARDS_ENABLED` (default `false`). Points for deals (+10) and referrals (+25). Tiered claims (500/1500/3000 pts).
 4. **Approved Local Payment Methods & Validation:** `شام كاش ليرة` (32-hex address), `سيريتيل كاش` (10-digit `09xxxxxxxx` with Arabic numeral normalization), `حوالة بنكية (الهرم)` & `حوالة بنكية (الفؤاد)` (full triple name + Syrian mobile number `09xxxxxxxx`).
 
@@ -467,6 +475,7 @@ To keep scope bounded, the following are intentionally excluded from MVP:
 | Date | Change |
 |---|---|
 | v1.0 - v3.3 | See previous version history. |
+| v4.0 | **Offer Notes, Sham Cash Quick Suggestions & Custom Note Admin Moderation v4.0:**<br>• **Offer Notes Step (`OfferCreateFSM.waiting_for_note`, `offers.note`)**: Added optional note step (max 40 chars) for all offers during creation and jump-edit (`✏️ الملاحظة`), displayed across public channel posts, market browsing, deep-linked offer cards, and `عروضي`.<br>• **Sham Cash Pre-Approved Suggestions**: Automatically displays 4 one-tap suggestion buttons (`اسم ثلاثي حصرا`, `حسابي موثق`, `لا يقبل طرف ثالث`, `اريد حساب شام كاش موثق حصرا ⛔⛔`) whenever `شام كاش ليرة` is among the selected payment methods.<br>• **Custom Note Manual Approval (`ADMIN_NOTES_CHANNEL_ID`, `pending_approval`)**: Custom typed notes place the offer in `pending_approval` and dispatch a moderation card to `ADMIN_NOTES_CHANNEL_ID` (with fallback to `ADMIN_IDS`) offering `✅ موافقة ونشر العرض` (`adm_note_app_`, which activates the offer, starts its validity timer from approval time, broadcasts to the channel, and notifies the maker) or `❌ رفض مع ذكر السبب` (`adm_note_rej_`, which prompts the admin for a rejection reason, cancels the offer, logs to `AuditLog`, and sends the reason to the maker). |
 | v3.9 | **Admin Control Center Overhaul & Operational Intervention v3.9:**<br>• **Streamlined Admin Bot Menu**: Reduced admin command menu to 8 essential commands (`/start`, `/continue`, `/support`, `/admin`, `/deal`, `/user`, `/pending`, `/backup`) and removed `/top_traders`, `/disputes`, `/market`, `/m_on`, `/m_off`, `/reply`.<br>• **Comprehensive User Dossier (`/user`)**: Search by Telegram ID, `@username`, or Nickname; inspect saved BEP-20 wallet, saved SYP account, deal/dispute metrics, traded volume, ratings (with one-tap deletion & reputation recalculation), active offers (with one-tap channel/market removal), ban toggle, and direct admin messaging.<br>• **Full Deal Inspection & Intervention (`/deal`)**: Added SYP payment proof photo viewer (`adm_view_proof_`), one-tap links to buyer/seller profiles, and administrative intervention controls (`adm_ask_force_conf_`, `adm_ask_force_dispute_`, `adm_ask_force_cancel_`).<br>• **Live Operations Center (`/pending`) & Unified Reports (`/stats`)**: Added 4-tab live operations monitor and merged financial profit & market liquidity analytics. |
 | v3.8 | **Post-Deal Star Ratings & Bank Transfer Validation v3.8:**<br>• **Post-Deal Star Rating (`deal_ratings`, `rating_service.py`)**: Dispatches one-tap 1–5 star rating prompts (`rate_deal_`) to both counterparties upon `COMPLETED` status, enforces one rating per user per deal, and recalculates `users.reputation_score` automatically.<br>• **Admin Rating Moderation**: Displays deal ratings in `/deal [id]` (`format_admin_deal_review_text` + `build_admin_deal_keyboard`) with direct delete buttons (`adm_del_rating_`) that recalculate target reputation and record `DELETE_RATING` audit logs.<br>• **Al-Haram / Al-Fouad Validation & Prompts**: Synchronized offer wizard instructions (`get_pm_spec`), Arabic digit normalization, and triple-name + `09xxxxxxxx` validation. |
 | v3.7 | **Wizard UX, Bot Menu Commands & Hardening Update v3.7:**<br>• **Progressive Draft Header (`format_wizard_draft_header`)**: Added live accumulated draft header at the top of each step in the Offer Creation Wizard.<br>• **3-Stage Button-Based Custom Duration Picker**: Replaced text-based custom duration input with a 3-stage interactive button flow (`Default 4h` vs `Custom` → `0–3 Hours` 2×2 grid → `5–45 Minutes` 2×3 grid) and unified duration formatting (`format_duration_hours_minutes`) across wizard summary, publish confirmation, and channel cards.<br>• **2×2 Payment Methods Grid**: Arranged the 4 approved payment methods in a compact 2×2 grid.<br>• **Official Bot Menu Commands & Deep Links**: Configured `/start`, `/continue` (with automatic cleanup of old deal cards), and `/support` (`@AlphaSupport`), plus `?start=offers` deep-link handling.<br>• **Entity Escaping & Error Alert Hardening**: Escaped all dynamic usernames, support handles, dispute reasons, and feedback notes (`escape_markdown` / `html.escape`), and enhanced `error_alert.py` to extract the deepest project-level stack frame. |

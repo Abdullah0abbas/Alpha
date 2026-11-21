@@ -24,7 +24,8 @@ from bot.utils.deal_card import push_deal_card
 from bot.services.backup_service import perform_and_send_backup
 from bot.services.rating_service import recalculate_user_reputation, format_stars
 from bot.services.audit_service import record_audit, add_audit, LOG_FILE
-from bot.services.channel import update_channel_offer_message
+from bot.services.channel import update_channel_offer_message, build_channel_offer_message
+from bot.utils.offer_wizard import format_duration_hours_minutes
 from bot.services.admin_notifier import dispatch_admin_notification, notify_usdt_deposit_confirmed
 from bot.middlewares.error_alert import report_handled_exception
 from config.settings import settings
@@ -2098,6 +2099,8 @@ ACTION_TITLES = {
     "ADMIN_FORCE_CONFIRM_SYP": "⚡ تأكيد استلام ليرة إدارياً",
     "ADMIN_CLOSE_DISPUTED": "⚠️ إغلاق صفقة بعدم استلام",
     "ADMIN_DELETE_OFFER": "🗑️ حذف عرض إدارياً",
+    "ADMIN_APPROVE_OFFER_NOTE": "✅ موافقة ونشر عرض بملاحظة مخصصة",
+    "ADMIN_REJECT_OFFER_NOTE": "❌ رفض عرض بملاحظة مخصصة",
     "BAN_USER": "🚫 حظر مستخدم",
     "UNBAN_USER": "✅ فك حظر مستخدم",
     "MAINTENANCE_MODE_ON": "🟢 تفعيل الصيانة",
@@ -2206,3 +2209,248 @@ async def cq_admin_download_log(callback: CallbackQuery):
         await callback.answer()
     except Exception as e:
         await callback.answer(f"خطأ: {e}", show_alert=True)
+
+
+# ================= 10. CUSTOM OFFER NOTE APPROVAL & REJECTION =================
+
+@admin_router.callback_query(F.data.startswith("adm_note_app_"))
+async def cq_admin_approve_offer_note(callback: CallbackQuery, db_session: AsyncSession, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    offer_id_str = callback.data.replace("adm_note_app_", "")
+    if not offer_id_str.isdigit():
+        await callback.answer("معرف العرض غير صالح.", show_alert=True)
+        return
+    offer_id = int(offer_id_str)
+
+    result = await db_session.execute(
+        select(Offer).where(Offer.id == offer_id).with_for_update()
+    )
+    offer = result.scalar_one_or_none()
+    if not offer:
+        await callback.answer("لم يتم العثور على العرض.", show_alert=True)
+        return
+
+    if offer.status != "pending_approval":
+        await db_session.commit()
+        await callback.answer(f"تمت معالجة هذا العرض مسبقاً (الحالة الحالية: {offer.status}).", show_alert=True)
+        return
+
+    now = datetime.now(timezone.utc)
+    dur_hours = float(offer.duration_hours or 4.0)
+    offer.status = "active"
+    offer.status_changed_at = now
+    offer.expires_at = now + timedelta(hours=dur_hours)
+
+    add_audit(
+        session=db_session,
+        action="ADMIN_APPROVE_OFFER_NOTE",
+        target_type="offer",
+        target_id=str(offer.id),
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"note": offer.note, "duration_hours": dur_hours}
+    )
+    await db_session.commit()
+    await db_session.refresh(offer)
+
+    duration_str = format_duration_hours_minutes(dur_hours)
+
+    if settings.CHANNEL_ID and settings.BOT_USERNAME:
+        trader_res = await db_session.execute(select(User).where(User.telegram_id == offer.user_id))
+        trader_user = trader_res.scalar_one_or_none()
+        channel_text, kb_chan = build_channel_offer_message(
+            offer,
+            duration_override=duration_str,
+            trader=trader_user,
+        )
+        try:
+            msg = await bot.send_message(
+                chat_id=settings.CHANNEL_ID,
+                text=channel_text,
+                reply_markup=kb_chan,
+                parse_mode="HTML"
+            )
+            offer.channel_message_id = msg.message_id
+            await db_session.commit()
+        except Exception as e:
+            logger.warning(f"Failed to broadcast approved offer #{offer.id} to channel: {e}")
+
+    if offer.user_id:
+        try:
+            await bot.send_message(
+                chat_id=offer.user_id,
+                text=(
+                    f"✅ **تمت الموافقة على ملاحظتك ونشر العرض #{offer.id}!**\n"
+                    "〰️〰️〰️〰️〰️〰️〰️\n"
+                    f"📝 **الملاحظة المعتمدة:** `{escape_markdown(str(offer.note or ''))}`\n"
+                    f"⏳ **مدة الصلاحية:** `{duration_str}`\n\n"
+                    "أصبح عرضك نشطاً الآن في السوق والقناة الرسمية."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify offer owner {offer.user_id} of note approval: {e}")
+
+    admin_tag = safe_username(callback.from_user.username)
+    updated_card = (
+        f"✅ **تم اعتماد الملاحظة ونشر العرض #{offer.id}**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"👤 **صاحب العرض:** `{offer.user_id}`\n"
+        f"📝 **الملاحظة:** `{escape_markdown(str(offer.note or ''))}`\n"
+        f"🛡️ **بواسطة الأدمن:** `{callback.from_user.id}` ({admin_tag})"
+    )
+    try:
+        await callback.message.edit_text(updated_card, parse_mode="Markdown")
+    except Exception:
+        pass
+    await callback.answer("تمت الموافقة ونشر العرض بنجاح.")
+
+
+@admin_router.callback_query(F.data.startswith("adm_note_rej_"))
+async def cq_admin_reject_offer_note_prompt(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك.", show_alert=True)
+        return
+
+    if callback.data == "adm_note_rej_cancel":
+        await state.clear()
+        try:
+            await callback.message.edit_text("↩️ تم التراجع عن عملية رفض العرض.")
+        except Exception:
+            pass
+        await callback.answer("تم الإلغاء.")
+        return
+
+    offer_id_str = callback.data.replace("adm_note_rej_", "")
+    if not offer_id_str.isdigit():
+        await callback.answer("معرف العرض غير صالح.", show_alert=True)
+        return
+    offer_id = int(offer_id_str)
+
+    result = await db_session.execute(select(Offer).where(Offer.id == offer_id))
+    offer = result.scalar_one_or_none()
+    if not offer:
+        await callback.answer("لم يتم العثور على العرض.", show_alert=True)
+        return
+
+    if offer.status != "pending_approval":
+        await callback.answer(f"تمت معالجة هذا العرض مسبقاً (الحالة الحالية: {offer.status}).", show_alert=True)
+        return
+
+    await state.update_data(
+        reject_offer_id=offer_id,
+        reject_card_chat_id=callback.message.chat.id,
+        reject_card_msg_id=callback.message.message_id,
+    )
+    await state.set_state(AdminFSM.waiting_for_note_reject_reason)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ تراجع عن الرفض", callback_data="adm_note_rej_cancel")]
+    ])
+    await callback.message.answer(
+        f"✍️ **رفض العرض #{offer_id} مع ذكر السبب**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"📝 **الملاحظة المرفوضة:** `{escape_markdown(str(offer.note or ''))}`\n\n"
+        "أرسل الآن **سبب الرفض** ليتم إرساله إلى صاحب العرض وإلغاء العرض:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@admin_router.message(AdminFSM.waiting_for_note_reject_reason)
+async def process_admin_reject_offer_note_reason(message: Message, db_session: AsyncSession, state: FSMContext, bot: Bot):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    reason_text = " ".join((message.text or "").strip().split())
+    if not reason_text:
+        await message.answer("⚠️ يرجى إرسال سبب واضح للرفض:")
+        return
+
+    data = await state.get_data()
+    offer_id = data.get("reject_offer_id")
+    card_chat_id = data.get("reject_card_chat_id")
+    card_msg_id = data.get("reject_card_msg_id")
+    await state.clear()
+
+    if not offer_id:
+        await message.answer("⚠️ انتهت جلسة الرفض، يرجى الضغط على زر الرفض مجدداً.")
+        return
+
+    result = await db_session.execute(
+        select(Offer).where(Offer.id == int(offer_id)).with_for_update()
+    )
+    offer = result.scalar_one_or_none()
+    if not offer:
+        await message.answer("⚠️ لم يتم العثور على العرض.")
+        return
+
+    if offer.status != "pending_approval":
+        await db_session.commit()
+        await message.answer(f"⚠️ تمت معالجة هذا العرض مسبقاً (الحالة الحالية: `{offer.status}`).", parse_mode="Markdown")
+        return
+
+    offer.status = "cancelled"
+    offer.status_changed_at = datetime.now(timezone.utc)
+
+    add_audit(
+        session=db_session,
+        action="ADMIN_REJECT_OFFER_NOTE",
+        target_type="offer",
+        target_id=str(offer.id),
+        actor_id=message.from_user.id,
+        actor_type="ADMIN",
+        details={"note": offer.note, "reason": reason_text}
+    )
+    await db_session.commit()
+
+    safe_reason = escape_markdown(reason_text)
+    safe_note = escape_markdown(str(offer.note or ""))
+
+    if offer.user_id:
+        try:
+            await bot.send_message(
+                chat_id=offer.user_id,
+                text=(
+                    f"❌ **تم رفض نشر العرض #{offer.id}**\n"
+                    "〰️〰️〰️〰️〰️〰️〰️\n"
+                    f"📝 **الملاحظة المدخلة:** `{safe_note}`\n"
+                    f"📌 **سبب الرفض من الإدارة:**\n{safe_reason}\n"
+                    "〰️〰️〰️〰️〰️〰️〰️\n"
+                    "يمكنك إنشاء عرض جديد بملاحظة مطابقة لشروط المنصة أو استخدام الاقتراحات الجاهزة."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify offer owner {offer.user_id} of note rejection: {e}")
+
+    admin_tag = safe_username(message.from_user.username)
+    updated_card = (
+        f"❌ **تم رفض العرض #{offer.id} وإلغاؤه**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"👤 **صاحب العرض:** `{offer.user_id}`\n"
+        f"📝 **الملاحظة المرفوضة:** `{safe_note}`\n"
+        f"📌 **سبب الرفض:** {safe_reason}\n"
+        f"🛡️ **بواسطة الأدمن:** `{message.from_user.id}` ({admin_tag})"
+    )
+    if card_chat_id and card_msg_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=card_chat_id,
+                message_id=card_msg_id,
+                text=updated_card,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    await message.answer(
+        f"✅ تم رفض العرض `#{offer.id}` وإرسال السبب إلى المستخدم بنجاح.",
+        parse_mode="Markdown"
+    )
+

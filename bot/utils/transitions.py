@@ -129,10 +129,10 @@ def can_extend_offer(current_status: str) -> Tuple[bool, str]:
 def can_delete_offer(current_status: str) -> Tuple[bool, str]:
     """
     Validates if an offer can be cancelled/deleted by maker/admin.
-    Allowed only when status is 'active'.
+    Allowed when status is 'active' or 'pending_approval'.
     Returns (can_delete, reason_ar).
     """
-    if current_status == "active":
+    if current_status in ("active", "pending_approval"):
         return True, ""
     if current_status == "reserved":
         return False, "لا يمكن إلغاء العرض لوجود صفقة جارية عليه حالياً."

@@ -14,13 +14,14 @@ class Settings:
     CHANNEL_USERNAME: str = os.getenv("CHANNEL_USERNAME", "")
     SUPPORT_USERNAME: str = os.getenv("SUPPORT_USERNAME", "")
 
-    # 6 Specialized Private Admin Channels / Supergroups (Optional; falls back to ADMIN_IDS if empty)
+    # 7 Specialized Private Admin Channels / Supergroups (Optional; falls back to ADMIN_IDS if empty)
     ADMIN_DEPOSITS_CHANNEL_ID: str = os.getenv("ADMIN_DEPOSITS_CHANNEL_ID", "").strip()
     ADMIN_PAYOUTS_CHANNEL_ID: str = os.getenv("ADMIN_PAYOUTS_CHANNEL_ID", "").strip()
     ADMIN_API_FAILURES_CHANNEL_ID: str = os.getenv("ADMIN_API_FAILURES_CHANNEL_ID", "").strip()
     ADMIN_DISPUTES_CHANNEL_ID: str = os.getenv("ADMIN_DISPUTES_CHANNEL_ID", "").strip()
     ADMIN_ERRORS_CHANNEL_ID: str = os.getenv("ADMIN_ERRORS_CHANNEL_ID", "").strip()
     ADMIN_BACKUPS_CHANNEL_ID: str = os.getenv("ADMIN_BACKUPS_CHANNEL_ID", "").strip()
+    ADMIN_NOTES_CHANNEL_ID: str = os.getenv("ADMIN_NOTES_CHANNEL_ID", "").strip()
 
     @property
     def ADMIN_IDS(self) -> list[int]:

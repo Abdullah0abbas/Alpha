@@ -8,8 +8,18 @@ import re
 from typing import Tuple
 from decimal import Decimal, InvalidOperation
 from bot.utils.fees import format_fee_rule_line
+from bot.utils.formatters import escape_markdown
 
 FEE_RULE_LINE = f"{format_fee_rule_line()}"
+
+MAX_OFFER_NOTE_LENGTH = 40
+
+SHAM_CASH_NOTE_SUGGESTIONS = [
+    "اسم ثلاثي حصرا",
+    "حسابي موثق",
+    "لا يقبل طرف ثالث",
+    "اريد حساب شام كاش موثق حصرا ⛔⛔",
+]
 
 PAYMENT_METHOD_ICONS = {
     "شام كاش ليرة": "💳",
@@ -110,6 +120,11 @@ def is_wizard_data_complete(wizard_data: dict) -> Tuple[bool, str]:
         if not wallet or not re.match(r"^0[xX][0-9a-fA-F]{40}$", wallet):
             return False, "عنوان محفظة استلام USDT (BEP-20) غير صالح."
 
+    # Note validation (optional, max 40 chars)
+    note_val = wizard_data.get("note")
+    if note_val is not None and len(str(note_val).strip()) > MAX_OFFER_NOTE_LENGTH:
+        return False, f"الملاحظة يجب ألا تتجاوز {MAX_OFFER_NOTE_LENGTH} حرفاً."
+
     # Duration validation (5 minutes up to 4 hours)
     try:
         dur = float(wizard_data.get("duration_hours", 4.0))
@@ -167,26 +182,26 @@ def format_wizard_draft_header(wizard_data: dict, up_to_step: str) -> str:
         type_ar = "🔴 بيع USDT" if offer_type == "sell" else "🟢 شراء USDT"
         lines.append(f"⚖️ **النوع :** {type_ar}")
 
-    if up_to_step in ("min_limit", "max_limit", "methods", "payout", "negotiation", "duration"):
+    if up_to_step in ("min_limit", "max_limit", "methods", "payout", "negotiation", "note", "duration"):
         if wizard_data.get("rate"):
             lines.append(f"📊 **سعر الصرف :** `{_fmt_rate_str(wizard_data['rate'])}` ل.س")
 
     if up_to_step == "max_limit":
         if wizard_data.get("min_limit"):
             lines.append(f"💰 **الحد الأدنى :** `{_fmt_usdt_str(wizard_data['min_limit'])} USDT`")
-    elif up_to_step in ("methods", "payout", "negotiation", "duration"):
+    elif up_to_step in ("methods", "payout", "negotiation", "note", "duration"):
         if wizard_data.get("min_limit") and wizard_data.get("max_limit"):
             min_s = _fmt_usdt_str(wizard_data["min_limit"])
             max_s = _fmt_usdt_str(wizard_data["max_limit"])
             lines.append(f"💰 **الكمية :** من `{min_s}` إلى `{max_s} USDT`")
 
-    if up_to_step in ("payout", "negotiation", "duration"):
+    if up_to_step in ("payout", "negotiation", "note", "duration"):
         methods = wizard_data.get("payment_methods") or []
         if methods:
             m_str = "، ".join(f"{PAYMENT_METHOD_ICONS.get(m, '💳')} {m}" for m in methods)
             lines.append(f"🏦 **طرق الدفع :** {m_str}")
 
-    if up_to_step == "duration":
+    if up_to_step in ("note", "duration"):
         if "negotiable" in wizard_data:
             is_neg = wizard_data.get("negotiable", False)
             neg_type = wizard_data.get("negotiable_type", "none")
@@ -198,7 +213,12 @@ def format_wizard_draft_header(wizard_data: dict, up_to_step: str) -> str:
             neg_s = neg_labels.get(neg_type, "متاح") if (is_neg and neg_type != "none") else "غير متاح 🔒"
             lines.append(f"🤝 **التفاوض :** {neg_s}")
 
-    lines.append("〰️〰️〰️〰️〰️〰️〰️")
+    if up_to_step == "duration":
+        note_raw = wizard_data.get("note")
+        if note_raw:
+            lines.append(f"📝 **الملاحظة :** {escape_markdown(str(note_raw))}")
+
+    lines.append("〰️〰️〰️〰️〰️〰️〰️\n")
     return "\n".join(lines)
 
 
@@ -245,6 +265,14 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
     else:
         neg_str = "غير متاح (شروط ثابتة)"
 
+    note_val = wizard_data.get("note")
+    is_custom_note = bool(wizard_data.get("is_custom_note", False))
+    if note_val:
+        custom_badge = " *(مخصصة — تتطلب موافقة الإدارة قبل النشر ⏳)*" if is_custom_note else ""
+        note_str = f"{escape_markdown(str(note_val))}{custom_badge}"
+    else:
+        note_str = "لا يوجد"
+
     dur_val = wizard_data.get("duration_hours", 4.0)
     dur_str = format_duration_hours_minutes(dur_val)
 
@@ -256,6 +284,7 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
         f"💰 **الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`",
         f"🏦 **طرق الدفع:** {methods_str}",
         f"🤝 **التفاوض:** {neg_str}",
+        f"📝 **الملاحظة:** {note_str}",
         f"⏳ **مدة العرض:** {dur_str}",
         "〰️〰️〰️〰️〰️〰️〰️",
         "🔒 **بيانات الاستلام الخاصة (لا تظهر بالقناة):**",

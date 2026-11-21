@@ -113,6 +113,8 @@ async def create_database_backup() -> tuple[str, str, dict]:
                 "channel_message_id": o.channel_message_id,
                 "payout_info": o.payout_info,
                 "payout_details": o.payout_details,
+                "note": getattr(o, "note", None),
+                "duration_hours": serialize_val(getattr(o, "duration_hours", None)),
                 "expires_at": serialize_val(o.expires_at),
                 "negotiable": o.negotiable,
                 "negotiable_type": o.negotiable_type,

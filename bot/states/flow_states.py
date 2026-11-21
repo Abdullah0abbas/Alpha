@@ -10,6 +10,7 @@ class OfferCreateFSM(StatesGroup):
     confirm_payout_details = State()
     waiting_for_negotiable_decision = State()
     waiting_for_negotiable_type = State()
+    waiting_for_note = State()
     waiting_for_duration_choice = State()
     waiting_for_custom_duration = State()
     confirm_custom_duration = State()
@@ -40,6 +41,7 @@ class AdminFSM(StatesGroup):
     waiting_for_deal_search_id = State()
     waiting_for_broadcast_text = State()
     waiting_for_direct_user_msg = State()
+    waiting_for_note_reject_reason = State()
 
 class ProfileFSM(StatesGroup):
     waiting_for_nickname = State()

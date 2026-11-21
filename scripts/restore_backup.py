@@ -67,7 +67,7 @@ SERIAL_ID_TABLES = [
 
 DECIMAL_FIELDS = {
     "users": {"reputation_score"},
-    "offers": {"rate", "min_limit", "max_limit"},
+    "offers": {"rate", "min_limit", "max_limit", "duration_hours"},
     "deals": {"amount_usdt", "amount_syp", "fee_usdt", "seller_fee_usdt", "buyer_fee_usdt"},
     "negotiations": {"proposed_rate", "proposed_amount"},
     "payment_proofs": {"amount"},

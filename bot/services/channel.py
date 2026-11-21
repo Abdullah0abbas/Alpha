@@ -1,3 +1,4 @@
+import html
 import logging
 from decimal import Decimal, ROUND_HALF_UP
 from aiogram import Bot
@@ -79,6 +80,12 @@ def build_channel_offer_message(
     else:
         neg_line = ""
 
+    raw_note = getattr(offer, "note", None)
+    if raw_note:
+        note_line = f"\n📝 الملاحظة : {html.escape(str(raw_note))}"
+    else:
+        note_line = ""
+
     tier_label, completed_deals, rate_pct, rep_str = _resolve_trader_stats(offer, trader=trader)
 
     core_card = (
@@ -87,7 +94,7 @@ def build_channel_offer_message(
         f"〰️〰️〰️〰️〰️〰️〰️\n"
         f"💰 الكمية : من <code>{min_str}</code> إلى <code>{max_str} USDT</code>\n"
         f"📊 سعر الصرف : {rate_str} ل.س\n"
-        f"🏦 طرق الدفع : {methods_str}{neg_line}\n"
+        f"🏦 طرق الدفع : {methods_str}{neg_line}{note_line}\n"
         f"⏳ مدة المعاملة : {dur_str} (الصلاحية المتبقية)\n"
         f"〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
         f"التاجر :\n"
