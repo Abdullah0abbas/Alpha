@@ -4,19 +4,17 @@ import traceback
 import logging
 from typing import Dict, Any
 from aiogram import Bot
-from aiogram.types import ErrorEvent, Message, CallbackQuery, Update
+from aiogram.types import ErrorEvent, Update
 from aiogram.exceptions import (
     TelegramNetworkError,
     TelegramRetryAfter,
     TelegramBadRequest,
     TelegramForbiddenError,
-    TelegramAPIError,
     RestartingTelegram
 )
 
 from bot.services.audit_service import audit_logger
 from bot.utils.sanitize import sanitize_exception_message
-from config.settings import settings
 
 logger = logging.getLogger(__name__)
 

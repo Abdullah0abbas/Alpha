@@ -3,7 +3,7 @@ import json
 import gzip
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from decimal import Decimal
 from aiogram import Bot
 from aiogram.types import FSInputFile

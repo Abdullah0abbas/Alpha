@@ -1,7 +1,6 @@
 import os
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone
 from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import AuditLog

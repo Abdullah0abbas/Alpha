@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_, and_, func
+from sqlalchemy import or_, func
 from sqlalchemy.exc import IntegrityError
 
 from aiogram import Router, F, Bot

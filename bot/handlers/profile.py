@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func
 
-from db.models import User, Deal, Offer, DealRating
+from db.models import User, Deal, DealRating
 from bot.states.flow_states import ProfileFSM
 from bot.utils.formatters import escape_markdown, safe_username, format_usdt
 from bot.utils.validators import validate_bep20_address, validate_payment_method_info

@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     pass
@@ -78,8 +78,8 @@ class Deal(Base):
 
     seller_card_msg_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     buyer_card_msg_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    deposit_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
-    payout_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
+    deposit_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payout_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -91,6 +91,18 @@ class Deal(Base):
             "offer_id",
             unique=True,
             postgresql_where=text("status NOT IN ('CANCELLED','EXPIRED','COMPLETED','DISPUTED')")
+        ),
+        Index(
+            "uq_deals_deposit_tx_hash",
+            "deposit_tx_hash",
+            unique=True,
+            postgresql_where=text("deposit_tx_hash IS NOT NULL")
+        ),
+        Index(
+            "uq_deals_payout_tx_hash",
+            "payout_tx_hash",
+            unique=True,
+            postgresql_where=text("payout_tx_hash IS NOT NULL")
         ),
     )
 

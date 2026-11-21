@@ -5,7 +5,7 @@ Provides navigation history management, completeness validation,
 primary payout info extraction, and summary presentation formatting.
 """
 import re
-from typing import Tuple, Optional
+from typing import Tuple
 from decimal import Decimal, InvalidOperation
 from bot.utils.fees import format_fee_rule_line
 

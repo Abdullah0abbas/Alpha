@@ -4,8 +4,6 @@ from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.models import Offer
 from config.settings import settings
-from bot.utils.branding import CHANNEL_NAME
-from bot.utils.fees import format_fee_rule_html
 from bot.utils.formatters import (
     format_payment_methods,
     format_syp,

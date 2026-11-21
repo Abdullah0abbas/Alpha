@@ -6,7 +6,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func
-from db.models import User, Offer, Deal
+from db.models import User, Offer
 from aiogram.fsm.context import FSMContext
 from bot.states.flow_states import OfferCreateFSM, FeedbackFSM
 from config.settings import settings
@@ -17,7 +17,6 @@ from bot.handlers.offers import (
     format_usdt,
     format_payment_methods,
     humanize_time_remaining,
-    start_offer_creation,
     build_offer_type_screen
 )
 from bot.utils.formatters import escape_markdown
@@ -465,7 +464,7 @@ async def cq_menu_support(callback: CallbackQuery):
 
 @base_router.callback_query(F.data == "menu_terms")
 async def cq_menu_terms(callback: CallbackQuery):
-    preamble, sections = split_terms_sections()
+    _, sections = split_terms_sections()
     buttons = []
     for idx_str, title, _ in sections:
         buttons.append([InlineKeyboardButton(text=f"📄 {title}", callback_data=f"terms_sec_{idx_str}")])
@@ -500,7 +499,7 @@ async def cq_terms_full(callback: CallbackQuery):
 @base_router.callback_query(F.data.startswith("terms_sec_"))
 async def cq_terms_section(callback: CallbackQuery):
     idx_str = callback.data.split("_")[-1]
-    preamble, sections = split_terms_sections()
+    _, sections = split_terms_sections()
     total = len(sections)
 
     target_sec = None
@@ -541,7 +540,7 @@ async def cq_terms_section(callback: CallbackQuery):
 
 @base_router.callback_query(F.data == "supp_faq")
 async def cq_supp_faq(callback: CallbackQuery):
-    preamble, items = split_faq_items()
+    _, items = split_faq_items()
     buttons = []
     for idx_str, q_title, _ in items:
         buttons.append([InlineKeyboardButton(text=f"❓ {q_title}", callback_data=f"faq_item_{idx_str}")])
@@ -578,7 +577,7 @@ async def cq_faq_full(callback: CallbackQuery):
 @base_router.callback_query(F.data.startswith("faq_item_"))
 async def cq_faq_item(callback: CallbackQuery):
     idx_str = callback.data.split("_")[-1]
-    preamble, items = split_faq_items()
+    _, items = split_faq_items()
 
     target_item = None
     for s_idx, q_title, q_text in items:

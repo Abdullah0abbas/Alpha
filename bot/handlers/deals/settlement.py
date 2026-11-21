@@ -47,7 +47,7 @@ settlement_router = Router(name="deals_settlement")
 @settlement_router.callback_query(F.data.startswith("man_aw_dep_"))
 async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses="CREATED",
@@ -108,7 +108,7 @@ async def manual_await_usdt_deposit(callback: CallbackQuery, db_session: AsyncSe
 @settlement_router.callback_query(F.data.startswith("man_dep_"))
 async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses="AWAITING_USDT_DEPOSIT",
@@ -262,7 +262,7 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
 @settlement_router.callback_query(F.data.startswith("man_aw_syp_"))
 async def manual_await_syp(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses=["USDT_DEPOSITED", "AWAITING_SYP_PAYMENT"],
@@ -333,7 +333,7 @@ async def manual_await_syp(callback: CallbackQuery, state: FSMContext, db_sessio
 @settlement_router.callback_query(F.data.startswith("man_syp_"))
 async def manual_syp_sent(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses="AWAITING_SYP_PAYMENT",
@@ -372,7 +372,7 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         await state.clear()
         return
 
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=message.from_user.id,
         expected_statuses="AWAITING_SYP_PAYMENT",
@@ -635,9 +635,6 @@ async def _dispatch_admin_approval(
         [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal.id}")]
     ])
 
-    usdt_str = format_usdt(deal.amount_usdt)
-    syp_str = format_syp(deal.amount_syp)
-
     # 1. Update origin message if present
     if origin_callback:
         try:
@@ -746,7 +743,7 @@ async def _dispatch_admin_approval(
 @settlement_router.callback_query(F.data.startswith("man_conf_"))
 async def manual_syp_confirmed(callback: CallbackQuery, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses="SYP_PAYMENT_SENT",
@@ -772,7 +769,7 @@ async def manual_syp_confirmed(callback: CallbackQuery, db_session: AsyncSession
 @settlement_router.callback_query(F.data.startswith("dispute_deal_"))
 async def handle_non_receipt_dispute(callback: CallbackQuery, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses=["AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT"],

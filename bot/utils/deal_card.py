@@ -5,7 +5,6 @@ robust Telegram in-place update orchestration (push_deal_card).
 """
 import logging
 from decimal import Decimal
-from datetime import datetime, timezone
 from typing import Tuple, Optional
 
 from aiogram import Bot
@@ -46,7 +45,9 @@ def step_of(status: str) -> Tuple[int, str, str]:
         return 5, "[ 🟩 🟩 🟩 🟩 🟩 ⬜ ⬜ ]", "تأكيد الاستلام بالليرة السورية"
     elif status in ("SYP_PAYMENT_CONFIRMED", "ADMIN_APPROVAL"):
         return 6, "[ 🟩 🟩 🟩 🟩 🟩 🟩 ⬜ ]", "تدقيق واعتماد الإدارة"
-    elif status in ("RELEASING", "COMPLETED"):
+    elif status == "RELEASING":
+        return 6, "[ 🟩 🟩 🟩 🟩 🟩 🟩 ⏳ ]", "جاري تحرير الرصيد على الشبكة"
+    elif status == "COMPLETED":
         return 7, "[ 🟩 🟩 🟩 🟩 🟩 🟩 🟩 ]", "تحرير الرصيد"
     elif status == "CANCELLED":
         return 0, "[ ❌ ❌ ❌ ❌ ❌ ❌ ❌ ]", "ملغاة"
@@ -96,7 +97,10 @@ def turn_of(status: str, viewer_role: str, is_offer_owner: bool = False) -> Tupl
             return True, "اعتماد وتحرير الرصيد للمشتري"
         return False, "بانتظار اعتماد الإدارة وتحرير الرصيد"
 
-    if status in ("RELEASING", "COMPLETED"):
+    if status == "RELEASING":
+        return False, "جاري تحرير الرصيد على الشبكة ⏳"
+
+    if status == "COMPLETED":
         return False, "اكتملت الصفقة وتحرر الرصيد بنجاح"
 
     if status == "CANCELLED":

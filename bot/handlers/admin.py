@@ -195,7 +195,6 @@ async def get_stats_text(db_session: AsyncSession) -> str:
     exp_month = deals_month_map.get("EXPIRED", 0)
     canc_month = deals_month_map.get("CANCELLED", 0)
     disp_month = deals_month_map.get("DISPUTED", 0)
-    total_closed_month = comp_month + exp_month + canc_month + disp_month
 
     def calc_pct(count: int, total: int) -> str:
         if total <= 0:
@@ -651,7 +650,6 @@ async def cq_admin_del_user_rating(callback: CallbackQuery, db_session: AsyncSes
 
     parts = callback.data.split("_")
     rating_id = int(parts[4])
-    uid = int(parts[5])
 
     rating_res = await db_session.execute(
         select(DealRating).where(DealRating.id == rating_id).with_for_update()
@@ -919,7 +917,7 @@ async def process_direct_user_msg(message: Message, state: FSMContext, db_sessio
 
     formatted_msg = (
         f"📩 **رسالة رسمية من إدارة {BOT_NAME}**\n\n"
-        f"{msg_content}"
+        f"{escape_markdown(msg_content)}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 العودة لملف المستخدم", callback_data=f"adm_view_user_{target_uid}")],
@@ -1954,7 +1952,7 @@ async def process_broadcast_message(message: Message, state: FSMContext, db_sess
 
     formatted_broadcast = (
         f"📢 **تنبيه إداري — {BOT_NAME}**\n\n"
-        f"{broadcast_text}"
+        f"{escape_markdown(broadcast_text)}"
     )
 
     for uid in all_user_ids:

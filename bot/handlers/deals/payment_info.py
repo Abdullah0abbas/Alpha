@@ -11,7 +11,6 @@ from sqlalchemy import update
 
 from db.models import Deal, Offer, User
 from bot.states.flow_states import DealPaymentFSM
-from config.settings import settings
 from bot.utils.deal_card import push_deal_card
 from bot.utils.deal_guard import acquire_deal_lock
 from bot.utils.validators import validate_bep20_address, validate_payment_method_info
@@ -358,7 +357,7 @@ async def cq_deal_choose_payment_method(callback: CallbackQuery, state: FSMConte
         return
     pm_name, prompt_text = prompt_res
 
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
@@ -400,7 +399,7 @@ async def cq_deal_choose_payment_method(callback: CallbackQuery, state: FSMConte
 @payment_info_router.callback_query(F.data.startswith("set_seller_info_"))
 async def start_set_seller_info(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
@@ -456,7 +455,7 @@ async def start_set_seller_info(callback: CallbackQuery, state: FSMContext, db_s
 @payment_info_router.callback_query(F.data.startswith("use_saved_seller_info_"))
 async def cq_use_saved_seller_info(callback: CallbackQuery, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
@@ -501,7 +500,7 @@ async def cq_use_saved_seller_info(callback: CallbackQuery, db_session: AsyncSes
 @payment_info_router.callback_query(F.data.startswith("manual_set_seller_info_"))
 async def cq_manual_set_seller_info(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
@@ -576,7 +575,7 @@ async def process_set_seller_info(message: Message, state: FSMContext, db_sessio
         await state.update_data(prompt_msg_id=warn_msg.message_id, prompt_chat_id=warn_msg.chat.id)
         return
 
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=message.from_user.id,
         expected_statuses=SELLER_INFO_ALLOWED_STATUSES,
@@ -606,7 +605,7 @@ async def process_set_seller_info(message: Message, state: FSMContext, db_sessio
 @payment_info_router.callback_query(F.data.startswith("set_buyer_payout_"))
 async def start_set_buyer_payout(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses=["AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT", "ADMIN_APPROVAL"],
@@ -677,7 +676,7 @@ async def start_set_buyer_payout(callback: CallbackQuery, state: FSMContext, db_
 @payment_info_router.callback_query(F.data.startswith("use_saved_buyer_wallet_"))
 async def cq_use_saved_buyer_wallet(callback: CallbackQuery, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses=["AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT", "ADMIN_APPROVAL"],
@@ -725,7 +724,7 @@ async def cq_use_saved_buyer_wallet(callback: CallbackQuery, db_session: AsyncSe
 @payment_info_router.callback_query(F.data.startswith("manual_set_buyer_wallet_"))
 async def cq_manual_set_buyer_wallet(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
     deal_id = int(callback.data.split("_")[-1])
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=callback.from_user.id,
         expected_statuses=["AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT", "ADMIN_APPROVAL"],
@@ -789,7 +788,7 @@ async def process_set_buyer_wallet(message: Message, state: FSMContext, db_sessi
         await state.clear()
         return
 
-    valid, deal, err_code, err_msg = await acquire_deal_lock(
+    valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
         user_id=message.from_user.id,
         expected_statuses=["AWAITING_SYP_PAYMENT", "SYP_PAYMENT_SENT", "ADMIN_APPROVAL"],

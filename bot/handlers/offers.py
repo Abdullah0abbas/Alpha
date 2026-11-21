@@ -37,15 +37,13 @@ from bot.utils.payment_prompts import (
 )
 from bot.utils.offer_wizard import (
     push_wizard_step,
-    pop_wizard_step,
     extract_primary_payout_info,
     is_wizard_data_complete,
     format_wizard_summary,
     format_duration_hours_minutes,
     format_wizard_draft_header,
-    FEE_RULE_LINE
 )
-from bot.utils.branding import BOT_NAME, CHANNEL_NAME
+from bot.utils.branding import BOT_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -309,7 +307,6 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
 async def process_offer_type(callback: CallbackQuery, state: FSMContext):
     """Capture offer type and advance to rate input."""
     offer_type = callback.data.split("_")[-1]
-    offer_type_ar = "🔴 بيع USDT" if offer_type == "sell" else "🟢 شراء USDT"
     data = await state.get_data()
     history = push_wizard_step(data.get("step_history", []), "type", {"offer_type": offer_type})
 
@@ -804,7 +801,7 @@ async def use_saved_payment_method_info(callback: CallbackQuery, state: FSMConte
         await callback.answer("لا توجد بيانات محفوظة لهذه الوسيلة.", show_alert=True)
         return
 
-    is_valid, norm_info, err = validate_payment_method_info(cur_method, saved_val)
+    is_valid, norm_info, _ = validate_payment_method_info(cur_method, saved_val)
     final_info = norm_info if is_valid else f"{cur_method}: {saved_val}"
 
     payout_details = dict(data.get("payout_details", {}) or {})
