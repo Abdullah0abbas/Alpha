@@ -7,13 +7,14 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.future import select
 from sqlalchemy import func, or_
 
 from db.models import User, Deal, Offer, SystemSetting, Dispute, DealRating, PaymentProof, AuditLog, Negotiation
 from bot.states.flow_states import AdminFSM
 from bot.middlewares.maintenance import set_cached_maintenance
-from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown, format_local_datetime
+from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown, format_local_datetime, PAYMENT_METHOD_ICONS
 from bot.utils.deal_views import (
     format_admin_deal_review_text,
     build_admin_deal_keyboard,
@@ -1382,41 +1383,56 @@ async def cq_admin_do_manual_deposit(callback: CallbackQuery, db_session: AsyncS
 
     was_closed = deal.status in ("CANCELLED", "EXPIRED")
     recovered_offer = None
+    offer = None
+
+    if deal.offer_id:
+        offer_res = await db_session.execute(
+            select(Offer).where(Offer.id == deal.offer_id).with_for_update()
+        )
+        offer = offer_res.scalar_one_or_none()
 
     if was_closed:
         can_recover, reason = await can_admin_recover_cancelled_deal(deal, db_session)
         if not can_recover:
+            await db_session.commit()
             await callback.answer(reason, show_alert=True)
             return
 
-        if deal.offer_id:
-            offer_res = await db_session.execute(
-                select(Offer).where(Offer.id == deal.offer_id).with_for_update()
-            )
-            offer = offer_res.scalar_one_or_none()
-            if offer and offer.status == "completed":
+        if offer:
+            if offer.status == "completed":
+                await db_session.commit()
                 await callback.answer(
                     "⚠️ لا يمكن استعادة الصفقة لأن العرض المرتبط بها قد اكتمل مسبقاً.",
                     show_alert=True
                 )
                 return
-            if offer and offer.status in ("active", "expired", "cancelled", "deleted"):
+            if offer.status == "negotiating":
+                await db_session.commit()
+                await callback.answer(
+                    "⚠️ لا يمكن استعادة الصفقة لأن العرض مرتبط حالياً بجلسة تفاوض جارية.",
+                    show_alert=True
+                )
+                return
+            if offer.status in ("active", "expired", "cancelled", "deleted"):
                 offer.status = "reserved"
                 offer.status_changed_at = datetime.now(timezone.utc)
                 recovered_offer = offer
 
+    seller_method_val = ""
     seller_info_val = ""
     if isinstance(deal.seller_payment_info, dict):
+        seller_method_val = str(deal.seller_payment_info.get("method") or "").strip()
         seller_info_val = str(deal.seller_payment_info.get("info") or "").strip()
     elif isinstance(deal.seller_payment_info, str):
         seller_info_val = deal.seller_payment_info.strip()
 
+    now = datetime.now(timezone.utc)
     if seller_info_val and seller_info_val not in ("PENDING", "غير محدد", "N/A"):
         deal.status = "AWAITING_SYP_PAYMENT"
-        deal.expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+        deal.expires_at = now + timedelta(minutes=30)
     else:
         deal.status = "USDT_DEPOSITED"
-        deal.expires_at = None
+        deal.expires_at = now + timedelta(minutes=30)
 
     add_audit(
         session=db_session,
@@ -1431,7 +1447,15 @@ async def cq_admin_do_manual_deposit(callback: CallbackQuery, db_session: AsyncS
             "recovered_from_timeout": was_closed,
         }
     )
-    await db_session.commit()
+    try:
+        await db_session.commit()
+    except IntegrityError:
+        await db_session.rollback()
+        await callback.answer(
+            "⚠️ تعذّر استعادة الصفقة لوجود صفقة أخرى مفتوحة على نفس العرض حالياً.",
+            show_alert=True
+        )
+        return
 
     if recovered_offer:
         try:
@@ -1440,6 +1464,32 @@ async def cq_admin_do_manual_deposit(callback: CallbackQuery, db_session: AsyncS
             logger.warning(f"Failed to update channel offer message on deal #{deal.id} recovery: {e}")
 
     await push_deal_card(deal.id, callback.bot)
+
+    if (
+        deal.status == "USDT_DEPOSITED"
+        and offer is not None
+        and offer.offer_type == "sell"
+        and len(offer.payment_methods or []) > 1
+        and seller_method_val in ("", "PENDING", "غير محدد")
+    ):
+        methods = list(offer.payment_methods or [])
+        buttons = []
+        for idx, m in enumerate(methods):
+            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
+            buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"nego_pm_{deal.id}_{idx}")])
+        pm_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        try:
+            await callback.bot.send_message(
+                chat_id=deal.buyer_id,
+                text=(
+                    f"🔒 **تحديث صفقة #{deal.id} — تم تأكيد إيداع الضمان**\n\n"
+                    f"يرجى اختيار وسيلة الدفع التي ترغب بالتحويل عبرها لإظهار حساب البائع ومتابعة الدفع:"
+                ),
+                reply_markup=pm_kb,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to prompt buyer {deal.buyer_id} for payment method on manual confirm deal #{deal.id}: {e}")
 
     try:
         await notify_usdt_deposit_confirmed(
@@ -1596,7 +1646,22 @@ async def cq_admin_do_force_dispute(callback: CallbackQuery, db_session: AsyncSe
         return
 
     if deal.status in ["COMPLETED", "CANCELLED", "EXPIRED", "DISPUTED"]:
+        await db_session.commit()
         await callback.answer(f"الصفقة مغلقة مسبقاً بالحالة: {deal.status}", show_alert=True)
+        return
+
+    if deal.status not in (
+        "USDT_DEPOSITED",
+        "AWAITING_SYP_PAYMENT",
+        "SYP_PAYMENT_SENT",
+        "SYP_PAYMENT_CONFIRMED",
+        "ADMIN_APPROVAL",
+    ):
+        await db_session.commit()
+        await callback.answer(
+            "لا يمكن إغلاق الصفقة كنزاع قبل مرحلة إيداع الضمان؛ استخدم الإلغاء الإداري بدلاً من ذلك.",
+            show_alert=True,
+        )
         return
 
     prev_status = deal.status
@@ -1609,6 +1674,7 @@ async def cq_admin_do_force_dispute(callback: CallbackQuery, db_session: AsyncSe
         offer = offer_res.scalar_one_or_none()
         if offer:
             offer.status = "cancelled"
+            offer.status_changed_at = datetime.now(timezone.utc)
 
     dispute_row = Dispute(
         deal_id=deal.id,

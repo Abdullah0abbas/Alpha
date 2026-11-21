@@ -4,7 +4,7 @@ from sqlalchemy.future import select
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.models import Deal, Offer, User, DealRating, PaymentProof, AuditLog
+from db.models import Deal, Offer, User, DealRating, PaymentProof, AuditLog, Negotiation
 from bot.services.rating_service import format_stars
 from bot.utils.formatters import format_syp, format_usdt, safe_username, escape_markdown, format_local_datetime
 
@@ -285,6 +285,8 @@ async def can_admin_recover_cancelled_deal(deal: Deal, db_session: AsyncSession)
         offer = offer_res.scalar_one_or_none()
         if offer and offer.status == "completed":
             return False, "⚠️ لا يمكن استعادة الصفقة لأن العرض المرتبط بها قد اكتمل مسبقاً."
+        if offer and offer.status == "negotiating":
+            return False, "⚠️ لا يمكن استعادة الصفقة لأن العرض مرتبط حالياً بجلسة تفاوض جارية."
 
         conflict_res = await db_session.execute(
             select(Deal.id).where(
@@ -300,6 +302,19 @@ async def can_admin_recover_cancelled_deal(deal: Deal, db_session: AsyncSession)
                 f"⚠️ لا يمكن استعادة الصفقة لأن العرض مرتبط حالياً بصفقة أخرى جارية (#{conflicting_deal_id})."
             )
 
+        neg_conflict_res = await db_session.execute(
+            select(Negotiation.id).where(
+                Negotiation.offer_id == deal.offer_id,
+                Negotiation.status.in_(["PENDING_MAKER", "PENDING_TAKER"])
+            ).limit(1)
+        )
+        conflicting_neg_id = neg_conflict_res.scalar_one_or_none()
+        if conflicting_neg_id:
+            return (
+                False,
+                f"⚠️ لا يمكن استعادة الصفقة لأن العرض مرتبط حالياً بجلسة تفاوض جارية (#{conflicting_neg_id})."
+            )
+
     return True, ""
 
 
@@ -307,7 +322,8 @@ async def build_admin_deal_keyboard(deal: Deal, db_session: AsyncSession) -> Inl
     """
     Builds the comprehensive admin inspection keyboard:
     - Escrow release (ADMIN_APPROVAL)
-    - Admin force confirm SYP or close as dispute (SYP_PAYMENT_SENT)
+    - Admin force confirm SYP (SYP_PAYMENT_SENT)
+    - Admin close as dispute (post-deposit states: USDT_DEPOSITED, AWAITING_SYP_PAYMENT, SYP_PAYMENT_SENT, SYP_PAYMENT_CONFIRMED, ADMIN_APPROVAL)
     - Admin force cancel (early/open states)
     - View attached SYP payment proof screenshot (PaymentProof)
     - Open Seller / Buyer full user profile
@@ -331,6 +347,14 @@ async def build_admin_deal_keyboard(deal: Deal, db_session: AsyncSession) -> Inl
         buttons.append([
             InlineKeyboardButton(text="⚡ تأكيد استلام الليرة إدارياً", callback_data=f"adm_ask_force_conf_{deal.id}")
         ])
+
+    if deal.status in (
+        "USDT_DEPOSITED",
+        "AWAITING_SYP_PAYMENT",
+        "SYP_PAYMENT_SENT",
+        "SYP_PAYMENT_CONFIRMED",
+        "ADMIN_APPROVAL",
+    ):
         buttons.append([
             InlineKeyboardButton(text="⚠️ إغلاق كنزاع (عدم استلام)", callback_data=f"adm_ask_force_dispute_{deal.id}")
         ])

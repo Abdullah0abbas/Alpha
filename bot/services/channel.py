@@ -1,5 +1,5 @@
 import logging
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.models import Offer
@@ -25,9 +25,9 @@ def _resolve_trader_stats(offer: Offer, trader=None) -> tuple[str, int, str, str
     ) if user_obj else 0
     rep_raw = getattr(user_obj, "reputation_score", Decimal("100.0")) if user_obj else Decimal("100.0")
     try:
-        rep_val = float(rep_raw)
+        rep_dec = rep_raw if isinstance(rep_raw, Decimal) else Decimal(str(rep_raw))
     except Exception:
-        rep_val = 100.0
+        rep_dec = Decimal("100.0")
 
     tier_raw = getattr(user_obj, "tier", None) if user_obj else None
     if tier_raw == "Gold" or completed >= 50:
@@ -37,9 +37,9 @@ def _resolve_trader_stats(offer: Offer, trader=None) -> tuple[str, int, str, str
     else:
         tier_label = "برونزي🥉"
 
-    stars_5 = round((rep_val / 100.0) * 5.0, 1)
+    stars_5 = ((rep_dec / Decimal("100")) * Decimal("5")).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
     rep_str = f"⭐️ {stars_5}"
-    rate_pct = f"{rep_val:.1f}%"
+    rate_pct = f"{rep_dec.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)}%"
     return tier_label, completed, rate_pct, rep_str
 
 

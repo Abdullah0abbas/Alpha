@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -68,6 +68,11 @@ async def recalculate_user_reputation(
     Recomputes a user's reputation_score (0..100%) from all active DealRating rows.
     Defaults to 100% when the user has 0 ratings (e.g. before first rating or after deletion).
     """
+    user_res = await db_session.execute(
+        select(User).where(User.telegram_id == target_user_id).with_for_update()
+    )
+    user = user_res.scalar_one_or_none()
+
     agg_res = await db_session.execute(
         select(
             func.avg(DealRating.stars),
@@ -80,14 +85,11 @@ async def recalculate_user_reputation(
     if count_int == 0 or avg_stars is None:
         new_score = Decimal("100")
     else:
-        pct = round(float(avg_stars) * 20.0)
+        avg_dec = avg_stars if isinstance(avg_stars, Decimal) else Decimal(str(avg_stars))
+        pct = int((avg_dec * Decimal("20")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
         pct = max(20, min(100, pct))
         new_score = Decimal(str(pct))
 
-    user_res = await db_session.execute(
-        select(User).where(User.telegram_id == target_user_id)
-    )
-    user = user_res.scalar_one_or_none()
     if user:
         user.reputation_score = new_score
 

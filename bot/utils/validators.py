@@ -107,6 +107,8 @@ def validate_bep20_address(raw: str | None) -> Tuple[bool, str, str]:
     """
     if raw is None:
         return False, "", "يرجى إدخال عنوان محفظة غير فارغ."
+    if len(str(raw)) > 300:
+        return False, "", "⚠️ النص المدخل طويل جداً. يرجى إدخال عنوان المحفظة فقط (42 خانة)."
 
     cleaned = str(raw).strip()
     for ch in INVISIBLE_CHARS:
@@ -161,6 +163,8 @@ def validate_sham_cash_address(raw: str | None) -> Tuple[bool, str, str]:
     """
     if not raw:
         return False, "", "يرجى إدخال عنوان حساب شام كاش (32 خانة)."
+    if len(str(raw)) > 300:
+        return False, "", "⚠️ النص المدخل طويل جداً. يرجى إدخال عنوان حساب شام كاش فقط (32 خانة)."
     cleaned = str(raw).strip()
     for ch in INVISIBLE_CHARS:
         cleaned = cleaned.replace(ch, "")
@@ -190,6 +194,8 @@ def validate_syriatel_cash_number(raw: str | None) -> Tuple[bool, str, str]:
     """
     if not raw:
         return False, "", "يرجى إدخال رقم سيريتيل كاش (10 أرقام يبدأ بـ 09)."
+    if len(str(raw)) > 300:
+        return False, "", "⚠️ النص المدخل طويل جداً. يرجى إدخال رقم سيريتيل كاش فقط (10 أرقام)."
     cleaned = str(raw).strip()
     for ch in INVISIBLE_CHARS:
         cleaned = cleaned.replace(ch, "")
@@ -227,6 +233,8 @@ def validate_bank_transfer_info(raw: str | None) -> Tuple[bool, str, str]:
     """
     if not raw:
         return False, "", "يرجى إدخال الاسم الثلاثي ورقم الموبايل السوري."
+    if len(str(raw)) > 300:
+        return False, "", "⚠️ النص المدخل طويل جداً! يرجى الاكتفاء بالاسم الثلاثي ورقم الموبايل."
     cleaned = str(raw).strip()
     for ch in INVISIBLE_CHARS:
         cleaned = cleaned.replace(ch, "")
@@ -302,6 +310,8 @@ def validate_payment_method_info(method: Optional[str], raw: str | None) -> Tupl
     """
     if raw is None:
         return False, "", "يرجى إدخال بيانات صالحة وغير فارغة."
+    if len(str(raw)) > 300:
+        return False, "", "⚠️ النص المدخل طويل جداً! يرجى إدخال بيانات الحساب المطلوبة فقط."
 
     m = (method or "").strip()
 

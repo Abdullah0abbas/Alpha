@@ -411,6 +411,39 @@ async def start_set_seller_info(callback: CallbackQuery, state: FSMContext, db_s
         await callback.answer(err_msg, show_alert=True)
         return
 
+    seller_method_val = ""
+    if isinstance(deal.seller_payment_info, dict):
+        seller_method_val = str(deal.seller_payment_info.get("method") or "").strip()
+
+    if deal.offer_id and seller_method_val in ("", "PENDING", "غير محدد"):
+        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+        offer = offer_res.scalar_one_or_none()
+        if offer and offer.offer_type == "sell" and len(offer.payment_methods or []) > 1:
+            await db_session.commit()
+            methods = list(offer.payment_methods or [])
+            buttons = []
+            for idx, m in enumerate(methods):
+                icon = PAYMENT_METHOD_ICONS.get(m, "💳")
+                buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"nego_pm_{deal.id}_{idx}")])
+            pm_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+            try:
+                await callback.bot.send_message(
+                    chat_id=deal.buyer_id,
+                    text=(
+                        f"💳 **تذكير باختيار وسيلة الدفع — صفقة #{deal.id}**\n\n"
+                        f"قام البائع بإيداع رصيد الضمان وبانتظار اختيارك لوسيلة الدفع المفضلة لإظهار الحساب ومتابعة التحويل:"
+                    ),
+                    reply_markup=pm_kb,
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to re-prompt buyer {deal.buyer_id} for payment method on deal #{deal.id}: {e}")
+            await callback.answer(
+                "⏳ حسابات استلامك محفوظة مسبقاً في العرض، وتم إرسال تذكير للمشتري لاختيار وسيلة الدفع المفضلة.",
+                show_alert=True,
+            )
+            return
+
     await prompt_seller_payment_info_flow(
         deal=deal,
         callback=callback,
@@ -670,11 +703,13 @@ async def cq_use_saved_buyer_wallet(callback: CallbackQuery, db_session: AsyncSe
     saved_wallet = buyer_user.saved_usdt_address.strip() if (buyer_user and buyer_user.saved_usdt_address) else None
 
     if not saved_wallet:
+        await db_session.commit()
         await callback.answer("لم يتم العثور على عنوان محفوظ.", show_alert=True)
         return
 
     is_valid, normalized_wallet, err_msg = validate_bep20_address(saved_wallet)
     if not is_valid:
+        await db_session.commit()
         await callback.answer(f"⚠️ عنوان المحفظة المحفوظ غير صالح: {err_msg}", show_alert=True)
         return
 

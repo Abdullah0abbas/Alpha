@@ -161,8 +161,8 @@ async def process_taker_amount(message: Message, state: FSMContext):
     ])
     try:
         amount_val = clean_numeric_input(message.text)
-        if not amount_val or amount_val <= 0:
-            await message.answer("⚠️ الكمية يجب أن تكون أكبر من 0. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
+        if not amount_val or amount_val < Decimal("0.01") or amount_val > Decimal("1000000"):
+            await message.answer("⚠️ الكمية يجب أن تكون بين 0.01 و 1,000,000 USDT. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
             return
     except Exception:
         await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم صحيح للكمية:", reply_markup=cancel_kb, parse_mode="Markdown")
@@ -207,8 +207,8 @@ async def process_taker_rate(message: Message, state: FSMContext):
     ])
     try:
         rate_val = clean_numeric_input(message.text)
-        if not rate_val or rate_val <= 0:
-            await message.answer("⚠️ السعر يجب أن يكون أكبر من 0. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
+        if not rate_val or rate_val < Decimal("1") or rate_val > Decimal("10000000"):
+            await message.answer("⚠️ السعر يجب أن يكون رقماً موجباً ومنطقياً. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
             return
     except Exception:
         await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم لسعر الصرف:", reply_markup=cancel_kb, parse_mode="Markdown")
@@ -249,6 +249,8 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
                 await state.clear()
                 await message.answer("⚠️ عذراً، الكمية المقترحة أصبحت خارج حدود العرض الحالية.")
                 return
+        if offer.negotiable_type not in ("rate", "both"):
+            rate_val = Decimal(str(offer.rate))
 
         # Lock offer to negotiating and update status_changed_at atomically
         offer.status = "negotiating"
@@ -354,6 +356,7 @@ async def maker_accept_negotiation(callback: CallbackQuery, db_session: AsyncSes
         return
 
     if callback.from_user.id != neg.maker_id and callback.from_user.id not in settings.ADMIN_IDS:
+        await db_session.commit()
         await callback.answer("غير مصرح: هذا الإجراء لصاحب العرض فقط.", show_alert=True)
         return
 
@@ -388,6 +391,7 @@ async def maker_reject_negotiation(callback: CallbackQuery, db_session: AsyncSes
         return
 
     if callback.from_user.id != neg.maker_id and callback.from_user.id not in settings.ADMIN_IDS:
+        await db_session.commit()
         await callback.answer("غير مصرح: هذا الإجراء لصاحب العرض فقط.", show_alert=True)
         return
 
@@ -397,9 +401,10 @@ async def maker_reject_negotiation(callback: CallbackQuery, db_session: AsyncSes
         await callback.answer("تم اتخاذ قرار مسبقاً بشأن هذا التفاوض.", show_alert=True)
         return
 
+    now = datetime.now(timezone.utc)
     neg.status = "REJECTED"
     
-    # Revert offer to active
+    # Revert offer to active (or expired if its duration elapsed)
     offer_id_val = neg.offer_id
     reverted_offer = None
     if offer_id_val:
@@ -408,8 +413,13 @@ async def maker_reject_negotiation(callback: CallbackQuery, db_session: AsyncSes
         )
         offer = offer_res.scalar_one_or_none()
         if offer and offer.status == "negotiating":
-            offer.status = "active"
-            offer.status_changed_at = datetime.now(timezone.utc)
+            if offer.expires_at and offer.expires_at <= now:
+                offer.status = "expired"
+                offer.status_changed_at = now
+                offer.expires_at = None
+            else:
+                offer.status = "active"
+                offer.status_changed_at = now
             reverted_offer = offer
 
     await db_session.commit()
@@ -459,9 +469,14 @@ async def maker_start_counter(callback: CallbackQuery, db_session: AsyncSession,
         await callback.answer("تم اتخاذ قرار مسبقاً بشأن هذا التفاوض.", show_alert=True)
         return
 
+    now = datetime.now(timezone.utc)
+    if neg.expires_at is not None and neg.expires_at <= now:
+        await callback.answer("⚠️ انتهت المهلة الزمنية لجلسة التفاوض.", show_alert=True)
+        return
+
     offer_res = await db_session.execute(select(Offer).where(Offer.id == neg.offer_id))
     offer = offer_res.scalar_one_or_none()
-    if not offer or offer.status not in ("active", "negotiating"):
+    if not offer or offer.status not in ("active", "negotiating") or (offer.expires_at and offer.expires_at <= now):
         await callback.answer("⚠️ العرض المرتبط بهذه المفاوضة لم يعد متاحاً.", show_alert=True)
         return
 
@@ -513,8 +528,8 @@ async def process_maker_counter_amount(message: Message, state: FSMContext):
     ])
     try:
         amount_val = clean_numeric_input(message.text)
-        if not amount_val or amount_val <= 0:
-            await message.answer("⚠️ الكمية يجب أن تكون أكبر من 0. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
+        if not amount_val or amount_val < Decimal("0.01") or amount_val > Decimal("1000000"):
+            await message.answer("⚠️ الكمية يجب أن تكون بين 0.01 و 1,000,000 USDT. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
             return
     except Exception:
         await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم صحيح للكمية:", reply_markup=cancel_kb, parse_mode="Markdown")
@@ -543,8 +558,8 @@ async def process_maker_counter_rate(message: Message, state: FSMContext):
     ])
     try:
         rate_val = clean_numeric_input(message.text)
-        if not rate_val or rate_val <= 0:
-            await message.answer("⚠️ السعر يجب أن يكون أكبر من 0. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
+        if not rate_val or rate_val < Decimal("1") or rate_val > Decimal("10000000"):
+            await message.answer("⚠️ السعر يجب أن يكون رقماً موجباً ومنطقياً. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
             return
     except Exception:
         await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم لسعر الصرف:", reply_markup=cancel_kb, parse_mode="Markdown")
@@ -574,6 +589,12 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
             await state.clear()
             return
 
+        if message.from_user.id != neg.maker_id and message.from_user.id not in settings.ADMIN_IDS:
+            await db_session.commit()
+            await message.answer("غير مصرح: هذا الإجراء لصاحب العرض فقط.")
+            await state.clear()
+            return
+
         offer_res = await db_session.execute(select(Offer).where(Offer.id == neg.offer_id))
         offer = offer_res.scalar_one_or_none()
         if not offer or offer.status not in ("active", "negotiating") or (offer.expires_at and offer.expires_at <= now):
@@ -590,6 +611,8 @@ async def _submit_maker_counter(message: Message, state: FSMContext, amount_val:
                 await state.clear()
                 await message.answer("⚠️ عذراً، الكمية المقترحة أصبحت خارج حدود العرض الحالية.")
                 return
+        if offer.negotiable_type not in ("rate", "both"):
+            rate_val = Decimal(str(offer.rate))
 
         expires_at = now + timedelta(minutes=30)
 
@@ -667,6 +690,7 @@ async def taker_accept_counter(callback: CallbackQuery, db_session: AsyncSession
         return
 
     if callback.from_user.id != neg.taker_id and callback.from_user.id not in settings.ADMIN_IDS:
+        await db_session.commit()
         await callback.answer("غير مصرح: هذا الإجراء للمفاوض فقط.", show_alert=True)
         return
 
@@ -701,6 +725,7 @@ async def taker_reject_counter(callback: CallbackQuery, db_session: AsyncSession
         return
 
     if callback.from_user.id != neg.taker_id and callback.from_user.id not in settings.ADMIN_IDS:
+        await db_session.commit()
         await callback.answer("غير مصرح: هذا الإجراء للمفاوض فقط.", show_alert=True)
         return
 
@@ -710,9 +735,10 @@ async def taker_reject_counter(callback: CallbackQuery, db_session: AsyncSession
         await callback.answer("تم اتخاذ قرار مسبقاً بشأن هذا العرض.", show_alert=True)
         return
 
+    now = datetime.now(timezone.utc)
     neg.status = "REJECTED"
 
-    # Revert offer to active
+    # Revert offer to active (or expired if its duration elapsed)
     offer_id_val = neg.offer_id
     reverted_offer = None
     if offer_id_val:
@@ -721,8 +747,13 @@ async def taker_reject_counter(callback: CallbackQuery, db_session: AsyncSession
         )
         offer = offer_res.scalar_one_or_none()
         if offer and offer.status == "negotiating":
-            offer.status = "active"
-            offer.status_changed_at = datetime.now(timezone.utc)
+            if offer.expires_at and offer.expires_at <= now:
+                offer.status = "expired"
+                offer.status_changed_at = now
+                offer.expires_at = None
+            else:
+                offer.status = "active"
+                offer.status_changed_at = now
             reverted_offer = offer
 
     await db_session.commit()

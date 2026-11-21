@@ -84,22 +84,32 @@ async def reject_deal_request(callback: CallbackQuery, db_session: AsyncSession)
         await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
         return
 
-    offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+    offer_res = await db_session.execute(
+        select(Offer).where(Offer.id == deal.offer_id).with_for_update()
+    )
     offer = offer_res.scalar_one_or_none()
     creator_id = offer.user_id if offer else None
 
     if callback.from_user.id != creator_id and callback.from_user.id not in settings.ADMIN_IDS:
+        await db_session.commit()
         await callback.answer("غير مصرح: هذا الإجراء لصاحب العرض فقط.", show_alert=True)
         return
 
     if deal.status != "PENDING_OWNER_APPROVAL":
+        await db_session.commit()
         await callback.answer("تم اتخاذ قرار مسبقاً بشأن هذا الطلب.", show_alert=True)
         return
 
+    now = datetime.now(timezone.utc)
     deal.status = "CANCELLED"
     if offer and offer.status == "reserved":
-        offer.status = "active"
-        offer.status_changed_at = datetime.now(timezone.utc)
+        if offer.expires_at and offer.expires_at <= now:
+            offer.status = "expired"
+            offer.status_changed_at = now
+            offer.expires_at = None
+        else:
+            offer.status = "active"
+            offer.status_changed_at = now
 
     add_audit(
         session=db_session,
@@ -231,8 +241,10 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
         await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
         return
 
-    # Fetch offer creator for B restrictions
-    offer_result = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+    # Fetch and lock offer row to prevent concurrent state conflicts
+    offer_result = await db_session.execute(
+        select(Offer).where(Offer.id == deal.offer_id).with_for_update()
+    )
     offer = offer_result.scalar_one_or_none()
     offer_owner_id = offer.user_id if offer else -1
 
@@ -245,6 +257,7 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
         admin_ids=settings.ADMIN_IDS
     )
     if not allowed:
+        await db_session.commit()
         await callback.answer(err_msg, show_alert=True)
         return
 
@@ -258,13 +271,17 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
 
     actor_id = callback.from_user.id
 
+    now = datetime.now(timezone.utc)
     deal.status = "CANCELLED"
 
-    offer_result = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
-    offer = offer_result.scalar_one_or_none()
     if offer and offer.status == "reserved":
-        offer.status = "active"
-        offer.status_changed_at = datetime.now(timezone.utc)
+        if offer.expires_at and offer.expires_at <= now:
+            offer.status = "expired"
+            offer.status_changed_at = now
+            offer.expires_at = None
+        else:
+            offer.status = "active"
+            offer.status_changed_at = now
 
     add_audit(
         session=db_session,
@@ -332,45 +349,69 @@ async def my_deals(message: Message, db_session: AsyncSession):
     deals = result.scalars().all()
 
     if not deals and not admin_pending_deals:
+        await db_session.commit()
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")]
         ])
         await message.answer("ℹ️ ليس لديك أي صفقات نشطة حالياً.", reply_markup=kb)
         return
 
+    # Pre-build admin review cards and user deal cards before closing the DB read transaction
+    admin_cards_payload = []
+    for deal in admin_pending_deals:
+        admin_text = await format_admin_deal_review_text(deal, db_session)
+        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")]
+        ])
+        admin_cards_payload.append((admin_text, admin_kb))
+
+    offer_ids = list({d.offer_id for d in deals if d.offer_id})
+    offers_by_id = {}
+    if offer_ids:
+        offers_res = await db_session.execute(select(Offer).where(Offer.id.in_(offer_ids)))
+        offers_by_id = {o.id: o for o in offers_res.scalars().all()}
+
+    user_cards_payload = []
+    for deal in deals:
+        is_buyer_card = (deal.buyer_id == user_id)
+        old_msg_id = deal.buyer_card_msg_id if is_buyer_card else deal.seller_card_msg_id
+        is_seller_proof_photo = (deal.seller_id == user_id and deal.status == "SYP_PAYMENT_SENT")
+        offer = offers_by_id.get(deal.offer_id)
+        is_offer_owner = bool(offer and offer.user_id == user_id)
+        card_text, kb = render_deal_card(deal, user_id, is_offer_owner=is_offer_owner)
+        user_cards_payload.append((deal.id, is_buyer_card, old_msg_id, is_seller_proof_photo, card_text, kb))
+
+    # Close read transaction before making Telegram API calls
+    await db_session.commit()
+
     # If admin, show deals awaiting admin approval first
-    if admin_pending_deals:
+    if admin_cards_payload:
         await message.answer("🛡️ **صفقات بانتظار الاعتماد الإداري:**", parse_mode="Markdown")
-        for deal in admin_pending_deals:
-            admin_text = await format_admin_deal_review_text(deal, db_session)
-            admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="☑️ اعتماد وإطلاق الضمان", callback_data=f"ask_rel_{deal.id}")]
-            ])
+        for admin_text, admin_kb in admin_cards_payload:
             await message.answer(admin_text, reply_markup=admin_kb, parse_mode="Markdown")
 
     # Show user's personal deals using unified render_deal_card
-    if deals:
-        if admin_pending_deals:
+    if user_cards_payload:
+        if admin_cards_payload:
             await message.answer("📋 **صفقاتك النشطة:**", parse_mode="Markdown")
 
-        for deal in deals:
-            old_msg_id = deal.buyer_card_msg_id if deal.buyer_id == user_id else deal.seller_card_msg_id
-            is_seller_proof_photo = (deal.seller_id == user_id and deal.status == "SYP_PAYMENT_SENT")
+        msg_id_updates = []
+        for deal_id, is_buyer_card, old_msg_id, is_seller_proof_photo, card_text, kb in user_cards_payload:
             if old_msg_id and not is_seller_proof_photo and hasattr(message, "bot") and message.bot:
                 try:
                     await message.bot.delete_message(chat_id=user_id, message_id=old_msg_id)
                 except Exception:
                     pass
 
-            offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
-            offer = offer_res.scalar_one_or_none()
-            is_offer_owner = bool(offer and offer.user_id == user_id)
-            card_text, kb = render_deal_card(deal, user_id, is_offer_owner=is_offer_owner)
             sent_msg = await message.answer(card_text, reply_markup=kb, parse_mode="Markdown")
 
             if not is_seller_proof_photo:
-                col = Deal.buyer_card_msg_id if deal.buyer_id == user_id else Deal.seller_card_msg_id
+                col = Deal.buyer_card_msg_id if is_buyer_card else Deal.seller_card_msg_id
+                msg_id_updates.append((deal_id, col, sent_msg.message_id))
+
+        if msg_id_updates:
+            for deal_id, col, new_msg_id in msg_id_updates:
                 await db_session.execute(
-                    update(Deal).where(Deal.id == deal.id).values({col: sent_msg.message_id})
+                    update(Deal).where(Deal.id == deal_id).values({col: new_msg_id})
                 )
-        await db_session.commit()
+            await db_session.commit()

@@ -9,7 +9,7 @@ from bot.services.channel import update_channel_offer_message
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from bot.utils.formatters import format_usdt, format_syp, escape_markdown
+from bot.utils.formatters import format_usdt, format_syp, escape_markdown, PAYMENT_METHOD_ICONS
 from config.settings import settings
 
 from bot.services.backup_service import perform_and_send_backup
@@ -56,6 +56,7 @@ from bot.utils.deal_card import push_deal_card
 from bot.utils.transitions import (
     can_expire_deal,
     can_expire_active_offer,
+    can_remind_usdt_deposited,
     can_remind_syp_payment,
     can_remind_syp_confirmation,
     can_expire_negotiation,
@@ -304,8 +305,162 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
             await report_handled_exception(bot, item_err, context_label=f"حذف عرض منتهي #{offer_id} (process_expiries)")
 
     # ----------------------------------------------------
-    # Branch 3: SYP Payment & Confirmation 30-Minute Reminders (Deal Stays Open)
+    # Branch 3: Post-Deposit 30-Minute Reminders (Deal Stays Open)
     # ----------------------------------------------------
+    support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip("@")
+    escaped_support = escape_markdown(support_username)
+
+    # Branch 3a: USDT_DEPOSITED 30-Minute Reminder & Admin Alert
+    usdt_dep_reminder_ids = []
+    try:
+        async with AsyncSessionLocal() as read_session:
+            usdt_dep_stmt = select(Deal.id).where(
+                Deal.status == "USDT_DEPOSITED",
+                Deal.expires_at.is_not(None),
+                Deal.expires_at <= now
+            ).limit(100)
+            usdt_dep_res = await read_session.execute(usdt_dep_stmt)
+            usdt_dep_reminder_ids = list(usdt_dep_res.scalars().all())
+    except Exception as e:
+        logger.error(f"Error querying candidate USDT_DEPOSITED reminder deal IDs: {e}", exc_info=True)
+
+    for deal_id in usdt_dep_reminder_ids:
+        try:
+            async with AsyncSessionLocal() as item_session:
+                deal_res = await item_session.execute(
+                    select(Deal).where(Deal.id == deal_id).with_for_update(skip_locked=True)
+                )
+                deal = deal_res.scalar_one_or_none()
+                if not deal:
+                    continue
+
+                if not can_remind_usdt_deposited(deal.status, deal.expires_at, now):
+                    continue
+
+                deal.expires_at = None
+                deal_id_val = deal.id
+                offer_id_val = deal.offer_id
+                buyer_id_val = deal.buyer_id
+                seller_id_val = deal.seller_id
+                amount_usdt_val = deal.amount_usdt
+                amount_syp_val = deal.amount_syp
+                seller_method_val = ""
+                if isinstance(deal.seller_payment_info, dict):
+                    seller_method_val = str(deal.seller_payment_info.get("method") or "").strip()
+
+                offer_methods = []
+                is_multi_sell_awaiting_buyer_pm = False
+                if offer_id_val:
+                    offer_res = await item_session.execute(select(Offer).where(Offer.id == offer_id_val))
+                    offer_obj = offer_res.scalar_one_or_none()
+                    if offer_obj:
+                        offer_methods = list(offer_obj.payment_methods or [])
+                        is_multi_sell_awaiting_buyer_pm = (
+                            offer_obj.offer_type == "sell"
+                            and len(offer_methods) > 1
+                            and seller_method_val in ("", "PENDING", "غير محدد")
+                        )
+
+                await item_session.commit()
+                syp_reminders_count += 1
+                logger.info(f"Sent 30-min USDT_DEPOSITED reminder and admin alert for deal #{deal_id_val}")
+
+                if is_multi_sell_awaiting_buyer_pm:
+                    if buyer_id_val:
+                        buttons = []
+                        for idx, m in enumerate(offer_methods):
+                            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
+                            buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"nego_pm_{deal_id_val}_{idx}")])
+                        pm_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+                        buyer_remind_text = (
+                            f"⏰ **تذكير اختيار وسيلة الدفع — صفقة #{deal_id_val}**\n\n"
+                            f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n"
+                            f"▫️ **المبلغ المقابل:** `{format_syp(amount_syp_val)}` ل.س\n\n"
+                            f"مرت 30 دقيقة على إيداع البائع للضمان دون اختيارك لوسيلة الدفع بالليرة السورية.\n"
+                            f"يرجى اختيار وسيلة الدفع أدناه لإظهار حساب البائع ومتابعة الصفقة:"
+                        )
+                        try:
+                            await bot.send_message(
+                                chat_id=buyer_id_val,
+                                text=buyer_remind_text,
+                                reply_markup=pm_kb,
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to notify buyer {buyer_id_val} of USDT_DEPOSITED method reminder for deal #{deal_id_val}: {e}")
+
+                    if seller_id_val:
+                        seller_info_text = (
+                            f"ℹ️ **تحديث صفقة #{deal_id_val}**\n\n"
+                            f"مرت 30 دقيقة على إيداعك للضمان دون اختيار المشتري لوسيلة الدفع بعد.\n"
+                            f"تم إرسال تذكير للمشتري وإشعار الإدارة لمتابعة الصفقة، ورصيد الضمان محجوز بأمان.\n"
+                            f"للاستفسار يمكنك التواصل مع الدعم الفني: @{escaped_support}"
+                        )
+                        try:
+                            await bot.send_message(chat_id=seller_id_val, text=seller_info_text, parse_mode="Markdown")
+                        except Exception as e:
+                            logger.warning(f"Failed to notify seller {seller_id_val} of USDT_DEPOSITED status for deal #{deal_id_val}: {e}")
+                else:
+                    if seller_id_val:
+                        seller_remind_kb = InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="💳 تحديد حساب الاستلام", callback_data=f"set_seller_info_{deal_id_val}")]
+                        ])
+                        seller_remind_text = (
+                            f"⏰ **تذكير تحديد حساب الاستلام — صفقة #{deal_id_val}**\n\n"
+                            f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n"
+                            f"▫️ **المبلغ المقابل:** `{format_syp(amount_syp_val)}` ل.س\n\n"
+                            f"مرت 30 دقيقة على إيداع الضمان دون تحديد حساب الاستلام بالليرة السورية.\n"
+                            f"يرجى الضغط على الزر أدناه لتحديد الحساب ليتمكن المشتري من التحويل:"
+                        )
+                        try:
+                            await bot.send_message(
+                                chat_id=seller_id_val,
+                                text=seller_remind_text,
+                                reply_markup=seller_remind_kb,
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to notify seller {seller_id_val} of USDT_DEPOSITED reminder for deal #{deal_id_val}: {e}")
+
+                    if buyer_id_val:
+                        buyer_info_text = (
+                            f"ℹ️ **تحديث صفقة #{deal_id_val}**\n\n"
+                            f"مرت 30 دقيقة على إيداع الضمان دون إدخال البائع لحساب الاستلام بعد.\n"
+                            f"تم إرسال تذكير للبائع وإشعار الإدارة لمتابعة الصفقة.\n"
+                            f"للاستفسار يمكنك التواصل مع الدعم الفني: @{escaped_support}"
+                        )
+                        try:
+                            await bot.send_message(chat_id=buyer_id_val, text=buyer_info_text, parse_mode="Markdown")
+                        except Exception as e:
+                            logger.warning(f"Failed to notify buyer {buyer_id_val} of USDT_DEPOSITED status for deal #{deal_id_val}: {e}")
+
+                admin_dep_alert = (
+                    f"⏰ **تنبيه تأخر في مرحلة حساب الاستلام (30 دقيقة) — صفقة #{deal_id_val}**\n\n"
+                    f"▫️ **البائع:** `{seller_id_val}`\n"
+                    f"▫️ **المشتري:** `{buyer_id_val}`\n"
+                    f"▫️ **الكمية:** `{format_usdt(amount_usdt_val)} USDT`\n"
+                    f"▫️ **المبلغ بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n\n"
+                    f"الصفقة متوقفة في حالة `USDT_DEPOSITED` منذ أكثر من 30 دقيقة."
+                )
+                admin_dep_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal_id_val}")],
+                    [
+                        InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{seller_id_val}"),
+                        InlineKeyboardButton(text="🟢 ملف المشتري", callback_data=f"adm_view_user_{buyer_id_val}")
+                    ]
+                ])
+                await dispatch_admin_notification(
+                    bot=bot,
+                    category="disputes",
+                    text=admin_dep_alert,
+                    reply_markup=admin_dep_kb,
+                    parse_mode="Markdown"
+                )
+        except Exception as item_err:
+            logger.error(f"Error sending USDT_DEPOSITED reminder for deal #{deal_id}: {item_err}", exc_info=True)
+            await report_handled_exception(bot, item_err, context_label=f"تذكير حساب الاستلام لصفقة #{deal_id}")
+
+    # Branch 3b: AWAITING_SYP_PAYMENT 30-Minute Buyer Reminder & Admin Alert
     syp_reminder_ids = []
     try:
         async with AsyncSessionLocal() as read_session:
@@ -319,8 +474,6 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
     except Exception as e:
         logger.error(f"Error querying candidate SYP payment reminder deal IDs: {e}", exc_info=True)
 
-    support_username = (settings.SUPPORT_USERNAME or "AlphaSupport").lstrip("@")
-    escaped_support = escape_markdown(support_username)
     for deal_id in syp_reminder_ids:
         try:
             async with AsyncSessionLocal() as item_session:
@@ -338,6 +491,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                 deal.expires_at = None
                 deal_id_val = deal.id
                 buyer_id_val = deal.buyer_id
+                seller_id_val = deal.seller_id
                 amount_usdt_val = deal.amount_usdt
                 amount_syp_val = deal.amount_syp
 
@@ -366,11 +520,46 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                         )
                     except Exception as e:
                         logger.warning(f"Failed to notify buyer {buyer_id_val} of 30-min SYP reminder for deal #{deal_id_val}: {e}")
+
+                if seller_id_val:
+                    seller_wait_text = (
+                        f"ℹ️ **تحديث صفقة #{deal_id_val}**\n\n"
+                        f"مرت 30 دقيقة على انتظار تحويل الليرة السورية من المشتري.\n"
+                        f"تم إرسال تذكير للمشتري وإشعار الإدارة لمتابعة الصفقة، ورصيد الضمان محجوز بأمان.\n"
+                        f"للاستفسار يمكنك التواصل مع الدعم الفني: @{escaped_support}"
+                    )
+                    try:
+                        await bot.send_message(chat_id=seller_id_val, text=seller_wait_text, parse_mode="Markdown")
+                    except Exception as e:
+                        logger.warning(f"Failed to notify seller {seller_id_val} of 30-min SYP payment delay for deal #{deal_id_val}: {e}")
+
+                admin_syp_alert = (
+                    f"⏰ **تنبيه تأخر تحويل الليرة (30 دقيقة) — صفقة #{deal_id_val}**\n\n"
+                    f"▫️ **البائع:** `{seller_id_val}`\n"
+                    f"▫️ **المشتري:** `{buyer_id_val}`\n"
+                    f"▫️ **الكمية:** `{format_usdt(amount_usdt_val)} USDT`\n"
+                    f"▫️ **المبلغ بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n\n"
+                    f"مرت 30 دقيقة في مرحلة `AWAITING_SYP_PAYMENT` دون إرفاق إشعار التحويل من المشتري."
+                )
+                admin_syp_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal_id_val}")],
+                    [
+                        InlineKeyboardButton(text="🔴 ملف البائع", callback_data=f"adm_view_user_{seller_id_val}"),
+                        InlineKeyboardButton(text="🟢 ملف المشتري", callback_data=f"adm_view_user_{buyer_id_val}")
+                    ]
+                ])
+                await dispatch_admin_notification(
+                    bot=bot,
+                    category="disputes",
+                    text=admin_syp_alert,
+                    reply_markup=admin_syp_kb,
+                    parse_mode="Markdown"
+                )
         except Exception as item_err:
             logger.error(f"Error sending SYP payment reminder for deal #{deal_id}: {item_err}", exc_info=True)
             await report_handled_exception(bot, item_err, context_label=f"تذكير تحويل الليرة لصفقة #{deal_id}")
 
-    # Branch 3b: SYP_PAYMENT_SENT 30-Minute Seller Confirmation Reminder & Admin Alert
+    # Branch 3c: SYP_PAYMENT_SENT 30-Minute Seller Confirmation Reminder & Admin Alert
     syp_conf_reminder_ids = []
     try:
         async with AsyncSessionLocal() as read_session:

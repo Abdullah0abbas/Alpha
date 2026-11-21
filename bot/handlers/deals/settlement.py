@@ -28,7 +28,7 @@ from bot.utils.deal_card import push_deal_card, render_deal_card
 from bot.utils.deal_guard import acquire_deal_lock
 from bot.utils.validators import validate_bep20_address
 from bot.utils.branding import BOT_NAME
-from bot.utils.formatters import escape_markdown, format_syp, format_usdt
+from bot.utils.formatters import escape_markdown, format_syp, format_usdt, PAYMENT_METHOD_ICONS
 from bot.utils.transitions import can_seller_confirm_syp, can_admin_release_escrow
 from bot.handlers.deals.payment_info import (
     apply_buyer_payout_wallet,
@@ -126,13 +126,16 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
         return
 
     deal.status = "USDT_DEPOSITED"
+    deal.expires_at = now + timedelta(minutes=30)
 
     usdt_str = format_usdt(deal.amount_usdt)
     syp_str = format_syp(deal.amount_syp)
 
     # Check if seller payment info is ALREADY populated (e.g. from Sell Offer creation or Buy Offer taker input)
+    seller_method_val = ""
     seller_info_val = ""
     if isinstance(deal.seller_payment_info, dict):
+        seller_method_val = str(deal.seller_payment_info.get("method") or "").strip()
         seller_info_val = str(deal.seller_payment_info.get("info") or "").strip()
     elif isinstance(deal.seller_payment_info, str):
         seller_info_val = deal.seller_payment_info.strip()
@@ -158,6 +161,18 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
             )
         return
 
+    offer = None
+    if deal.offer_id:
+        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+        offer = offer_res.scalar_one_or_none()
+
+    is_multi_sell_awaiting_buyer_pm = (
+        offer is not None
+        and offer.offer_type == "sell"
+        and len(offer.payment_methods or []) > 1
+        and seller_method_val in ("", "PENDING", "غير محدد")
+    )
+
     await db_session.commit()
 
     try:
@@ -172,6 +187,43 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
         await report_handled_exception(
             callback.bot, e, context_label=f"notify_usdt_deposit_confirmed (deal #{deal.id})", user_id=callback.from_user.id
         )
+
+    if is_multi_sell_awaiting_buyer_pm:
+        await push_deal_card(deal.id, callback.bot)
+        methods = list(offer.payment_methods or [])
+        buttons = []
+        for idx, m in enumerate(methods):
+            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
+            buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"nego_pm_{deal.id}_{idx}")])
+        pm_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        try:
+            await callback.bot.send_message(
+                chat_id=deal.buyer_id,
+                text=(
+                    f"🔒 **تحديث صفقة #{deal.id} — تم حجز رصيد الضمان**\n\n"
+                    f"▫️ **رصيد الضمان المحتجز:** `{usdt_str} USDT`\n"
+                    f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
+                    f"تم تأكيد حجز الضمان في محفظة الوساطة لـ {BOT_NAME}.\n"
+                    f"يرجى اختيار وسيلة الدفع التي ترغب بالتحويل عبرها لإظهار حساب البائع ومتابعة الدفع:"
+                ),
+                reply_markup=pm_kb,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to prompt buyer {deal.buyer_id} for payment method on deal #{deal.id}: {e}")
+
+        seller_wait_text = (
+            f"🔒 **صفقة #{deal.id} — تم حجز الضمان بنجاح**\n\n"
+            f"▫️ **الكمية المحتجزة:** `{usdt_str} USDT`\n"
+            f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
+            f"✅ حسابات استلامك محفوظة مسبقاً في العرض، وتم إشعار المشتري لاختيار وسيلة الدفع المفضلة للبدء بتحويل الليرة."
+        )
+        try:
+            await callback.message.edit_text(seller_wait_text, parse_mode="Markdown")
+        except Exception:
+            await callback.message.answer(seller_wait_text, parse_mode="Markdown")
+        await callback.answer("تم تأكيد إيداع الضمان بنجاح ✅")
+        return
 
     # Notify Buyer only when seller still needs to enter payment details
     try:
@@ -333,7 +385,24 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         await state.clear()
         return
 
+    if not message.photo:
+        await db_session.commit()
+        await message.answer("⚠️ لم يتم العثور على صورة صالحة في الرسالة. يرجى إرسال لقطة شاشة لإشعار التحويل.")
+        return
+
     photo = message.photo[-1]
+    if getattr(photo, "file_size", None) and photo.file_size > 10 * 1024 * 1024:
+        await db_session.commit()
+        await message.answer(
+            "⚠️ **حجم الصورة كبير جداً!**\n\n"
+            "يرجى إرسال لقطة شاشة عادية لا يتجاوز حجمها 10 ميجابايت.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+            ]),
+            parse_mode="Markdown"
+        )
+        return
+
     photo_file_id = photo.file_id
     ref = f"PHOTO_{photo_file_id}"
 
@@ -342,6 +411,7 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         select(PaymentProof).where(PaymentProof.transaction_reference == ref)
     )
     if existing_proof_res.scalar_one_or_none():
+        await db_session.commit()
         await message.answer(
             "⚠️ **هذه الصورة استُخدمت سابقاً!**\n\n"
             "يرجى إرسال لقطة شاشة جديدة لإشعار التحويل الخاص بهذه العملية.",
@@ -363,6 +433,7 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
             db_session.add(proof)
             await db_session.flush()
     except IntegrityError:
+        await db_session.commit()
         await message.answer(
             "⚠️ **هذه الصورة استُخدمت سابقاً!**\n\n"
             "يرجى إرسال لقطة شاشة جديدة لإشعار التحويل الخاص بهذه العملية.",
@@ -373,10 +444,18 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         )
         return
     except Exception as e:
+        await db_session.rollback()
         logger.warning(f"PaymentProof creation log: {e}")
         await report_handled_exception(
-            message.bot, e, context_label=f"PaymentProof creation (deal #{deal.id})", user_id=message.from_user.id
+            message.bot, e, context_label=f"PaymentProof creation (deal #{deal_id})", user_id=message.from_user.id
         )
+        await message.answer(
+            "⚠️ حدث خطأ مؤقت أثناء حفظ صورة الإشعار. يرجى إعادة إرسال الصورة بعد لحظات.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+            ]),
+        )
+        return
 
     existing_buyer_addr = (deal.buyer_payout_address or "").strip()
     is_existing_valid, normalized_existing, _ = validate_bep20_address(existing_buyer_addr) if (existing_buyer_addr and existing_buyer_addr not in ["PENDING", "غير محدد", "N/A"]) else (False, "", "")
@@ -847,10 +926,12 @@ async def manual_admin_approval(callback: CallbackQuery, db_session: AsyncSessio
         return
 
     if callback.from_user.id not in (deal.seller_id, deal.buyer_id) and callback.from_user.id not in settings.ADMIN_IDS:
+        await db_session.commit()
         await callback.answer("غير مصرح: هذا الإجراء ليس من صلاحيتك بهذه الصفقة.", show_alert=True)
         return
 
     if deal.status != "SYP_PAYMENT_CONFIRMED":
+        await db_session.commit()
         if deal.status == "ADMIN_APPROVAL":
             await callback.answer("الصفقة قيد المراجعة والاعتماد الإداري بالفعل.", show_alert=True)
             return
@@ -1060,21 +1141,22 @@ async def _execute_admin_escrow_release(
         )
         db_session.add(tx_row)
 
-    # Increment completed_deals_count for both buyer and seller
-    buyer_user_res = await db_session.execute(select(User).where(User.telegram_id == deal.buyer_id))
-    buyer_user = buyer_user_res.scalar_one_or_none()
-    if buyer_user:
-        buyer_user.completed_deals_count = (buyer_user.completed_deals_count or 0) + 1
+    # Increment completed_deals_count atomically under row lock in deterministic ID order
+    for party_uid in sorted({uid for uid in (deal.buyer_id, deal.seller_id) if uid}):
+        user_res = await db_session.execute(
+            select(User).where(User.telegram_id == party_uid).with_for_update()
+        )
+        party_user = user_res.scalar_one_or_none()
+        if party_user:
+            party_user.completed_deals_count = (party_user.completed_deals_count or 0) + 1
 
-    seller_user_res = await db_session.execute(select(User).where(User.telegram_id == deal.seller_id))
-    seller_user = seller_user_res.scalar_one_or_none()
-    if seller_user:
-        seller_user.completed_deals_count = (seller_user.completed_deals_count or 0) + 1
-
-    offer_result = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+    offer_result = await db_session.execute(
+        select(Offer).where(Offer.id == deal.offer_id).with_for_update()
+    )
     offer = offer_result.scalar_one_or_none()
     if offer and offer.status == "reserved":
         offer.status = "completed"
+        offer.status_changed_at = datetime.now(timezone.utc)
 
     audit_details = {
         "amount_usdt": str(deal.amount_usdt),

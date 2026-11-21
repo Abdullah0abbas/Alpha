@@ -42,6 +42,23 @@ def can_expire_active_offer(
     return expires_at <= current_time
 
 
+def can_remind_usdt_deposited(
+    current_status: str,
+    expires_at: Optional[datetime],
+    now: Optional[datetime] = None
+) -> bool:
+    """
+    Checks if a deal in USDT_DEPOSITED has reached its 30-min reminder timestamp
+    without closing the deal (escrow funds remain safely held).
+    """
+    if current_status != "USDT_DEPOSITED":
+        return False
+    if expires_at is None:
+        return False
+    current_time = now or datetime.now(timezone.utc)
+    return expires_at <= current_time
+
+
 def can_remind_syp_payment(
     current_status: str,
     expires_at: Optional[datetime],

@@ -129,7 +129,7 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
     ])
     try:
         amount_usdt = clean_numeric_input(message.text)
-        if not amount_usdt:
+        if not amount_usdt or amount_usdt < Decimal("0.01") or amount_usdt > Decimal("1000000"):
             raise ValueError("Invalid amount")
     except Exception:
         await message.answer(
@@ -374,6 +374,16 @@ async def _finalize_deal_creation(
         await state.clear()
         await message.answer(f"⚠️ {err_msg}")
         return
+
+    min_limit_db = Decimal(str(offer.min_limit))
+    max_limit_db = Decimal(str(offer.max_limit))
+    if amount_usdt < min_limit_db or amount_usdt > max_limit_db:
+        await db_session.commit()
+        await state.clear()
+        await message.answer("⚠️ عذراً، الكمية المطلوبة أصبحت خارج حدود العرض الحالية.")
+        return
+
+    amount_syp = (amount_usdt * Decimal(str(offer.rate))).quantize(Decimal("0.01"))
 
     # Percentage split fee calculation
     fee_breakdown = calculate_deal_fee(amount_usdt)
