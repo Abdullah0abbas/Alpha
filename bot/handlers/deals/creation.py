@@ -27,6 +27,7 @@ from bot.utils.formatters import (
     format_usdt,
     clean_numeric_input,
     PAYMENT_METHOD_ICONS,
+    MIN_DEAL_AMOUNT_USDT,
 )
 from bot.utils.transitions import can_user_interact_with_offer
 
@@ -139,6 +140,14 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
         )
         return
 
+    if amount_usdt < MIN_DEAL_AMOUNT_USDT:
+        await message.answer(
+            "⚠️ أقل كمية مسموحة هي 1 USDT.",
+            reply_markup=cancel_kb,
+            parse_mode="Markdown"
+        )
+        return
+
     min_limit = Decimal(data['min_limit'])
     max_limit = Decimal(data['max_limit'])
 
@@ -156,6 +165,13 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
 
     rate = Decimal(data['rate'])
     amount_syp = (amount_usdt * rate).quantize(Decimal("0.01"))
+    if amount_syp < Decimal("1"):
+        await message.answer(
+            "⚠️ أقل قيمة إجمالية مسموحة للصفقة هي 1 ل.س.",
+            reply_markup=cancel_kb,
+            parse_mode="Markdown"
+        )
+        return
     data['amount_usdt'] = str(amount_usdt)
     data['amount_syp'] = str(amount_syp)
     await state.update_data(amount_usdt=str(amount_usdt), amount_syp=str(amount_syp))
@@ -377,6 +393,12 @@ async def _finalize_deal_creation(
 
     min_limit_db = Decimal(str(offer.min_limit))
     max_limit_db = Decimal(str(offer.max_limit))
+    if amount_usdt < MIN_DEAL_AMOUNT_USDT:
+        await db_session.commit()
+        await state.clear()
+        await message.answer("⚠️ أقل كمية مسموحة هي 1 USDT.")
+        return
+
     if amount_usdt < min_limit_db or amount_usdt > max_limit_db:
         await db_session.commit()
         await state.clear()
@@ -384,6 +406,11 @@ async def _finalize_deal_creation(
         return
 
     amount_syp = (amount_usdt * Decimal(str(offer.rate))).quantize(Decimal("0.01"))
+    if amount_syp < Decimal("1"):
+        await db_session.commit()
+        await state.clear()
+        await message.answer("⚠️ أقل قيمة إجمالية مسموحة للصفقة هي 1 ل.س.")
+        return
 
     # Percentage split fee calculation
     fee_breakdown = calculate_deal_fee(amount_usdt)

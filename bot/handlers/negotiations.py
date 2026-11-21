@@ -16,7 +16,8 @@ from bot.utils.formatters import (
     PAYMENT_METHOD_ICONS,
     format_syp,
     format_usdt,
-    clean_numeric_input
+    clean_numeric_input,
+    MIN_DEAL_AMOUNT_USDT,
 )
 from bot.services.channel import update_channel_offer_message
 from config.settings import settings
@@ -164,6 +165,9 @@ async def process_taker_amount(message: Message, state: FSMContext):
         if not amount_val or amount_val <= 0 or amount_val > Decimal("999999999"):
             await message.answer("⚠️ الكمية يجب أن تكون أكبر من 0. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
             return
+        if amount_val < MIN_DEAL_AMOUNT_USDT:
+            await message.answer("⚠️ أقل كمية مسموحة هي 1 USDT.", reply_markup=cancel_kb, parse_mode="Markdown")
+            return
     except Exception:
         await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم صحيح للكمية:", reply_markup=cancel_kb, parse_mode="Markdown")
         return
@@ -197,6 +201,9 @@ async def process_taker_amount(message: Message, state: FSMContext):
         await state.set_state(NegotiationFSM.waiting_for_taker_rate)
     else:
         proposed_rate = Decimal(data['current_rate'])
+        if (amount_val * proposed_rate).quantize(Decimal("0.01")) < Decimal("1"):
+            await message.answer("⚠️ أقل قيمة إجمالية مسموحة للصفقة هي 1 ل.س.", reply_markup=cancel_kb, parse_mode="Markdown")
+            return
         await _submit_taker_negotiation(message, state, amount_val, proposed_rate)
 
 
@@ -216,6 +223,9 @@ async def process_taker_rate(message: Message, state: FSMContext):
 
     data = await state.get_data()
     amount_val = Decimal(data.get("proposed_amount", data.get("min_limit", "10")))
+    if (amount_val * rate_val).quantize(Decimal("0.01")) < Decimal("1"):
+        await message.answer("⚠️ أقل قيمة إجمالية مسموحة للصفقة هي 1 ل.س.", reply_markup=cancel_kb, parse_mode="Markdown")
+        return
     await _submit_taker_negotiation(message, state, amount_val, rate_val)
 
 
@@ -525,6 +535,9 @@ async def process_maker_counter_amount(message: Message, state: FSMContext):
         if not amount_val or amount_val <= 0 or amount_val > Decimal("999999999"):
             await message.answer("⚠️ الكمية يجب أن تكون أكبر من 0. يرجى إدخال رقم صحيح:", reply_markup=cancel_kb, parse_mode="Markdown")
             return
+        if amount_val < MIN_DEAL_AMOUNT_USDT:
+            await message.answer("⚠️ أقل كمية مسموحة هي 1 USDT.", reply_markup=cancel_kb, parse_mode="Markdown")
+            return
     except Exception:
         await message.answer("⚠️ إدخال غير صحيح. يرجى إدخال رقم صحيح للكمية:", reply_markup=cancel_kb, parse_mode="Markdown")
         return
@@ -542,6 +555,9 @@ async def process_maker_counter_amount(message: Message, state: FSMContext):
         await state.set_state(NegotiationFSM.waiting_for_maker_counter_rate)
     else:
         counter_rate = Decimal(data['current_rate'])
+        if (amount_val * counter_rate).quantize(Decimal("0.01")) < Decimal("1"):
+            await message.answer("⚠️ أقل قيمة إجمالية مسموحة للصفقة هي 1 ل.س.", reply_markup=cancel_kb, parse_mode="Markdown")
+            return
         await _submit_maker_counter(message, state, amount_val, counter_rate)
 
 
@@ -852,6 +868,15 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
 
     amount_usdt = proposed_amount
     amount_syp = (amount_usdt * neg.proposed_rate).quantize(Decimal("0.01"))
+    if amount_usdt < MIN_DEAL_AMOUNT_USDT or amount_syp < Decimal("1"):
+        await db_session.rollback()
+        err_text = "⚠️ أقل كمية مسموحة هي 1 USDT." if amount_usdt < MIN_DEAL_AMOUNT_USDT else "⚠️ أقل قيمة إجمالية مسموحة للصفقة هي 1 ل.س."
+        if isinstance(origin_message, Message):
+            try:
+                await origin_message.answer(err_text)
+            except Exception:
+                pass
+        return False
     now = datetime.now(timezone.utc)
     deposit_expires_at = now + timedelta(minutes=15)
 

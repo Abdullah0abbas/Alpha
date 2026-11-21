@@ -7,6 +7,8 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, timedelta
 from config.settings import settings
 
+MIN_DEAL_AMOUNT_USDT = Decimal("1")
+
 def to_local(dt: datetime | None, offset_hours: int | None = None) -> datetime | None:
     """
     Converts a datetime to local timezone (Damascus fixed offset UTC+3 by default).

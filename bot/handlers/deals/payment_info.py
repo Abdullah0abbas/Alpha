@@ -22,7 +22,7 @@ from bot.utils.payment_prompts import (
     match_saved_payment_info,
     resolve_pm_key,
 )
-from bot.utils.formatters import escape_markdown, format_syp, format_usdt
+from bot.utils.formatters import escape_markdown, format_syp, format_usdt, PAYMENT_METHOD_ICONS
 from bot.utils.transitions import SELLER_INFO_ALLOWED_STATUSES
 
 logger = logging.getLogger(__name__)

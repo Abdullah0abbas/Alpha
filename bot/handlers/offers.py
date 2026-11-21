@@ -23,7 +23,8 @@ from bot.utils.formatters import (
     PAYMENT_METHOD_ICONS,
     humanize_time_remaining,
     clean_numeric_input,
-    format_local_datetime
+    format_local_datetime,
+    MIN_DEAL_AMOUNT_USDT,
 )
 from bot.utils.validators import (
     validate_bep20_address,
@@ -430,6 +431,15 @@ async def process_min_limit(message: Message, state: FSMContext):
         min_limit = clean_numeric_input(message.text)
         if not min_limit or min_limit <= 0 or min_limit > Decimal("999999999"):
             raise ValueError()
+
+        if min_limit < MIN_DEAL_AMOUNT_USDT:
+            await message.answer(
+                "⚠️ أقل كمية مسموحة هي 1 USDT.\n\n"
+                "يرجى إدخال حد أدنى لا يقل عن `1 USDT`:",
+                reply_markup=get_step_nav_kb(back_cb="wiz_back_min"),
+                parse_mode="Markdown"
+            )
+            return
 
         min_val = str(min_limit)
         data = await state.get_data()
