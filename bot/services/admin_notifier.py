@@ -1,7 +1,7 @@
 from decimal import Decimal
 import logging
 from aiogram import Bot
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, InputMediaPhoto
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -22,6 +22,7 @@ CHANNEL_CATEGORY_MAP = {
     "errors": "ADMIN_ERRORS_CHANNEL_ID",
     "backups": "ADMIN_BACKUPS_CHANNEL_ID",
     "notes": "ADMIN_NOTES_CHANNEL_ID",
+    "kyc": "ADMIN_KYC_CHANNEL_ID",
 }
 
 
@@ -50,12 +51,13 @@ async def dispatch_admin_notification(
     reply_markup: InlineKeyboardMarkup | None = None,
     parse_mode: str | None = "Markdown",
     photo_file_id: str | None = None,
+    media_group_photos: list[tuple[str, str]] | None = None,
     document_path: str | None = None,
     document_filename: str | None = None,
     exclude_admin_id: int | None = None,
 ) -> None:
     """
-    Centralized dispatcher for the 6 separated Admin Channels with automatic fallback to ADMIN_IDS.
+    Centralized dispatcher for the 8 separated Admin Channels with automatic fallback to ADMIN_IDS.
     If sending to the configured channel fails (e.g. bot not added yet or wrong chat ID),
     it automatically falls back to ADMIN_IDS.
     """
@@ -65,32 +67,47 @@ async def dispatch_admin_notification(
 
     delivered_to_channel = False
 
+    async def _send_to_target(chat_target: int | str) -> None:
+        if media_group_photos:
+            media = [
+                InputMediaPhoto(media=file_id, caption=cap, parse_mode=parse_mode)
+                for file_id, cap in media_group_photos
+            ]
+            await bot.send_media_group(chat_id=chat_target, media=media)
+            await bot.send_message(
+                chat_id=chat_target,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+        elif document_path:
+            doc = FSInputFile(path=document_path, filename=document_filename)
+            await bot.send_document(
+                chat_id=chat_target,
+                document=doc,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+        elif photo_file_id:
+            await bot.send_photo(
+                chat_id=chat_target,
+                photo=photo_file_id,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+        else:
+            await bot.send_message(
+                chat_id=chat_target,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+
     for chat_target in targets:
         try:
-            if document_path:
-                doc = FSInputFile(path=document_path, filename=document_filename)
-                await bot.send_document(
-                    chat_id=chat_target,
-                    document=doc,
-                    caption=text,
-                    reply_markup=reply_markup,
-                    parse_mode=parse_mode
-                )
-            elif photo_file_id:
-                await bot.send_photo(
-                    chat_id=chat_target,
-                    photo=photo_file_id,
-                    caption=text,
-                    reply_markup=reply_markup,
-                    parse_mode=parse_mode
-                )
-            else:
-                await bot.send_message(
-                    chat_id=chat_target,
-                    text=text,
-                    reply_markup=reply_markup,
-                    parse_mode=parse_mode
-                )
+            await _send_to_target(chat_target)
             if is_dedicated_channel:
                 delivered_to_channel = True
         except Exception as e:
@@ -101,30 +118,7 @@ async def dispatch_admin_notification(
         fallback_admins = [aid for aid in settings.ADMIN_IDS if aid and aid != exclude_admin_id]
         for admin_id in fallback_admins:
             try:
-                if document_path:
-                    doc = FSInputFile(path=document_path, filename=document_filename)
-                    await bot.send_document(
-                        chat_id=admin_id,
-                        document=doc,
-                        caption=text,
-                        reply_markup=reply_markup,
-                        parse_mode=parse_mode
-                    )
-                elif photo_file_id:
-                    await bot.send_photo(
-                        chat_id=admin_id,
-                        photo=photo_file_id,
-                        caption=text,
-                        reply_markup=reply_markup,
-                        parse_mode=parse_mode
-                    )
-                else:
-                    await bot.send_message(
-                        chat_id=admin_id,
-                        text=text,
-                        reply_markup=reply_markup,
-                        parse_mode=parse_mode
-                    )
+                await _send_to_target(admin_id)
             except Exception as fb_err:
                 logger.warning(f"Fallback delivery for '{category}' to admin {admin_id} also failed: {fb_err}")
 

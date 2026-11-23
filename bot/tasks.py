@@ -424,100 +424,47 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
 
                 deal.expires_at = None
                 deal_id_val = deal.id
-                offer_id_val = deal.offer_id
                 buyer_id_val = deal.buyer_id
                 seller_id_val = deal.seller_id
                 amount_usdt_val = deal.amount_usdt
                 amount_syp_val = deal.amount_syp
-                seller_method_val = ""
-                if isinstance(deal.seller_payment_info, dict):
-                    seller_method_val = str(deal.seller_payment_info.get("method") or "").strip()
-
-                offer_methods = []
-                is_multi_sell_awaiting_buyer_pm = False
-                if offer_id_val:
-                    offer_res = await item_session.execute(select(Offer).where(Offer.id == offer_id_val))
-                    offer_obj = offer_res.scalar_one_or_none()
-                    if offer_obj:
-                        offer_methods = list(offer_obj.payment_methods or [])
-                        is_multi_sell_awaiting_buyer_pm = (
-                            offer_obj.offer_type == "sell"
-                            and len(offer_methods) > 1
-                            and seller_method_val in ("", "PENDING", "غير محدد")
-                        )
 
                 await item_session.commit()
                 syp_reminders_count += 1
                 logger.info(f"Sent 30-min USDT_DEPOSITED reminder and admin alert for deal #{deal_id_val}")
 
-                if is_multi_sell_awaiting_buyer_pm:
-                    if buyer_id_val:
-                        buttons = []
-                        for idx, m in enumerate(offer_methods):
-                            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-                            buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"nego_pm_{deal_id_val}_{idx}")])
-                        pm_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-                        buyer_remind_text = (
-                            f"⏰ **تذكير اختيار وسيلة الدفع — صفقة #{deal_id_val}**\n\n"
-                            f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n"
-                            f"▫️ **المبلغ المقابل:** `{format_syp(amount_syp_val)}` ل.س\n\n"
-                            f"مرت 30 دقيقة على إيداع البائع للضمان دون اختيارك لوسيلة الدفع بالليرة السورية.\n"
-                            f"يرجى اختيار وسيلة الدفع أدناه لإظهار حساب البائع ومتابعة الصفقة:"
+                if seller_id_val:
+                    seller_remind_kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 تحديد حساب الاستلام", callback_data=f"set_seller_info_{deal_id_val}")]
+                    ])
+                    seller_remind_text = (
+                        f"⏰ **تذكير تحديد حساب الاستلام — صفقة #{deal_id_val}**\n\n"
+                        f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n"
+                        f"▫️ **المبلغ المقابل:** `{format_syp(amount_syp_val)}` ل.س\n\n"
+                        f"مرت 30 دقيقة على إيداع الضمان دون تحديد حساب الاستلام بالليرة السورية.\n"
+                        f"يرجى الضغط على الزر أدناه لتحديد الحساب ليتمكن المشتري من التحويل:"
+                    )
+                    try:
+                        await bot.send_message(
+                            chat_id=seller_id_val,
+                            text=seller_remind_text,
+                            reply_markup=seller_remind_kb,
+                            parse_mode="Markdown"
                         )
-                        try:
-                            await bot.send_message(
-                                chat_id=buyer_id_val,
-                                text=buyer_remind_text,
-                                reply_markup=pm_kb,
-                                parse_mode="Markdown"
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to notify buyer {buyer_id_val} of USDT_DEPOSITED method reminder for deal #{deal_id_val}: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to notify seller {seller_id_val} of USDT_DEPOSITED reminder for deal #{deal_id_val}: {e}")
 
-                    if seller_id_val:
-                        seller_info_text = (
-                            f"ℹ️ **تحديث صفقة #{deal_id_val}**\n\n"
-                            f"مرت 30 دقيقة على إيداعك للضمان دون اختيار المشتري لوسيلة الدفع بعد.\n"
-                            f"تم إرسال تذكير للمشتري وإشعار الإدارة لمتابعة الصفقة، ورصيد الضمان محجوز بأمان.\n"
-                            f"للاستفسار يمكنك التواصل مع الدعم الفني: @{escaped_support}"
-                        )
-                        try:
-                            await bot.send_message(chat_id=seller_id_val, text=seller_info_text, parse_mode="Markdown")
-                        except Exception as e:
-                            logger.warning(f"Failed to notify seller {seller_id_val} of USDT_DEPOSITED status for deal #{deal_id_val}: {e}")
-                else:
-                    if seller_id_val:
-                        seller_remind_kb = InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="💳 تحديد حساب الاستلام", callback_data=f"set_seller_info_{deal_id_val}")]
-                        ])
-                        seller_remind_text = (
-                            f"⏰ **تذكير تحديد حساب الاستلام — صفقة #{deal_id_val}**\n\n"
-                            f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n"
-                            f"▫️ **المبلغ المقابل:** `{format_syp(amount_syp_val)}` ل.س\n\n"
-                            f"مرت 30 دقيقة على إيداع الضمان دون تحديد حساب الاستلام بالليرة السورية.\n"
-                            f"يرجى الضغط على الزر أدناه لتحديد الحساب ليتمكن المشتري من التحويل:"
-                        )
-                        try:
-                            await bot.send_message(
-                                chat_id=seller_id_val,
-                                text=seller_remind_text,
-                                reply_markup=seller_remind_kb,
-                                parse_mode="Markdown"
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to notify seller {seller_id_val} of USDT_DEPOSITED reminder for deal #{deal_id_val}: {e}")
-
-                    if buyer_id_val:
-                        buyer_info_text = (
-                            f"ℹ️ **تحديث صفقة #{deal_id_val}**\n\n"
-                            f"مرت 30 دقيقة على إيداع الضمان دون إدخال البائع لحساب الاستلام بعد.\n"
-                            f"تم إرسال تذكير للبائع وإشعار الإدارة لمتابعة الصفقة.\n"
-                            f"للاستفسار يمكنك التواصل مع الدعم الفني: @{escaped_support}"
-                        )
-                        try:
-                            await bot.send_message(chat_id=buyer_id_val, text=buyer_info_text, parse_mode="Markdown")
-                        except Exception as e:
-                            logger.warning(f"Failed to notify buyer {buyer_id_val} of USDT_DEPOSITED status for deal #{deal_id_val}: {e}")
+                if buyer_id_val:
+                    buyer_info_text = (
+                        f"ℹ️ **تحديث صفقة #{deal_id_val}**\n\n"
+                        f"مرت 30 دقيقة على إيداع الضمان دون إدخال البائع لحساب الاستلام بعد.\n"
+                        f"تم إرسال تذكير للبائع وإشعار الإدارة لمتابعة الصفقة.\n"
+                        f"للاستفسار يمكنك التواصل مع الدعم الفني: @{escaped_support}"
+                    )
+                    try:
+                        await bot.send_message(chat_id=buyer_id_val, text=buyer_info_text, parse_mode="Markdown")
+                    except Exception as e:
+                        logger.warning(f"Failed to notify buyer {buyer_id_val} of USDT_DEPOSITED status for deal #{deal_id_val}: {e}")
 
                 admin_dep_alert = (
                     f"⏰ **تنبيه تأخر في مرحلة حساب الاستلام (30 دقيقة) — صفقة #{deal_id_val}**\n\n"

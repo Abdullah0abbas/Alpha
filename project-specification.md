@@ -249,6 +249,21 @@ audit_logs
   details               JSONB NULLABLE
   created_at            TIMESTAMPTZ DEFAULT now()
 
+kyc_requests
+  id                   SERIAL PRIMARY KEY
+  user_id               BIGINT REFERENCES users(telegram_id) NOT NULL
+  full_name             VARCHAR(150) NOT NULL
+  national_id           VARCHAR(50) NOT NULL
+  phone_number          VARCHAR(30) NOT NULL
+  id_front_file_id      VARCHAR(255) NOT NULL
+  id_back_file_id       VARCHAR(255) NOT NULL
+  selfie_file_id        VARCHAR(255) NOT NULL
+  status                VARCHAR(20) DEFAULT 'pending' -- 'pending' | 'approved' | 'rejected'
+  rejection_reason      TEXT NULLABLE
+  reviewed_by           BIGINT NULLABLE
+  reviewed_at           TIMESTAMPTZ NULLABLE
+  created_at            TIMESTAMPTZ DEFAULT now()
+
 SEQUENCE:
   deposit_index_seq
 ```

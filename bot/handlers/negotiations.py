@@ -884,28 +884,13 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
     deposit_address, deposit_index = await derive_escrow_address(db_session)
 
     methods = list(offer.payment_methods) if offer.payment_methods else []
-    payout_details = offer.payout_details if isinstance(offer.payout_details, dict) else {}
-    need_buyer_pm_choice = False
-
-    if offer.offer_type == 'buy':
-        # Maker = Buyer (saved BEP-20 payout), Taker = Seller (provides SYP info after USDT deposit)
-        buyer_payout = payout_details.get("usdt_bep20_address") or offer.payout_info or "PENDING"
-        seller_info = (
-            {"method": methods[0], "info": "PENDING"}
-            if len(methods) == 1
-            else {"method": "PENDING", "info": "PENDING"}
-        )
-    else:
-        # Maker = Seller (has SYP accounts in payout_details), Taker = Buyer
-        buyer_payout = "PENDING"
-        if len(methods) == 1:
-            selected_pm = methods[0]
-            raw_acc = payout_details.get(selected_pm) or offer.payout_info or "PENDING"
-            clean_acc = extract_clean_account(raw_acc, selected_pm) or "PENDING"
-            seller_info = {"method": selected_pm, "info": clean_acc}
-        else:
-            seller_info = {"method": "PENDING", "info": "PENDING"}
-            need_buyer_pm_choice = len(methods) > 1
+    buyer_payout = "PENDING"
+    seller_info = (
+        {"method": methods[0], "info": "PENDING"}
+        if len(methods) == 1
+        else {"method": "PENDING", "info": "PENDING"}
+    )
+    need_buyer_pm_choice = (offer.offer_type == "sell" and len(methods) > 1)
 
     fee_breakdown = calculate_deal_fee(amount_usdt)
 
@@ -1016,21 +1001,17 @@ async def cq_nego_choose_payment_method(callback: CallbackQuery, db_session: Asy
         return
 
     chosen_pm = methods[idx]
-    payout_details = offer.payout_details if (offer and isinstance(offer.payout_details, dict)) else {}
-    raw_acc = payout_details.get(chosen_pm) or (offer.payout_info if offer else None) or "PENDING"
-    clean_acc = extract_clean_account(raw_acc, chosen_pm) or "PENDING"
-
-    deal.seller_payment_info = {"method": chosen_pm, "info": clean_acc}
-    if deal.status == "USDT_DEPOSITED" and clean_acc != "PENDING":
-        deal.status = "AWAITING_SYP_PAYMENT"
-        deal.expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+    deal.seller_payment_info = {"method": chosen_pm, "info": "PENDING"}
+    is_deposited = (deal.status == "USDT_DEPOSITED")
+    seller_id_val = deal.seller_id
 
     await db_session.commit()
 
     try:
         await callback.message.edit_text(
             f"✅ **تم اعتماد وسيلة الدفع — صفقة #{deal.id}**\n\n"
-            f"▫️ **الوسيلة المختارة:** {chosen_pm}",
+            f"▫️ **الوسيلة المختارة:** {chosen_pm}\n"
+            f"سيقوم البائع بتزويدك بحساب الاستلام بعد تأكيد إيداع الضمان.",
             parse_mode="Markdown",
         )
     except Exception:
@@ -1041,3 +1022,21 @@ async def cq_nego_choose_payment_method(callback: CallbackQuery, db_session: Asy
         await push_deal_card(deal.id, callback.bot)
     except Exception as e:
         logger.warning(f"Failed to push deal card after buyer method selection on deal #{deal.id}: {e}")
+
+    if is_deposited and seller_id_val:
+        seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 تحديد حساب الاستلام", callback_data=f"set_seller_info_{deal.id}")]
+        ])
+        try:
+            await callback.bot.send_message(
+                chat_id=seller_id_val,
+                text=(
+                    f"💳 **تحديث صفقة #{deal.id} — اختار المشتري وسيلة الدفع**\n\n"
+                    f"▫️ **الوسيلة المختارة:** {chosen_pm}\n\n"
+                    f"يرجى الضغط على الزر أدناه لإدخال حساب استلامك لتمكين المشتري من تحويل المبلغ:"
+                ),
+                reply_markup=seller_kb,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify seller {seller_id_val} after buyer method choice on deal #{deal.id}: {e}")

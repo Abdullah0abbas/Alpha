@@ -4,7 +4,6 @@ Strictly zero dependencies on aiogram or sqlalchemy.
 Provides navigation history management, completeness validation,
 primary payout info extraction, and summary presentation formatting.
 """
-import re
 from typing import Tuple
 from decimal import Decimal, InvalidOperation
 from bot.utils.fees import format_fee_rule_line
@@ -104,21 +103,6 @@ def is_wizard_data_complete(wizard_data: dict) -> Tuple[bool, str]:
 
     if "شام كاش دولار" in methods:
         return False, "وسيلة الدفع شام كاش دولار لم تعد مدعومة."
-
-    # Payout details validation
-    payout_details = wizard_data.get("payout_details", {})
-    if not isinstance(payout_details, dict):
-        return False, "بيانات الاستلام غير صالحة."
-
-    if offer_type == "sell":
-        for m in methods:
-            acc = str(payout_details.get(m, "")).strip()
-            if not acc:
-                return False, f"بيانات حساب الاستلام لوسيلة '{m}' مفقودة."
-    elif offer_type == "buy":
-        wallet = str(payout_details.get("usdt_bep20_address", "")).strip()
-        if not wallet or not re.match(r"^0[xX][0-9a-fA-F]{40}$", wallet):
-            return False, "عنوان محفظة استلام USDT (BEP-20) غير صالح."
 
     # Note validation (optional, max 40 chars)
     note_val = wizard_data.get("note")
@@ -238,21 +222,6 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
         formatted_methods.append(f"{icon} {m}")
     methods_str = "، ".join(formatted_methods) if formatted_methods else "غير محدد"
 
-    payout_details = wizard_data.get("payout_details", {}) or {}
-    payout_lines = []
-    if offer_type == "sell":
-        for m in methods:
-            acc = str(payout_details.get(m, "غير محدد"))
-            if acc.startswith(f"{m}: "):
-                acc = acc[len(m) + 2:].strip()
-            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-            payout_lines.append(f"{icon} **{m}:** `{acc}`")
-    else:
-        wallet = payout_details.get("usdt_bep20_address", "غير محدد")
-        payout_lines.append(f"📥 **محفظة الاستلام (BEP-20):**\n`{wallet}`")
-
-    payout_section = "\n".join(payout_lines) if payout_lines else "غير مسجلة"
-
     is_neg = wizard_data.get("negotiable", False)
     neg_type = wizard_data.get("negotiable_type", "none")
     if is_neg and neg_type != "none":
@@ -263,7 +232,7 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
         }
         neg_str = neg_labels.get(neg_type, "متاح")
     else:
-        neg_str = "غير متاح (شروط ثابتة)"
+        neg_str = "غير متاح 🔒"
 
     note_val = wizard_data.get("note")
     is_custom_note = bool(wizard_data.get("is_custom_note", False))
@@ -287,9 +256,6 @@ def format_wizard_summary(wizard_data: dict, bot_name: str = "Alpha Bot") -> str
         f"📝 **الملاحظة:** {note_str}",
         f"⏳ **مدة العرض:** {dur_str}",
         "〰️〰️〰️〰️〰️〰️〰️",
-        "🔒 **بيانات الاستلام الخاصة (لا تظهر بالقناة):**",
-        f"{payout_section}",
-        "",
         f"{format_fee_rule_line()}",
     ]
 

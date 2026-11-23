@@ -42,10 +42,19 @@ class AdminFSM(StatesGroup):
     waiting_for_broadcast_text = State()
     waiting_for_direct_user_msg = State()
     waiting_for_note_reject_reason = State()
+    waiting_for_kyc_reject_reason = State()
 
 class ProfileFSM(StatesGroup):
     waiting_for_nickname = State()
     waiting_for_usdt_address = State()
     waiting_for_payment_info = State()
+    waiting_for_kyc_full_name = State()
+    waiting_for_kyc_national_id = State()
+    waiting_for_kyc_phone = State()
+    waiting_for_kyc_id_front = State()
+    waiting_for_kyc_id_back = State()
+    waiting_for_kyc_selfie = State()
+    confirm_kyc_submission = State()
+
 
 

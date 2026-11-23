@@ -88,6 +88,23 @@ async def ensure_schema_updated():
             CONSTRAINT uq_rating_per_deal_rater UNIQUE (deal_id, rater_id)
         );
         """),
+        ("kyc_requests table", """
+        CREATE TABLE IF NOT EXISTS kyc_requests (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(telegram_id),
+            full_name VARCHAR(120) NOT NULL,
+            national_id VARCHAR(40) NOT NULL,
+            phone_number VARCHAR(40) NOT NULL,
+            id_front_file_id VARCHAR(255) NOT NULL,
+            id_back_file_id VARCHAR(255) NOT NULL,
+            selfie_file_id VARCHAR(255) NOT NULL,
+            status VARCHAR(20) DEFAULT 'pending',
+            rejection_reason VARCHAR(300),
+            reviewed_by BIGINT,
+            reviewed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
+        """),
         ("deposit_index_seq sequence", "CREATE SEQUENCE IF NOT EXISTS deposit_index_seq;"),
     ]
 
@@ -125,6 +142,8 @@ async def ensure_schema_updated():
         ("audit_logs.ix_created_at", "CREATE INDEX IF NOT EXISTS ix_audit_logs_created_at ON audit_logs (created_at);", None, None),
         ("negotiations.ix_status", "CREATE INDEX IF NOT EXISTS ix_negotiations_status ON negotiations (status);", None, None),
         ("negotiations.ix_expires_at", "CREATE INDEX IF NOT EXISTS ix_negotiations_expires_at ON negotiations (expires_at);", None, None),
+        ("kyc_requests.ix_user_id", "CREATE INDEX IF NOT EXISTS ix_kyc_requests_user_id ON kyc_requests (user_id);", None, None),
+        ("kyc_requests.ix_status", "CREATE INDEX IF NOT EXISTS ix_kyc_requests_status ON kyc_requests (status);", None, None),
         (
             "deals.chk_deals_different_parties",
             """

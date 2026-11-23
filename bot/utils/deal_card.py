@@ -75,11 +75,7 @@ def turn_of(status: str, viewer_role: str, is_offer_owner: bool = False) -> Tupl
 
     if status == "USDT_DEPOSITED":
         if viewer_role == "seller":
-            if is_offer_owner:
-                return False, "بانتظار اختيار المشتري لوسيلة الدفع"
             return True, "تأكيد حساب الاستلام بالليرة السورية"
-        if viewer_role == "buyer" and not is_offer_owner:
-            return True, "اختيار وسيلة الدفع بالليرة السورية"
         return False, "بانتظار تأكيد حساب الاستلام من البائع"
 
     if status == "AWAITING_SYP_PAYMENT":
@@ -178,22 +174,13 @@ def get_deal_action_keyboard(
 
     elif status == "USDT_DEPOSITED":
         if is_seller:
-            seller_method_val = ""
             seller_info_val = ""
             if isinstance(deal.seller_payment_info, dict):
-                seller_method_val = str(deal.seller_payment_info.get("method") or "").strip()
                 seller_info_val = str(deal.seller_payment_info.get("info") or "").strip()
             elif isinstance(deal.seller_payment_info, str):
                 seller_info_val = deal.seller_payment_info.strip()
 
-            awaiting_buyer_pm_choice = (
-                is_offer_owner
-                and seller_method_val in ("", "PENDING", "غير محدد")
-                and (not seller_info_val or seller_info_val in ["PENDING", "غير محدد", "N/A"])
-            )
-            if awaiting_buyer_pm_choice:
-                pass
-            elif not seller_info_val or seller_info_val in ["PENDING", "غير محدد", "N/A"]:
+            if not seller_info_val or seller_info_val in ["PENDING", "غير محدد", "N/A"]:
                 buttons.append([
                     InlineKeyboardButton(text="💳 تحديد حساب الاستلام", callback_data=f"set_seller_info_{deal.id}")
                 ])

@@ -4,14 +4,14 @@ import asyncio
 import logging
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.future import select
 from sqlalchemy import func, or_
 
-from db.models import User, Deal, Offer, SystemSetting, Dispute, DealRating, PaymentProof, AuditLog, Negotiation
+from db.models import User, Deal, Offer, SystemSetting, Dispute, DealRating, PaymentProof, AuditLog, Negotiation, KycRequest
 from bot.states.flow_states import AdminFSM
 from bot.middlewares.maintenance import set_cached_maintenance
 from bot.utils.formatters import format_usdt, format_syp, safe_username, escape_markdown, format_local_datetime, PAYMENT_METHOD_ICONS
@@ -121,6 +121,11 @@ async def _build_admin_dashboard_view(db_session: AsyncSession) -> tuple[str, In
     )
     pending_notes_cnt = pending_notes_res.scalar_one() or 0
 
+    pending_kyc_res = await db_session.execute(
+        select(func.count(KycRequest.id)).where(KycRequest.status == "pending")
+    )
+    pending_kyc_cnt = pending_kyc_res.scalar_one() or 0
+
     m_status_ar = "🟢 مفعل (الوصول محصور بالأدمن)" if is_m else "🔴 معطل (متاح لجميع المستخدمين)"
 
     text = (
@@ -128,6 +133,7 @@ async def _build_admin_dashboard_view(db_session: AsyncSession) -> tuple[str, In
         f"📡 **نبض النظام اللحظي:**\n"
         f"▫️ **بانتظار الاعتماد أو التأكيد:** `{pending_cnt}` صفقة\n"
         f"▫️ **عروض بانتظار اعتماد الملاحظة:** `{pending_notes_cnt}` عرض\n"
+        f"▫️ **طلبات توثيق الهوية المعلقة:** `{pending_kyc_cnt}` طلب\n"
         f"▫️ **إجمالي الصفقات الجارية الآن:** `{active_deals_cnt}` صفقة\n"
         f"▫️ **العروض النشطة في السوق:** `{active_offers_cnt}` عرض\n"
         f"▫️ **حالة الصيانة:** {m_status_ar}\n\n"
@@ -138,7 +144,7 @@ async def _build_admin_dashboard_view(db_session: AsyncSession) -> tuple[str, In
         "• `/backup` — سحب نسخة احتياطية مشفرة فوراً\n\n"
         "اختر القسم المطلوب من لوحة التحكم:"
     )
-    return text, get_admin_main_kb(is_m, pending_cnt + pending_notes_cnt)
+    return text, get_admin_main_kb(is_m, pending_cnt + pending_notes_cnt + pending_kyc_cnt)
 
 
 # ================= 1. ADMIN MENU ENTRYPOINT =================
@@ -495,12 +501,44 @@ async def send_user_card(event_or_msg, user: User, db_session: AsyncSession, is_
 
     rep_score = user.reputation_score if user.reputation_score is not None else Decimal("100.0")
 
+    kyc_status_val = getattr(user, "kyc_status", "unverified") or "unverified"
+    if kyc_status_val == "verified":
+        kyc_badge = "🟢 موثق ✅"
+    elif kyc_status_val == "pending":
+        kyc_badge = "🟡 قيد المراجعة ⏳"
+    elif kyc_status_val == "rejected":
+        kyc_badge = "🔴 مرفوض ❌"
+    else:
+        kyc_badge = "⚪ غير موثق"
+
+    latest_kyc_res = await db_session.execute(
+        select(KycRequest)
+        .where(KycRequest.user_id == uid)
+        .order_by(KycRequest.id.desc())
+        .limit(1)
+    )
+    latest_kyc = latest_kyc_res.scalar_one_or_none()
+
+    kyc_details_block = ""
+    if latest_kyc:
+        safe_fn = escape_markdown(str(latest_kyc.full_name or ""))
+        safe_nid = escape_markdown(str(latest_kyc.national_id or ""))
+        safe_ph = escape_markdown(str(latest_kyc.phone_number or ""))
+        kyc_details_block = (
+            f"🪪 **بيانات توثيق الهوية (طلب #{latest_kyc.id}):**\n"
+            f"▫️ **الاسم الثلاثي:** `{safe_fn}`\n"
+            f"▫️ **الرقم الوطني:** `{safe_nid}`\n"
+            f"▫️ **رقم الموبايل:** `{safe_ph}`\n\n"
+        )
+
     card_text = (
         f"👤 **السجل الكامل للمستخدم —** `{uid}`\n\n"
         f"▫️ **المعرف والاسم:** {uname} (`{uid}`)\n"
         f"▫️ **اللقب المسجل:** {nick_str}\n"
         f"▫️ **حالة الحساب:** {ban_badge}\n"
+        f"▫️ **توثيق الهوية:** {kyc_badge}\n"
         f"▫️ **تاريخ الانضمام:** `{reg_date}`\n\n"
+        f"{kyc_details_block}"
         f"💳 **الحسابات المالية المحفوظة:**\n"
         f"▫️ **محفظة BEP-20:** {usdt_wallet_str}\n"
         f"▫️ **حساب الليرة:** {syp_account_str}\n\n"
@@ -516,7 +554,7 @@ async def send_user_card(event_or_msg, user: User, db_session: AsyncSession, is_
     toggle_btn_text = "✅ فك الحظر عن المستخدم" if user.is_banned else "🚫 حظر المستخدم فوراً"
     action = "unban" if user.is_banned else "ban"
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    kb_rows = [
         [
             InlineKeyboardButton(text=f"📋 صفقات المستخدم ({active_deals_cnt + comp_cnt + disp_cnt})", callback_data=f"adm_user_deals_{uid}"),
             InlineKeyboardButton(text=f"⭐ التقييمات ({ratings_cnt})", callback_data=f"adm_user_ratings_{uid}")
@@ -525,6 +563,15 @@ async def send_user_card(event_or_msg, user: User, db_session: AsyncSession, is_
             InlineKeyboardButton(text=f"📦 العروض النشطة ({active_offers_cnt})", callback_data=f"adm_user_offers_{uid}"),
             InlineKeyboardButton(text="✉️ إرسال رسالة مباشرة", callback_data=f"adm_msg_user_{uid}")
         ],
+    ]
+    if latest_kyc:
+        kb_rows.append([
+            InlineKeyboardButton(
+                text=f"🪪 وثائق وصور الهوية (طلب #{latest_kyc.id})",
+                callback_data=f"adm_user_kyc_{uid}"
+            )
+        ])
+    kb_rows.extend([
         [
             InlineKeyboardButton(text=toggle_btn_text, callback_data=f"admin_toggle_ban_{action}_{uid}")
         ],
@@ -533,6 +580,7 @@ async def send_user_card(event_or_msg, user: User, db_session: AsyncSession, is_
             InlineKeyboardButton(text="🔙 لوحة الإدارة", callback_data="admin_main_menu")
         ]
     ])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
     if is_edit and isinstance(event_or_msg, CallbackQuery):
         try:
@@ -1002,7 +1050,11 @@ async def _render_live_ops_center(
             select(func.count(Offer.id)).where(Offer.status == "pending_approval")
         )
         notes_cnt = notes_cnt_res.scalar() or 0
-        total_pending = app_cnt + syp_cnt + notes_cnt
+        kyc_cnt_res = await db_session.execute(
+            select(func.count(KycRequest.id)).where(KycRequest.status == "pending")
+        )
+        kyc_cnt = kyc_cnt_res.scalar() or 0
+        total_pending = app_cnt + syp_cnt + notes_cnt + kyc_cnt
 
         res = await db_session.execute(
             select(Deal)
@@ -1020,14 +1072,23 @@ async def _render_live_ops_center(
         )
         pending_offers = list(pending_offers_res.scalars().all())
 
+        pending_kyc_res = await db_session.execute(
+            select(KycRequest)
+            .where(KycRequest.status == "pending")
+            .order_by(KycRequest.id.desc())
+            .limit(10)
+        )
+        pending_kyc_list = list(pending_kyc_res.scalars().all())
+
         lines = [
             f"📡 **غرفة العمليات — بانتظار الاعتماد والتأكيد ({total_pending})**\n"
             f"▫️ **بانتظار إطلاق الضمان (`ADMIN_APPROVAL`):** `{app_cnt}`\n"
             f"▫️ **بانتظار تأكيد استلام الليرة (`SYP_PAYMENT_SENT`):** `{syp_cnt}`\n"
-            f"▫️ **عروض بانتظار اعتماد الملاحظة (`pending_approval`):** `{notes_cnt}`\n\n"
+            f"▫️ **عروض بانتظار اعتماد الملاحظة (`pending_approval`):** `{notes_cnt}`\n"
+            f"▫️ **طلبات توثيق الهوية (`pending`):** `{kyc_cnt}`\n\n"
         ]
-        if not deals and not pending_offers:
-            lines.append("✅ لا توجد أي صفقات أو عروض معلقة بانتظار التدخل حالياً.")
+        if not deals and not pending_offers and not pending_kyc_list:
+            lines.append("✅ لا توجد أي صفقات أو عروض أو طلبات توثيق معلقة بانتظار التدخل حالياً.")
         else:
             for d in deals:
                 badge = "🛡️ إطلاق ضمان" if d.status == "ADMIN_APPROVAL" else "💸 تأكيد ليرة"
@@ -1058,6 +1119,28 @@ async def _render_live_ops_center(
                     InlineKeyboardButton(
                         text=f"❌ رفض مع السبب #{o.id}",
                         callback_data=f"adm_note_rej_{o.id}"
+                    ),
+                ])
+            for k in pending_kyc_list:
+                safe_fn = escape_markdown(str(k.full_name or ""))
+                safe_nid = escape_markdown(str(k.national_id or ""))
+                safe_ph = escape_markdown(str(k.phone_number or ""))
+                lines.append(
+                    f"🪪 **توثيق هوية #{k.id}** | المستخدم: `{k.user_id}`\n"
+                    f"   • الاسم: `{safe_fn}` | الوطني: `{safe_nid}` | الموبايل: `{safe_ph}`\n"
+                )
+                item_rows.append([
+                    InlineKeyboardButton(
+                        text=f"🪪 عرض صور وبيانات التوثيق #{k.id}",
+                        callback_data=f"adm_kyc_view_{k.id}"
+                    ),
+                    InlineKeyboardButton(
+                        text=f"✅ قبول #{k.id}",
+                        callback_data=f"adm_kyc_app_{k.id}"
+                    ),
+                    InlineKeyboardButton(
+                        text=f"❌ رفض #{k.id}",
+                        callback_data=f"adm_kyc_rej_{k.id}"
                     ),
                 ])
 
@@ -1523,31 +1606,22 @@ async def cq_admin_do_manual_deposit(callback: CallbackQuery, db_session: AsyncS
 
     await push_deal_card(deal.id, callback.bot)
 
-    if (
-        deal.status == "USDT_DEPOSITED"
-        and offer is not None
-        and offer.offer_type == "sell"
-        and len(offer.payment_methods or []) > 1
-        and seller_method_val in ("", "PENDING", "غير محدد")
-    ):
-        methods = list(offer.payment_methods or [])
-        buttons = []
-        for idx, m in enumerate(methods):
-            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-            buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"nego_pm_{deal.id}_{idx}")])
-        pm_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    if deal.status == "USDT_DEPOSITED" and deal.seller_id:
+        seller_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 تحديد حساب الاستلام", callback_data=f"set_seller_info_{deal.id}")]
+        ])
         try:
             await callback.bot.send_message(
-                chat_id=deal.buyer_id,
+                chat_id=deal.seller_id,
                 text=(
                     f"🔒 **تحديث صفقة #{deal.id} — تم تأكيد إيداع الضمان**\n\n"
-                    f"يرجى اختيار وسيلة الدفع التي ترغب بالتحويل عبرها لإظهار حساب البائع ومتابعة الدفع:"
+                    f"يرجى الضغط على الزر أدناه لتحديد حساب استلامك بالليرة السورية ليتمكن المشتري من التحويل:"
                 ),
-                reply_markup=pm_kb,
+                reply_markup=seller_kb,
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logger.warning(f"Failed to prompt buyer {deal.buyer_id} for payment method on manual confirm deal #{deal.id}: {e}")
+            logger.warning(f"Failed to prompt seller {deal.seller_id} for payment info on manual confirm deal #{deal.id}: {e}")
 
     try:
         await notify_usdt_deposit_confirmed(
@@ -2513,4 +2587,445 @@ async def process_admin_reject_offer_note_reason(message: Message, db_session: A
         f"✅ تم رفض العرض `#{offer.id}` وإرسال السبب إلى المستخدم بنجاح.",
         parse_mode="Markdown"
     )
+
+
+# ================= 11. KYC IDENTITY VERIFICATION REVIEW =================
+
+@admin_router.callback_query(F.data.startswith("adm_kyc_view_") | F.data.startswith("adm_user_kyc_"))
+async def cq_admin_view_kyc_request(callback: CallbackQuery, db_session: AsyncSession, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ غير مصرح.", show_alert=True)
+        return
+
+    if callback.data.startswith("adm_kyc_view_"):
+        try:
+            req_id = int(callback.data.replace("adm_kyc_view_", ""))
+        except ValueError:
+            await callback.answer("⚠️ رقم الطلب غير صالح.", show_alert=True)
+            return
+        res = await db_session.execute(select(KycRequest).where(KycRequest.id == req_id))
+        kyc_req = res.scalar_one_or_none()
+    else:
+        try:
+            uid = int(callback.data.replace("adm_user_kyc_", ""))
+        except ValueError:
+            await callback.answer("⚠️ معرف المستخدم غير صالح.", show_alert=True)
+            return
+        res = await db_session.execute(
+            select(KycRequest)
+            .where(KycRequest.user_id == uid)
+            .order_by(KycRequest.id.desc())
+            .limit(1)
+        )
+        kyc_req = res.scalar_one_or_none()
+
+    if not kyc_req:
+        await callback.answer("⚠️ لم يتم العثور على طلب توثيق هوية لهذا المستخدم.", show_alert=True)
+        return
+
+    await callback.answer("🪪 جارٍ تحميل صور وبيانات التوثيق...")
+
+    user_res = await db_session.execute(select(User).where(User.telegram_id == kyc_req.user_id))
+    user = user_res.scalar_one_or_none()
+    uname = safe_username(user.username if user else None, kyc_req.user_id)
+    nick = escape_markdown(user.nickname) if user and getattr(user, "nickname", None) else "غير محدد"
+
+    try:
+        media = [
+            InputMediaPhoto(
+                media=kyc_req.id_front_file_id,
+                caption=f"1️⃣ الوثيقة من الأمام — طلب #{kyc_req.id} (المستخدم: {kyc_req.user_id})",
+            ),
+            InputMediaPhoto(
+                media=kyc_req.id_back_file_id,
+                caption=f"2️⃣ الوثيقة من الخلف — طلب #{kyc_req.id}",
+            ),
+            InputMediaPhoto(
+                media=kyc_req.selfie_file_id,
+                caption=f"3️⃣ سيلفي التحقق مع الوثيقة والورقة — طلب #{kyc_req.id}",
+            ),
+        ]
+        await bot.send_media_group(chat_id=callback.message.chat.id, media=media)
+    except Exception as e:
+        logger.warning(f"Failed to send KYC media group for request #{kyc_req.id}: {e}")
+
+    status_ar = {
+        "pending": "🟡 قيد المراجعة ⏳",
+        "approved": "🟢 مقبول ومعتمد ✅",
+        "rejected": "🔴 مرفوض ❌",
+    }.get(kyc_req.status, kyc_req.status)
+
+    safe_fn = escape_markdown(str(kyc_req.full_name or ""))
+    safe_nid = escape_markdown(str(kyc_req.national_id or ""))
+    safe_ph = escape_markdown(str(kyc_req.phone_number or ""))
+    created_str = format_local_datetime(kyc_req.created_at) if kyc_req.created_at else "غير محدد"
+    reviewed_str = format_local_datetime(kyc_req.reviewed_at) if kyc_req.reviewed_at else "—"
+
+    rej_block = ""
+    if kyc_req.status == "rejected" and kyc_req.rejection_reason:
+        rej_block = f"📌 **سبب الرفض:** `{escape_markdown(kyc_req.rejection_reason)}`\n"
+
+    card_text = (
+        f"🪪 **ملف توثيق الهوية (KYC) — طلب #{kyc_req.id}**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"👤 **المستخدم:** `{kyc_req.user_id}` ({uname})\n"
+        f"🏷️ **اللقب المسجل:** `{nick}`\n"
+        f"📊 **حالة الطلب:** {status_ar}\n"
+        f"📅 **تاريخ التقديم:** `{created_str}`\n"
+        f"🛡️ **تاريخ المراجعة:** `{reviewed_str}`\n"
+        f"{rej_block}"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"📝 **الاسم الثلاثي:** `{safe_fn}`\n"
+        f"🔢 **الرقم الوطني:** `{safe_nid}`\n"
+        f"📱 **رقم الموبايل:** `{safe_ph}`"
+    )
+
+    kb_rows = []
+    if kyc_req.status == "pending":
+        kb_rows.append([
+            InlineKeyboardButton(text="✅ قبول وتوثيق الحساب", callback_data=f"adm_kyc_app_{kyc_req.id}"),
+            InlineKeyboardButton(text="❌ رفض مع ذكر السبب", callback_data=f"adm_kyc_rej_{kyc_req.id}"),
+        ])
+    elif user and getattr(user, "kyc_status", "unverified") == "verified":
+        kb_rows.append([
+            InlineKeyboardButton(text="⚠️ إلغاء توثيق الهوية للمستخدم", callback_data=f"adm_kyc_revoke_{kyc_req.user_id}"),
+        ])
+
+    kb_rows.append([
+        InlineKeyboardButton(text="👤 فتح ملف المستخدم", callback_data=f"adm_back_user_{kyc_req.user_id}"),
+        InlineKeyboardButton(text="🔙 لوحة الإدارة", callback_data="admin_main_menu"),
+    ])
+
+    await callback.message.answer(
+        card_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="Markdown",
+    )
+
+
+@admin_router.callback_query(F.data.startswith("adm_kyc_app_"))
+async def cq_admin_approve_kyc(callback: CallbackQuery, db_session: AsyncSession, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ غير مصرح.", show_alert=True)
+        return
+
+    try:
+        req_id = int(callback.data.replace("adm_kyc_app_", ""))
+    except ValueError:
+        await callback.answer("⚠️ رقم الطلب غير صالح.", show_alert=True)
+        return
+
+    res = await db_session.execute(
+        select(KycRequest).where(KycRequest.id == req_id).with_for_update()
+    )
+    kyc_req = res.scalar_one_or_none()
+    if not kyc_req:
+        await callback.answer("⚠️ الطلب غير موجود.", show_alert=True)
+        return
+
+    if kyc_req.status != "pending":
+        await callback.answer(f"ℹ️ تمت معالجة هذا الطلب مسبقاً (الحالة: {kyc_req.status}).", show_alert=True)
+        return
+
+    user_res = await db_session.execute(
+        select(User).where(User.telegram_id == kyc_req.user_id).with_for_update()
+    )
+    user = user_res.scalar_one_or_none()
+    if not user:
+        await callback.answer("⚠️ المستخدم غير موجود في قاعدة البيانات.", show_alert=True)
+        return
+
+    now_utc = datetime.now(timezone.utc)
+    kyc_req.status = "approved"
+    kyc_req.reviewed_by = callback.from_user.id
+    kyc_req.reviewed_at = now_utc
+    user.kyc_status = "verified"
+
+    add_audit(
+        session=db_session,
+        action="ADMIN_APPROVE_KYC",
+        target_type="kyc_request",
+        target_id=str(kyc_req.id),
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={
+            "user_id": kyc_req.user_id,
+            "full_name": kyc_req.full_name,
+            "national_id": kyc_req.national_id,
+            "phone_number": kyc_req.phone_number,
+        },
+    )
+    await db_session.commit()
+
+    # Refresh any active channel offer posts for this trader so the verified badge appears immediately
+    try:
+        open_offers_res = await db_session.execute(
+            select(Offer).where(
+                Offer.user_id == kyc_req.user_id,
+                Offer.channel_message_id.is_not(None),
+                Offer.status.in_(["active", "reserved", "negotiating"]),
+            )
+        )
+        for off in open_offers_res.scalars().all():
+            await update_channel_offer_message(bot, off, trader=user)
+    except Exception as e:
+        logger.warning(f"Failed to refresh channel offers after KYC approval for user {kyc_req.user_id}: {e}")
+
+    try:
+        await bot.send_message(
+            chat_id=kyc_req.user_id,
+            text=(
+                f"🟢 **تم اعتماد توثيق هويتك رسمياً لدى {BOT_NAME}** ✅\n"
+                "〰️〰️〰️〰️〰️〰️〰️\n"
+                f"🆔 **رقم الطلب:** `#{kyc_req.id}`\n"
+                "✨ أصبح حسابك الآن يحمل شارة **موثق ✅** في ملفك الشخصي."
+            ),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👤 عرض ملفي الشخصي", callback_data="menu_user_profile")]
+            ]),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to notify user {kyc_req.user_id} of KYC approval: {e}")
+
+    admin_tag = safe_username(callback.from_user.username, callback.from_user.id)
+    safe_fn = escape_markdown(str(kyc_req.full_name or ""))
+    safe_nid = escape_markdown(str(kyc_req.national_id or ""))
+    safe_ph = escape_markdown(str(kyc_req.phone_number or ""))
+    updated_text = (
+        f"✅ **تم اعتماد توثيق الهوية — طلب #{kyc_req.id}**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"👤 **المستخدم:** `{kyc_req.user_id}`\n"
+        f"📝 **الاسم الثلاثي:** `{safe_fn}`\n"
+        f"🔢 **الرقم الوطني:** `{safe_nid}`\n"
+        f"📱 **رقم الموبايل:** `{safe_ph}`\n"
+        f"🛡️ **بواسطة الأدمن:** `{callback.from_user.id}` ({admin_tag})"
+    )
+    try:
+        await callback.message.edit_text(updated_text, parse_mode="Markdown")
+    except Exception:
+        pass
+
+    await callback.answer("✅ تم اعتماد توثيق الهوية وإشعار المستخدم بنجاح.", show_alert=True)
+
+
+@admin_router.callback_query(F.data.startswith("adm_kyc_rej_"))
+async def cq_admin_reject_kyc_prompt(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ غير مصرح.", show_alert=True)
+        return
+
+    if callback.data == "adm_kyc_rej_cancel":
+        await state.clear()
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.answer("تم إلغاء عملية الرفض.")
+        return
+
+    try:
+        req_id = int(callback.data.replace("adm_kyc_rej_", ""))
+    except ValueError:
+        await callback.answer("⚠️ رقم الطلب غير صالح.", show_alert=True)
+        return
+
+    res = await db_session.execute(select(KycRequest).where(KycRequest.id == req_id))
+    kyc_req = res.scalar_one_or_none()
+    if not kyc_req:
+        await callback.answer("⚠️ الطلب غير موجود.", show_alert=True)
+        return
+
+    if kyc_req.status != "pending":
+        await callback.answer(f"ℹ️ تمت معالجة هذا الطلب مسبقاً (الحالة: {kyc_req.status}).", show_alert=True)
+        return
+
+    await state.set_state(AdminFSM.waiting_for_kyc_reject_reason)
+    await state.update_data(
+        reject_kyc_req_id=req_id,
+        reject_kyc_card_chat_id=callback.message.chat.id,
+        reject_kyc_card_msg_id=callback.message.message_id,
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 تراجع عن الرفض", callback_data="adm_kyc_rej_cancel")]
+    ])
+    await callback.message.answer(
+        f"✍️ **رفض طلب توثيق الهوية #{req_id}**\n\n"
+        "أرسل الآن سبب الرفض ليتم إرساله إلى المستخدم لتصحيح بياناته أو إعادة التصوير:",
+        reply_markup=kb,
+        parse_mode="Markdown",
+    )
+    await callback.answer()
+
+
+@admin_router.message(AdminFSM.waiting_for_kyc_reject_reason)
+async def process_admin_reject_kyc_reason(message: Message, state: FSMContext, db_session: AsyncSession, bot: Bot):
+    if not is_admin(message.from_user.id):
+        return
+
+    reason_text = (message.text or "").strip()
+    if not reason_text:
+        await message.answer("⚠️ يرجى كتابة سبب الرفض كنص واضح.")
+        return
+
+    data = await state.get_data()
+    req_id = data.get("reject_kyc_req_id")
+    card_chat_id = data.get("reject_kyc_card_chat_id")
+    card_msg_id = data.get("reject_kyc_card_msg_id")
+    await state.clear()
+
+    if not req_id:
+        await message.answer("⚠️ انتهت جلسة الرفض، يرجى المحاولة مجدداً.")
+        return
+
+    res = await db_session.execute(
+        select(KycRequest).where(KycRequest.id == int(req_id)).with_for_update()
+    )
+    kyc_req = res.scalar_one_or_none()
+    if not kyc_req:
+        await message.answer("⚠️ طلب التوثيق غير موجود.")
+        return
+
+    if kyc_req.status != "pending":
+        await message.answer(f"ℹ️ تمت معالجة الطلب `#{kyc_req.id}` مسبقاً (الحالة: `{kyc_req.status}`).", parse_mode="Markdown")
+        return
+
+    user_res = await db_session.execute(
+        select(User).where(User.telegram_id == kyc_req.user_id).with_for_update()
+    )
+    user = user_res.scalar_one_or_none()
+
+    now_utc = datetime.now(timezone.utc)
+    kyc_req.status = "rejected"
+    kyc_req.rejection_reason = reason_text[:500]
+    kyc_req.reviewed_by = message.from_user.id
+    kyc_req.reviewed_at = now_utc
+    if user:
+        user.kyc_status = "rejected"
+
+    add_audit(
+        session=db_session,
+        action="ADMIN_REJECT_KYC",
+        target_type="kyc_request",
+        target_id=str(kyc_req.id),
+        actor_id=message.from_user.id,
+        actor_type="ADMIN",
+        details={
+            "user_id": kyc_req.user_id,
+            "reason": reason_text[:500],
+        },
+    )
+    await db_session.commit()
+
+    safe_reason = escape_markdown(reason_text[:500])
+
+    try:
+        await bot.send_message(
+            chat_id=kyc_req.user_id,
+            text=(
+                f"❌ **تعذر اعتماد طلب توثيق الهوية #{kyc_req.id}**\n"
+                "〰️〰️〰️〰️〰️〰️〰️\n"
+                f"📌 **سبب الرفض من الإدارة:**\n{safe_reason}\n"
+                "〰️〰️〰️〰️〰️〰️〰️\n"
+                "يمكنك إعادة تقديم طلب التوثيق مع مراعاة الملاحظة أعلاه."
+            ),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 إعادة تقديم طلب التوثيق", callback_data="prof_kyc")],
+                [InlineKeyboardButton(text="👤 ملفي الشخصي", callback_data="menu_user_profile")],
+            ]),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to notify user {kyc_req.user_id} of KYC rejection: {e}")
+
+    admin_tag = safe_username(message.from_user.username, message.from_user.id)
+    safe_fn = escape_markdown(str(kyc_req.full_name or ""))
+    updated_card = (
+        f"❌ **تم رفض طلب توثيق الهوية #{kyc_req.id}**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        f"👤 **المستخدم:** `{kyc_req.user_id}`\n"
+        f"📝 **الاسم الثلاثي:** `{safe_fn}`\n"
+        f"📌 **سبب الرفض:** {safe_reason}\n"
+        f"🛡️ **بواسطة الأدمن:** `{message.from_user.id}` ({admin_tag})"
+    )
+    if card_chat_id and card_msg_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=card_chat_id,
+                message_id=card_msg_id,
+                text=updated_card,
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+
+    await message.answer(
+        f"✅ تم رفض طلب التوثيق `#{kyc_req.id}` وإرسال السبب إلى المستخدم بنجاح.",
+        parse_mode="Markdown",
+    )
+
+
+@admin_router.callback_query(F.data.startswith("adm_kyc_revoke_"))
+async def cq_admin_revoke_kyc(callback: CallbackQuery, db_session: AsyncSession, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ غير مصرح.", show_alert=True)
+        return
+
+    try:
+        uid = int(callback.data.replace("adm_kyc_revoke_", ""))
+    except ValueError:
+        await callback.answer("⚠️ معرف المستخدم غير صالح.", show_alert=True)
+        return
+
+    user_res = await db_session.execute(
+        select(User).where(User.telegram_id == uid).with_for_update()
+    )
+    user = user_res.scalar_one_or_none()
+    if not user:
+        await callback.answer("⚠️ المستخدم غير موجود.", show_alert=True)
+        return
+
+    user.kyc_status = "unverified"
+    add_audit(
+        session=db_session,
+        action="ADMIN_REVOKE_KYC",
+        target_type="user",
+        target_id=str(uid),
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={"previous_status": "verified", "new_status": "unverified"},
+    )
+    await db_session.commit()
+
+    # Refresh any active channel offer posts for this trader so the verified badge is updated immediately
+    try:
+        open_offers_res = await db_session.execute(
+            select(Offer).where(
+                Offer.user_id == uid,
+                Offer.channel_message_id.is_not(None),
+                Offer.status.in_(["active", "reserved", "negotiating"]),
+            )
+        )
+        for off in open_offers_res.scalars().all():
+            await update_channel_offer_message(bot, off, trader=user)
+    except Exception as e:
+        logger.warning(f"Failed to refresh channel offers after KYC revocation for user {uid}: {e}")
+
+    try:
+        await bot.send_message(
+            chat_id=uid,
+            text=(
+                "⚠️ **إشعار من الإدارة — تحديث حالة توثيق الهوية**\n"
+                "〰️〰️〰️〰️〰️〰️〰️\n"
+                "تم إلغاء حالة توثيق الهوية لحسابك من قبل الإدارة. يمكنك إعادة تقديم طلب توثيق جديد من ملفك الشخصي."
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+
+    await callback.answer("✅ تم إلغاء توثيق الهوية للمستخدم.", show_alert=True)
+    await send_user_card(callback, user, db_session, is_edit=True)
+
 

@@ -13,13 +13,13 @@ from sqlalchemy.future import select
 from db.session import AsyncSessionLocal
 from db.models import (
     User, Offer, Deal, Negotiation, Dispute,
-    PaymentProof, BlockchainTransaction, SystemSetting, AuditLog, DealRating
+    PaymentProof, BlockchainTransaction, SystemSetting, AuditLog, DealRating, KycRequest
 )
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-BACKUP_FORMAT_VERSION = "3.9"
+BACKUP_FORMAT_VERSION = "4.0"
 BACKUP_DIR = os.path.join(os.getcwd(), "backups")
 
 def serialize_val(val):
@@ -272,7 +272,30 @@ async def create_database_backup() -> tuple[str, str, dict]:
             for a in audit_rows
         ]
 
-        # 11. deposit_index_seq state
+        # 11. KYC Requests
+        kyc_res = await session.execute(select(KycRequest))
+        kyc_rows = kyc_res.scalars().all()
+        stats["kyc_requests"] = len(kyc_rows)
+        kyc_data = [
+            {
+                "id": k.id,
+                "user_id": k.user_id,
+                "full_name": k.full_name,
+                "national_id": k.national_id,
+                "phone_number": k.phone_number,
+                "id_front_file_id": k.id_front_file_id,
+                "id_back_file_id": k.id_back_file_id,
+                "selfie_file_id": k.selfie_file_id,
+                "status": k.status,
+                "rejection_reason": k.rejection_reason,
+                "reviewed_by": k.reviewed_by,
+                "reviewed_at": serialize_val(k.reviewed_at),
+                "created_at": serialize_val(k.created_at)
+            }
+            for k in kyc_rows
+        ]
+
+        # 12. deposit_index_seq state
         deposit_seq_info = {"last_value": 1, "is_called": False}
         try:
             seq_res = await session.execute(
@@ -303,7 +326,8 @@ async def create_database_backup() -> tuple[str, str, dict]:
         "payment_proofs": proofs_data,
         "blockchain_transactions": txs_data,
         "system_settings": settings_data,
-        "audit_logs": audit_data
+        "audit_logs": audit_data,
+        "kyc_requests": kyc_data
     }
 
     # Offload JSON dump + gzip compression + file retention to a background thread

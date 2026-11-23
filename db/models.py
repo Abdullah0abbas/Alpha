@@ -212,3 +212,26 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class KycRequest(Base):
+    """
+    Identity Verification (KYC) submission record.
+    Stores full name, national ID, phone number, and Telegram file_ids for front ID, back ID, and selfie with paper.
+    """
+    __tablename__ = "kyc_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id"), nullable=False, index=True)
+    full_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    national_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    phone_number: Mapped[str] = mapped_column(String(40), nullable=False)
+    id_front_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    id_back_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    selfie_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), server_default="pending", default="pending", index=True)  # pending, approved, rejected
+    rejection_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    reviewed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+

@@ -3,7 +3,9 @@ import logging
 from decimal import Decimal, ROUND_HALF_UP
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from db.models import Offer
+from sqlalchemy.future import select
+from db.models import Offer, User
+from db.session import AsyncSessionLocal
 from config.settings import settings
 from bot.utils.formatters import (
     format_payment_methods,
@@ -15,7 +17,7 @@ from bot.utils.formatters import (
 logger = logging.getLogger(__name__)
 
 
-def _resolve_trader_stats(offer: Offer, trader=None) -> tuple[str, int, str, str]:
+def _resolve_trader_stats(offer: Offer, trader=None) -> tuple[str, int, str, str, str]:
     user_obj = trader or getattr(offer, "trader", None) or getattr(offer, "user", None)
     completed = int(
         getattr(user_obj, "completed_deals_count", None)
@@ -36,10 +38,34 @@ def _resolve_trader_stats(offer: Offer, trader=None) -> tuple[str, int, str, str
     else:
         tier_label = "برونزي🥉"
 
+    kyc_raw = getattr(user_obj, "kyc_status", "unverified") if user_obj else "unverified"
+    kyc_label = "موثق ✅" if kyc_raw == "verified" else "غير موثق"
+
     stars_5 = ((rep_dec / Decimal("100")) * Decimal("5")).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
     rep_str = f"⭐️ {stars_5}"
     rate_pct = f"{rep_dec.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)}%"
-    return tier_label, completed, rate_pct, rep_str
+    return tier_label, completed, rate_pct, rep_str, kyc_label
+
+
+def format_trader_trust_markdown(trader) -> str:
+    """
+    Formats a single concise Markdown line for in-bot offer views (Market & Deep-Link & /offers):
+    e.g., 'موثق ✅ | ⭐ `100.0%` (`12` صفقات)' or 'غير موثق | ⭐ `100.0%` (`0` صفقات)'
+    """
+    completed = int(
+        getattr(trader, "completed_deals_count", None)
+        or getattr(trader, "completed_deals", None)
+        or 0
+    ) if trader else 0
+    rep_raw = getattr(trader, "reputation_score", Decimal("100.0")) if trader else Decimal("100.0")
+    try:
+        rep_dec = rep_raw if isinstance(rep_raw, Decimal) else Decimal(str(rep_raw))
+    except Exception:
+        rep_dec = Decimal("100.0")
+    rate_pct = f"{rep_dec.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)}%"
+    kyc_raw = getattr(trader, "kyc_status", "unverified") if trader else "unverified"
+    kyc_badge = "موثق ✅" if kyc_raw == "verified" else "غير موثق"
+    return f"{kyc_badge} | ⭐ `{rate_pct}` (`{completed}` صفقات)"
 
 
 def build_channel_offer_message(
@@ -86,7 +112,7 @@ def build_channel_offer_message(
     else:
         note_line = ""
 
-    tier_label, completed_deals, rate_pct, rep_str = _resolve_trader_stats(offer, trader=trader)
+    tier_label, completed_deals, rate_pct, rep_str, kyc_label = _resolve_trader_stats(offer, trader=trader)
 
     core_card = (
         f"فرصة رقم : {offer.id} (عرض #{offer.id})\n"
@@ -98,6 +124,7 @@ def build_channel_offer_message(
         f"⏳ مدة المعاملة : {dur_str} (الصلاحية المتبقية)\n"
         f"〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
         f"التاجر :\n"
+        f"🆔 التوثيق : {kyc_label}\n"
         f"👤 المستوى : {tier_label}\n"
         f"📈 نسبة الإتمام: {rate_pct} ({completed_deals} صفقات)\n"
         f"🧐 السمعة : {rep_str}\n"
@@ -139,6 +166,7 @@ def build_channel_offer_message(
 async def update_channel_offer_message(bot: Bot, offer: Offer, trader=None) -> None:
     """
     Updates the public Telegram channel broadcast message for an offer based on its status.
+    Automatically loads the trader User record if not passed so KYC badge and reputation never reset.
     """
     if not settings.CHANNEL_ID or not settings.BOT_USERNAME or not offer.channel_message_id:
         return
@@ -154,7 +182,16 @@ async def update_channel_offer_message(bot: Bot, offer: Offer, trader=None) -> N
             # Telegram prohibits bots from deleting messages older than 48 hours; fall back cleanly to striking through the post
             logger.info(f"Channel message for offer #{offer.id} cannot be deleted ({delete_err}); falling back to strike-through edit.")
 
-    channel_text, kb = build_channel_offer_message(offer, trader=trader)
+    resolved_trader = trader
+    if resolved_trader is None and getattr(offer, "user_id", None):
+        try:
+            async with AsyncSessionLocal() as session:
+                res = await session.execute(select(User).where(User.telegram_id == offer.user_id))
+                resolved_trader = res.scalar_one_or_none()
+        except Exception as e:
+            logger.warning(f"Failed to load trader {offer.user_id} for channel offer #{offer.id}: {e}")
+
+    channel_text, kb = build_channel_offer_message(offer, trader=resolved_trader)
 
     try:
         await bot.edit_message_text(
@@ -168,5 +205,3 @@ async def update_channel_offer_message(bot: Bot, offer: Offer, trader=None) -> N
         err_str = str(e).lower()
         if "message is not modified" not in err_str and "message to edit not found" not in err_str:
             logger.warning(f"Failed to edit channel message for offer {offer.id}: {e}")
-
-

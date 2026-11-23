@@ -21,6 +21,7 @@ from bot.handlers.offers import (
 )
 from bot.utils.formatters import escape_markdown
 from bot.utils.deal_views import build_offer_action_buttons
+from bot.services.channel import format_trader_trust_markdown
 from bot.handlers.deals import my_deals
 from bot.utils.support_texts import (
     SUPPORT_FAQ_TEXT,
@@ -119,6 +120,12 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                 neg_str = neg_type_labels.get(offer.negotiable_type, "غير متاح") if offer.negotiable else "غير متاح"
                 note_line = f"📝 **الملاحظة :** {escape_markdown(str(offer.note))}\n" if offer.note else ""
 
+                trader = None
+                if offer.user_id:
+                    t_res = await db_session.execute(select(User).where(User.telegram_id == offer.user_id))
+                    trader = t_res.scalar_one_or_none()
+                trader_trust_str = format_trader_trust_markdown(trader)
+
                 buttons = build_offer_action_buttons(
                     offer_id=offer.id,
                     offer_user_id=offer.user_id,
@@ -132,6 +139,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                 await message.answer(
                     f"📦 **فرصة رقم : {offer.id}**\n"
                     f"⚖️ **النوع :** {offer_type_label}\n"
+                    f"👤 **التاجر :** {trader_trust_str}\n"
                     f"〰️〰️〰️〰️〰️〰️〰️\n"
                     f"💰 **الكمية :** من `{min_str}` إلى `{max_str} USDT`\n"
                     f"📊 **سعر الصرف :** `{rate_str}` ل.س\n"
@@ -303,6 +311,12 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         f"{format_fee_rule_line()}\n"
     ]
 
+    maker_ids = list({off.user_id for off in offers if off.user_id})
+    traders_map = {}
+    if maker_ids:
+        t_res = await db_session.execute(select(User).where(User.telegram_id.in_(maker_ids)))
+        traders_map = {u.telegram_id: u for u in t_res.scalars().all()}
+
     inline_buttons = []
     for off in offers:
         rate_str = format_syp(off.rate)
@@ -313,9 +327,11 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
         remaining = humanize_time_remaining(off.expires_at, "4 ساعات")
         neg = "متاح" if off.negotiable and off.negotiable_type != "none" else "ثابت"
         note_line = f"▫️ **الملاحظة:** {escape_markdown(str(off.note))}\n" if off.note else ""
+        trader_trust_str = format_trader_trust_markdown(traders_map.get(off.user_id))
 
         text_lines.append(
             f"🏷️ **عرض #{off.id}** — {off_type}\n"
+            f"▫️ **التاجر:** {trader_trust_str}\n"
             f"▫️ **سعر الصرف:** `{rate_str}` ل.س\n"
             f"▫️ **حدود الكمية:** من `{min_str} USDT` إلى `{max_str} USDT`\n"
             f"▫️ **وسائل الدفع:** {methods}\n"

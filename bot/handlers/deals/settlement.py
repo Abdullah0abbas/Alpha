@@ -161,18 +161,6 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
             )
         return
 
-    offer = None
-    if deal.offer_id:
-        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
-        offer = offer_res.scalar_one_or_none()
-
-    is_multi_sell_awaiting_buyer_pm = (
-        offer is not None
-        and offer.offer_type == "sell"
-        and len(offer.payment_methods or []) > 1
-        and seller_method_val in ("", "PENDING", "غير محدد")
-    )
-
     await db_session.commit()
 
     try:
@@ -188,44 +176,7 @@ async def manual_usdt_deposited(callback: CallbackQuery, state: FSMContext, db_s
             callback.bot, e, context_label=f"notify_usdt_deposit_confirmed (deal #{deal.id})", user_id=callback.from_user.id
         )
 
-    if is_multi_sell_awaiting_buyer_pm:
-        await push_deal_card(deal.id, callback.bot)
-        methods = list(offer.payment_methods or [])
-        buttons = []
-        for idx, m in enumerate(methods):
-            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-            buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"nego_pm_{deal.id}_{idx}")])
-        pm_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        try:
-            await callback.bot.send_message(
-                chat_id=deal.buyer_id,
-                text=(
-                    f"🔒 **تحديث صفقة #{deal.id} — تم حجز رصيد الضمان**\n\n"
-                    f"▫️ **رصيد الضمان المحتجز:** `{usdt_str} USDT`\n"
-                    f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
-                    f"تم تأكيد حجز الضمان في محفظة الوساطة لـ {BOT_NAME}.\n"
-                    f"يرجى اختيار وسيلة الدفع التي ترغب بالتحويل عبرها لإظهار حساب البائع ومتابعة الدفع:"
-                ),
-                reply_markup=pm_kb,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to prompt buyer {deal.buyer_id} for payment method on deal #{deal.id}: {e}")
-
-        seller_wait_text = (
-            f"🔒 **صفقة #{deal.id} — تم حجز الضمان بنجاح**\n\n"
-            f"▫️ **الكمية المحتجزة:** `{usdt_str} USDT`\n"
-            f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n\n"
-            f"✅ حسابات استلامك محفوظة مسبقاً في العرض، وتم إشعار المشتري لاختيار وسيلة الدفع المفضلة للبدء بتحويل الليرة."
-        )
-        try:
-            await callback.message.edit_text(seller_wait_text, parse_mode="Markdown")
-        except Exception:
-            await callback.message.answer(seller_wait_text, parse_mode="Markdown")
-        await callback.answer("تم تأكيد إيداع الضمان بنجاح ✅")
-        return
-
-    # Notify Buyer only when seller still needs to enter payment details
+    # Notify Buyer that USDT is locked in escrow and Seller is entering receiving account details
     try:
         await callback.bot.send_message(
             chat_id=deal.buyer_id,

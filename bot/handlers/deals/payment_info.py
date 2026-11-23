@@ -385,7 +385,10 @@ async def cq_deal_choose_payment_method(callback: CallbackQuery, state: FSMConte
     await state.set_state(DealPaymentFSM.waiting_for_seller_account)
     await state.update_data(deal_id=deal_id, selected_pm=pm_name)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+        [
+            InlineKeyboardButton(text="🔙 رجوع", callback_data=f"set_seller_info_{deal_id}"),
+            InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")
+        ]
     ])
     try:
         sent_msg = await callback.message.edit_text(prompt_text, reply_markup=kb, parse_mode="Markdown")
@@ -398,6 +401,7 @@ async def cq_deal_choose_payment_method(callback: CallbackQuery, state: FSMConte
 
 @payment_info_router.callback_query(F.data.startswith("set_seller_info_"))
 async def start_set_seller_info(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
+    await state.clear()
     deal_id = int(callback.data.split("_")[-1])
     valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
@@ -409,39 +413,6 @@ async def start_set_seller_info(callback: CallbackQuery, state: FSMContext, db_s
     if not valid:
         await callback.answer(err_msg, show_alert=True)
         return
-
-    seller_method_val = ""
-    if isinstance(deal.seller_payment_info, dict):
-        seller_method_val = str(deal.seller_payment_info.get("method") or "").strip()
-
-    if deal.offer_id and seller_method_val in ("", "PENDING", "غير محدد"):
-        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
-        offer = offer_res.scalar_one_or_none()
-        if offer and offer.offer_type == "sell" and len(offer.payment_methods or []) > 1:
-            await db_session.commit()
-            methods = list(offer.payment_methods or [])
-            buttons = []
-            for idx, m in enumerate(methods):
-                icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-                buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"nego_pm_{deal.id}_{idx}")])
-            pm_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-            try:
-                await callback.bot.send_message(
-                    chat_id=deal.buyer_id,
-                    text=(
-                        f"💳 **تذكير باختيار وسيلة الدفع — صفقة #{deal.id}**\n\n"
-                        f"قام البائع بإيداع رصيد الضمان وبانتظار اختيارك لوسيلة الدفع المفضلة لإظهار الحساب ومتابعة التحويل:"
-                    ),
-                    reply_markup=pm_kb,
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                logger.warning(f"Failed to re-prompt buyer {deal.buyer_id} for payment method on deal #{deal.id}: {e}")
-            await callback.answer(
-                "⏳ حسابات استلامك محفوظة مسبقاً في العرض، وتم إرسال تذكير للمشتري لاختيار وسيلة الدفع المفضلة.",
-                show_alert=True,
-            )
-            return
 
     await prompt_seller_payment_info_flow(
         deal=deal,
@@ -520,7 +491,10 @@ async def cq_manual_set_seller_info(callback: CallbackQuery, state: FSMContext, 
         await state.update_data(deal_id=deal.id, selected_pm=locked_pm)
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+            [
+                InlineKeyboardButton(text="🔙 رجوع", callback_data=f"set_seller_info_{deal.id}"),
+                InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")
+            ]
         ])
         try:
             sent_msg = await callback.message.edit_text(prompt_text, reply_markup=kb, parse_mode="Markdown")
@@ -533,8 +507,8 @@ async def cq_manual_set_seller_info(callback: CallbackQuery, state: FSMContext, 
     select_kb = build_allowed_pm_selection_kb(
         allowed_methods=offer_methods,
         callback_prefix="deal_pm_",
-        back_text="❌ إلغاء",
-        back_callback="fsm_cancel_back",
+        back_text="🔙 رجوع",
+        back_callback=f"set_seller_info_{deal.id}",
         callback_suffix=f"_{deal.id}",
     )
     select_text = (
@@ -568,7 +542,10 @@ async def process_set_seller_info(message: Message, state: FSMContext, db_sessio
         warn_msg = await message.answer(
             f"{err_msg}\n\nيرجى إعادة إدخال البيانات بالشكل المطلوب أو الضغط على إلغاء:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+                [
+                    InlineKeyboardButton(text="🔙 رجوع", callback_data=f"set_seller_info_{deal_id}"),
+                    InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")
+                ]
             ]),
             parse_mode="Markdown"
         )
@@ -604,6 +581,7 @@ async def process_set_seller_info(message: Message, state: FSMContext, db_sessio
 
 @payment_info_router.callback_query(F.data.startswith("set_buyer_payout_"))
 async def start_set_buyer_payout(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
+    await state.clear()
     deal_id = int(callback.data.split("_")[-1])
     valid, deal, _, err_msg = await acquire_deal_lock(
         deal_id=deal_id,
@@ -753,7 +731,10 @@ async def cq_manual_set_buyer_wallet(callback: CallbackQuery, state: FSMContext,
 
     text = "💵 أرسل عنوان USDT (BEP-20) فقط، من دون أي نص أو كلمات إضافية."
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+        [
+            InlineKeyboardButton(text="🔙 رجوع", callback_data=f"set_buyer_payout_{deal_id}"),
+            InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")
+        ]
     ])
     try:
         sent_msg = await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -766,23 +747,23 @@ async def cq_manual_set_buyer_wallet(callback: CallbackQuery, state: FSMContext,
 
 @payment_info_router.message(DealPaymentFSM.waiting_for_buyer_wallet)
 async def process_set_buyer_wallet(message: Message, state: FSMContext, db_session: AsyncSession):
+    data = await state.get_data()
+    deal_id = data.get('deal_id')
     wallet_raw = message.text if message.text else ""
     is_valid, normalized_address, val_err = validate_bep20_address(wallet_raw)
     if not is_valid:
+        nav_row = [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+        if deal_id:
+            nav_row.insert(0, InlineKeyboardButton(text="🔙 رجوع", callback_data=f"set_buyer_payout_{deal_id}"))
         warn_msg = await message.answer(
             f"⚠️ **عنوان محفظة غير صالح**\n\n"
             f"{val_err}\n\n"
             f"💵 أرسل عنوان USDT (BEP-20) يبدأ بـ `0x` (42 خانة):",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-            ]),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[nav_row]),
             parse_mode="Markdown"
         )
         await state.update_data(prompt_msg_id=warn_msg.message_id, prompt_chat_id=warn_msg.chat.id)
         return
-
-    data = await state.get_data()
-    deal_id = data.get('deal_id')
     if not deal_id:
         await message.answer("حدث خطأ في استعادة بيانات الجلسة.")
         await state.clear()

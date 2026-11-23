@@ -1,5 +1,4 @@
 import logging
-import json
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 from aiogram import Router, F, Bot
@@ -14,7 +13,7 @@ from db.models import Offer, User
 from bot.states.flow_states import OfferCreateFSM
 from config.settings import settings
 from bot.middlewares.rate_limit import check_and_record_rate_limit
-from bot.services.channel import update_channel_offer_message, build_channel_offer_message
+from bot.services.channel import update_channel_offer_message, build_channel_offer_message, format_trader_trust_markdown
 from bot.services.admin_notifier import dispatch_admin_notification
 from bot.utils.formatters import (
     format_syp,
@@ -28,15 +27,6 @@ from bot.utils.formatters import (
     MIN_DEAL_AMOUNT_USDT,
     escape_markdown,
     safe_username,
-)
-from bot.utils.validators import (
-    validate_bep20_address,
-    validate_payment_method_info
-)
-from bot.utils.payment_prompts import (
-    extract_clean_account,
-    get_pm_spec,
-    match_saved_payment_info,
 )
 from bot.utils.offer_wizard import (
     push_wizard_step,
@@ -126,13 +116,10 @@ def get_wizard_summary_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="✏️ الدفع", callback_data="wiz_jump_methods"),
-            InlineKeyboardButton(text="✏️ الحساب", callback_data="wiz_jump_payout")
+            InlineKeyboardButton(text="✏️ التفاوض", callback_data="wiz_jump_neg")
         ],
         [
-            InlineKeyboardButton(text="✏️ التفاوض", callback_data="wiz_jump_neg"),
-            InlineKeyboardButton(text="✏️ الملاحظة", callback_data="wiz_jump_note")
-        ],
-        [
+            InlineKeyboardButton(text="✏️ الملاحظة", callback_data="wiz_jump_note"),
             InlineKeyboardButton(text="✏️ المدة", callback_data="wiz_jump_dur")
         ],
         [
@@ -142,7 +129,7 @@ def get_wizard_summary_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def build_offer_type_screen(back_to_main: bool = False) -> tuple[str, InlineKeyboardMarkup]:
+def build_offer_type_screen(back_to_main: bool = True) -> tuple[str, InlineKeyboardMarkup]:
     """Unified builder for Step 1 (Offer Type selection) across menu button, /create_offer, and Back navigation."""
     text = (
         f"📝 **إنشاء عرض تداول جديد — {BOT_NAME}**\n"
@@ -222,7 +209,7 @@ async def _render_current_step(message: Message, state: FSMContext, db_session: 
     data = await state.get_data()
 
     if cur_state == OfferCreateFSM.waiting_for_type.state:
-        text, kb = build_offer_type_screen(back_to_main=False)
+        text, kb = build_offer_type_screen(back_to_main=True)
         await message.edit_text(
             text,
             reply_markup=kb,
@@ -265,14 +252,15 @@ async def _render_current_step(message: Message, state: FSMContext, db_session: 
             reply_markup=get_payment_methods_kb(selected),
             parse_mode="Markdown"
         )
-    elif cur_state in (OfferCreateFSM.waiting_for_payout_details.state, OfferCreateFSM.confirm_payout_details.state):
-        await _show_payout_prompt(message, state, db_session, user_id=user_id)
     elif cur_state in (OfferCreateFSM.waiting_for_negotiable_decision.state, OfferCreateFSM.waiting_for_negotiable_type.state):
         await _show_negotiation_decision(message, state)
+        await state.set_state(OfferCreateFSM.waiting_for_negotiable_decision)
     elif cur_state == OfferCreateFSM.waiting_for_note.state:
         await _show_note_step(message, state)
+        await state.set_state(OfferCreateFSM.waiting_for_note)
     elif cur_state in (OfferCreateFSM.waiting_for_duration_choice.state, OfferCreateFSM.waiting_for_custom_duration.state, OfferCreateFSM.confirm_custom_duration.state):
         await _show_duration_choice(message, state)
+        await state.set_state(OfferCreateFSM.waiting_for_duration_choice)
     elif cur_state == OfferCreateFSM.waiting_for_confirm_publish.state:
         await _show_wizard_summary(message, state)
 
@@ -304,7 +292,7 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
         payment_methods=[]
     )
 
-    text, kb = build_offer_type_screen(back_to_main=False)
+    text, kb = build_offer_type_screen(back_to_main=True)
     await message.answer(
         text,
         reply_markup=kb,
@@ -343,8 +331,14 @@ async def process_offer_type(callback: CallbackQuery, state: FSMContext):
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_rate, F.data == "wiz_back_rate")
 async def back_to_offer_type(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Rate input to Offer Type."""
-    text, kb = build_offer_type_screen(back_to_main=False)
+    """Navigate back from Rate input to Summary (if jump-editing) or Offer Type."""
+    data = await state.get_data()
+    if data.get("return_to_summary"):
+        await _show_wizard_summary(callback.message, state)
+        await callback.answer()
+        return
+
+    text, kb = build_offer_type_screen(back_to_main=True)
     await callback.message.edit_text(
         text,
         reply_markup=kb,
@@ -373,7 +367,6 @@ async def process_offer_rate(message: Message, state: FSMContext):
         )
 
         if data.get("return_to_summary"):
-            await state.update_data(return_to_summary=False)
             await _show_wizard_summary(message, state)
             return
 
@@ -417,8 +410,22 @@ async def edit_rate_input(callback: CallbackQuery, state: FSMContext):
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_min_limit, F.data == "wiz_back_min")
 async def back_to_rate(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Min Limit to Rate input."""
+    """Navigate back from Min Limit to Summary (if jump-editing) or Rate input."""
     data = await state.get_data()
+    if data.get("return_to_summary"):
+        restore_updates = {}
+        if data.get("prev_min_limit") is not None:
+            restore_updates["min_limit"] = data["prev_min_limit"]
+            restore_updates["candidate_min_limit"] = data["prev_min_limit"]
+        if data.get("prev_max_limit") is not None:
+            restore_updates["max_limit"] = data["prev_max_limit"]
+            restore_updates["candidate_max_limit"] = data["prev_max_limit"]
+        if restore_updates:
+            await state.update_data(**restore_updates)
+        await _show_wizard_summary(callback.message, state)
+        await callback.answer()
+        return
+
     header = format_wizard_draft_header(data, "rate")
     await callback.message.edit_text(
         f"{header}"
@@ -433,7 +440,7 @@ async def back_to_rate(callback: CallbackQuery, state: FSMContext):
 
 @offers_router.message(OfferCreateFSM.waiting_for_min_limit)
 async def process_min_limit(message: Message, state: FSMContext):
-    """Receive and validate min limit, then proceed directly to max limit or summary."""
+    """Receive and validate min limit, then proceed to max limit."""
     try:
         min_limit = clean_numeric_input(message.text)
         if not min_limit or min_limit <= 0 or min_limit > Decimal("999999999"):
@@ -457,15 +464,6 @@ async def process_min_limit(message: Message, state: FSMContext):
             candidate_min_limit=min_val,
             step_history=history
         )
-
-        if data.get("return_to_summary"):
-            max_val = data.get("max_limit")
-            if max_val and Decimal(str(max_val)) < Decimal(str(min_val)):
-                await state.update_data(return_to_summary=False)
-            else:
-                await state.update_data(return_to_summary=False)
-                await _show_wizard_summary(message, state)
-                return
 
         min_str = format_usdt(min_limit)
         updated_data = await state.get_data()
@@ -598,7 +596,20 @@ async def edit_max_limit_input(callback: CallbackQuery, state: FSMContext):
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_methods, F.data == "wiz_back_methods")
 async def back_to_max_limit(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Payment Methods directly to Max Limit input."""
+    """Navigate back from Payment Methods to Summary (if jump-editing) or Max Limit input."""
+    data = await state.get_data()
+    if data.get("return_to_summary"):
+        restore_updates = {}
+        if data.get("prev_payment_methods") is not None:
+            restore_updates["payment_methods"] = list(data["prev_payment_methods"])
+        if data.get("prev_payout_details") is not None:
+            restore_updates["payout_details"] = dict(data["prev_payout_details"])
+        if restore_updates:
+            await state.update_data(**restore_updates)
+        await _show_wizard_summary(callback.message, state)
+        await callback.answer()
+        return
+
     await edit_max_limit_input(callback, state)
     await callback.answer()
 
@@ -622,8 +633,8 @@ async def toggle_payment_method(callback: CallbackQuery, state: FSMContext):
 
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_methods, F.data == "pm_done")
-async def confirm_payment_methods(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
-    """Validate selected methods and proceed to Step 6 (Payout Details)."""
+async def confirm_payment_methods(callback: CallbackQuery, state: FSMContext):
+    """Validate selected methods and proceed directly to Negotiation Options or return to Summary."""
     data = await state.get_data()
     selected_methods = data.get("payment_methods", [])
 
@@ -634,350 +645,9 @@ async def confirm_payment_methods(callback: CallbackQuery, state: FSMContext, db
     history = push_wizard_step(data.get("step_history", []), "methods", {"payment_methods": selected_methods})
     await state.update_data(step_history=history)
 
-    # Initialize Step 6 Payout Collection
-    offer_type = data.get("offer_type", "sell")
-    if offer_type == "sell":
-        # Clear out accounts for methods no longer selected
-        existing_payouts = dict(data.get("payout_details", {}) or {})
-        cleaned_payouts = {k: v for k, v in existing_payouts.items() if k in selected_methods}
-        await state.update_data(
-            payout_details=cleaned_payouts,
-            pending_payout_methods=list(selected_methods),
-            current_payout_index=0
-        )
-    else:
-        # Buy offer: single BEP-20 address
-        await state.update_data(
-            payout_details=data.get("payout_details", {}) or {},
-            pending_payout_methods=[]
-        )
-
-    await _show_payout_prompt(callback.message, state, db_session, user_id=callback.from_user.id)
-    await callback.answer()
-
-
-# ==============================================================================
-# STEP 6: PAYOUT DETAILS COLLECTION & CONFIRMATION
-# ==============================================================================
-
-def _extract_saved_payment_info(user_obj: User | None, cur_method: str) -> str | None:
-    """Helper to extract method-compatible saved payment info from User.saved_payment_info."""
-    if not user_obj or not user_obj.saved_payment_info:
-        return None
-    raw = user_obj.saved_payment_info
-    candidate = None
-    if isinstance(raw, dict):
-        val = raw.get(cur_method)
-        if val:
-            candidate = str(val)
-    elif isinstance(raw, str):
-        raw_str = raw.strip()
-        try:
-            parsed = json.loads(raw_str)
-            if isinstance(parsed, dict) and parsed.get(cur_method):
-                candidate = str(parsed[cur_method])
-        except Exception:
-            candidate = raw_str
-
-    if not candidate:
-        return None
-
-    is_usable, _, clean_acc, _ = match_saved_payment_info(candidate, target_method=cur_method)
-    if is_usable and clean_acc:
-        return clean_acc
-    return None
-
-
-async def _show_payout_prompt(message: Message, state: FSMContext, db_session: AsyncSession, user_id: int):
-    """Render prompt for payout details according to offer type and remaining methods."""
-    data = await state.get_data()
-    offer_type = data.get("offer_type", "sell")
-
-    # Fetch user for saved payment info
-    user_res = await db_session.execute(select(User).where(User.telegram_id == user_id))
-    user = user_res.scalar_one_or_none()
-
-    if offer_type == "buy":
-        # USDT BEP-20 wallet address collection
-        buttons = []
-        saved_addr = user.saved_usdt_address if (user and user.saved_usdt_address) else None
-        if saved_addr:
-            short_addr = f"{saved_addr[:6]}...{saved_addr[-4:]}"
-            buttons.append([InlineKeyboardButton(text=f"⚡ استخدام المحفوظ ({short_addr})", callback_data="wiz_use_saved_bep20")])
-
-        buttons.append([
-            InlineKeyboardButton(text="🔙 رجوع", callback_data="wiz_back_payout"),
-            InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")
-        ])
-        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-        header = format_wizard_draft_header(data, "payout")
-        text = (
-            f"{header}"
-            "💵 **عنوان استلام USDT (BEP-20)**\n"
-            "أرسل عنوان محفظتك `USDT (BEP-20)` فقط، من دون أي نص أو كلمات إضافية:"
-        )
-        if isinstance(message, CallbackQuery):
-            await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-        else:
-            try:
-                await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-            except Exception:
-                await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-        await state.set_state(OfferCreateFSM.waiting_for_payout_details)
-
-    else:
-        methods = data.get("pending_payout_methods") or data.get("payment_methods", [])
-        idx = data.get("current_payout_index", 0)
-
-        if idx >= len(methods):
-            await _show_payout_confirmation(message, state)
-            return
-
-        cur_method = methods[idx]
-        buttons = []
-
-        saved_info_str = _extract_saved_payment_info(user, cur_method)
-
-        if saved_info_str:
-            buttons.append([InlineKeyboardButton(text=f"⚡ الحساب المحفوظ ({cur_method})", callback_data=f"wiz_use_saved_pm_{idx}")])
-
-        buttons.append([
-            InlineKeyboardButton(text="🔙 رجوع", callback_data="wiz_back_payout"),
-            InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")
-        ])
-        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-        icon = PAYMENT_METHOD_ICONS.get(cur_method, "💳")
-        step_str = f"({idx + 1}/{len(methods)})"
-        header = format_wizard_draft_header(data, "payout")
-        spec = get_pm_spec(cur_method)
-
-        text = (
-            f"{header}"
-            f"{icon} **بيانات الاستلام — {cur_method}** {step_str}\n"
-            f"{spec['instruction']}"
-        )
-        if isinstance(message, CallbackQuery):
-            await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-        else:
-            try:
-                await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-            except Exception:
-                await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-        await state.set_state(OfferCreateFSM.waiting_for_payout_details)
-
-
-@offers_router.callback_query(OfferCreateFSM.waiting_for_payout_details, F.data == "wiz_use_saved_bep20")
-async def use_saved_bep20_address(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
-    """Use user's saved BEP20 address."""
-    user_res = await db_session.execute(select(User).where(User.telegram_id == callback.from_user.id))
-    user = user_res.scalar_one_or_none()
-    if not user or not user.saved_usdt_address:
-        await callback.answer("لا يوجد عنوان محفوظ في ملفك الشخصي.", show_alert=True)
-        return
-
-    is_valid, norm_addr, _ = validate_bep20_address(user.saved_usdt_address)
-    if not is_valid:
-        await callback.answer("العنوان المحفوظ غير صالح.", show_alert=True)
-        return
-
-    data = await state.get_data()
-    payout_details = dict(data.get("payout_details", {}) or {})
-    payout_details["usdt_bep20_address"] = norm_addr
-    await state.update_data(payout_details=payout_details)
-
-    await _show_payout_confirmation(callback.message, state)
-    await callback.answer("تم استخدام العنوان المحفوظ.")
-
-
-@offers_router.callback_query(OfferCreateFSM.waiting_for_payout_details, F.data.startswith("wiz_use_saved_pm_"))
-async def use_saved_payment_method_info(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
-    """Use user's saved account info for the current payment method."""
-    user_res = await db_session.execute(select(User).where(User.telegram_id == callback.from_user.id))
-    user = user_res.scalar_one_or_none()
-    data = await state.get_data()
-    methods = data.get("pending_payout_methods") or data.get("payment_methods", [])
-    idx = data.get("current_payout_index", 0)
-
-    if idx >= len(methods) or not user or not user.saved_payment_info:
-        await callback.answer("لا توجد بيانات محفوظة لهذه الوسيلة.", show_alert=True)
-        return
-
-    cur_method = methods[idx]
-    saved_val = _extract_saved_payment_info(user, cur_method)
-
-    if not saved_val:
-        await callback.answer("لا توجد بيانات محفوظة لهذه الوسيلة.", show_alert=True)
-        return
-
-    is_valid, norm_info, _ = validate_payment_method_info(cur_method, saved_val)
-    final_info = norm_info if is_valid else f"{cur_method}: {saved_val}"
-
-    payout_details = dict(data.get("payout_details", {}) or {})
-    payout_details[cur_method] = final_info
-    next_idx = idx + 1
-    await state.update_data(
-        payout_details=payout_details,
-        current_payout_index=next_idx
-    )
-
-    if next_idx >= len(methods):
-        await _show_payout_confirmation(callback.message, state)
-    else:
-        await _show_payout_prompt(callback.message, state, db_session, user_id=callback.from_user.id)
-    await callback.answer("تم اعتماد الحساب.")
-
-
-
-@offers_router.message(OfferCreateFSM.waiting_for_payout_details)
-async def process_payout_text_input(message: Message, state: FSMContext, db_session: AsyncSession):
-    """Receive and validate user typed payout information."""
-    data = await state.get_data()
-    offer_type = data.get("offer_type", "sell")
-
-    if offer_type == "buy":
-        is_valid, norm_addr, err = validate_bep20_address(message.text)
-        if not is_valid:
-            await message.answer(
-                f"{err}\n\nيرجى إعادة إرسال عنوان المحفظة بشكل صحيح:",
-                reply_markup=get_step_nav_kb(back_cb="wiz_back_payout"),
-                parse_mode="Markdown"
-            )
-            return
-
-        payout_details = dict(data.get("payout_details", {}) or {})
-        payout_details["usdt_bep20_address"] = norm_addr
-        await state.update_data(payout_details=payout_details)
-        await _show_payout_confirmation(message, state)
-
-    else:
-        methods = data.get("pending_payout_methods") or data.get("payment_methods", [])
-        idx = data.get("current_payout_index", 0)
-        if idx >= len(methods):
-            await _show_payout_confirmation(message, state)
-            return
-
-        cur_method = methods[idx]
-        is_valid, norm_info, err = validate_payment_method_info(cur_method, message.text)
-        if not is_valid:
-            await message.answer(
-                f"{err}\n\nيرجى إعادة إدخال بيانات **{cur_method}**:",
-                reply_markup=get_step_nav_kb(back_cb="wiz_back_payout"),
-                parse_mode="Markdown"
-            )
-            return
-
-        payout_details = dict(data.get("payout_details", {}) or {})
-        payout_details[cur_method] = norm_info
-        next_idx = idx + 1
-        await state.update_data(
-            payout_details=payout_details,
-            current_payout_index=next_idx
-        )
-
-        if next_idx >= len(methods):
-            await _show_payout_confirmation(message, state)
-        else:
-            await _show_payout_prompt(message, state, db_session, user_id=message.from_user.id)
-
-
-async def _show_payout_confirmation(message: Message, state: FSMContext):
-    """Display gathered payout details for owner confirmation."""
-    data = await state.get_data()
-    offer_type = data.get("offer_type", "sell")
-    payout_details = data.get("payout_details", {}) or {}
-
-    lines = []
-    if offer_type == "buy":
-        wallet = payout_details.get("usdt_bep20_address", "")
-        lines.append("📝 **تأكيد معلومات USDT (BEP-20):**")
-        lines.append(f"`{wallet}`")
-    else:
-        lines.append("📝 **تأكيد بيانات الاستلام:**")
-        methods = data.get("payment_methods", [])
-        for m in methods:
-            raw_acc = payout_details.get(m, "غير محدد")
-            acc = extract_clean_account(str(raw_acc), m) or str(raw_acc)
-            icon = PAYMENT_METHOD_ICONS.get(m, "💳")
-            lines.append(f"{icon} **{m} :** `{acc}`")
-
-    details_text = "\n".join(lines) if lines else "لا توجد بيانات مسجلة."
-
-    kb = get_confirm_step_kb(
-        confirm_cb="wiz_confirm_payout",
-        edit_cb="wiz_edit_payout",
-        back_cb="wiz_back_payout"
-    )
-    text = f"{details_text}\n\n🔒 لا تظهر هذه البيانات في القناة العامة."
-    if isinstance(message, CallbackQuery):
-        await message.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    else:
-        try:
-            await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-        except Exception:
-            await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-    await state.set_state(OfferCreateFSM.confirm_payout_details)
-
-
-@offers_router.callback_query(F.data == "wiz_back_payout")
-async def back_from_payout(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
-    """Navigate back from payout step to payment methods or previous payout index."""
-    data = await state.get_data()
-    offer_type = data.get("offer_type", "sell")
-    cur_state = await state.get_state()
-
-    if cur_state == OfferCreateFSM.confirm_payout_details.state:
-        await edit_payout_details(callback, state, db_session)
-        return
-
-    if offer_type == "sell":
-        idx = data.get("current_payout_index", 0)
-        if idx > 0:
-            await state.update_data(current_payout_index=idx - 1)
-            await _show_payout_prompt(callback.message, state, db_session, user_id=callback.from_user.id)
-            await callback.answer()
-            return
-
-    selected = data.get("payment_methods", [])
-    header = format_wizard_draft_header(data, "methods")
-    await callback.message.edit_text(
-        f"{header}"
-        "💳 **وسائل الدفع المقبولة**\n"
-        "اختر وسائل الدفع المعتمدة لديك (يمكنك تحديد أكثر من وسيلة)، ثم اضغط على **متابعة**:",
-        reply_markup=get_payment_methods_kb(selected),
-        parse_mode="Markdown"
-    )
-    await state.set_state(OfferCreateFSM.waiting_for_methods)
-    await callback.answer()
-
-
-@offers_router.callback_query(OfferCreateFSM.confirm_payout_details, F.data == "wiz_edit_payout")
-async def edit_payout_details(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
-    """Restart payout details collection for this draft."""
-    data = await state.get_data()
-    methods = data.get("payment_methods", [])
-    await state.update_data(
-        payout_details={},
-        pending_payout_methods=list(methods),
-        current_payout_index=0
-    )
-    await _show_payout_prompt(callback.message, state, db_session, user_id=callback.from_user.id)
-    await callback.answer()
-
-
-@offers_router.callback_query(OfferCreateFSM.confirm_payout_details, F.data == "wiz_confirm_payout")
-async def confirm_payout_and_advance(callback: CallbackQuery, state: FSMContext):
-    """Commit payout details and proceed to Negotiation decision or return to Summary."""
-    data = await state.get_data()
-    payout_details = data.get("payout_details", {})
-    history = push_wizard_step(data.get("step_history", []), "payout_details", {"payout_details": payout_details})
-    await state.update_data(step_history=history)
-
     if data.get("return_to_summary"):
-        await state.update_data(return_to_summary=False)
         await _show_wizard_summary(callback.message, state)
-        await callback.answer("تم تحديث بيانات الاستلام.")
+        await callback.answer("تم تحديث وسائل الدفع.")
         return
 
     await _show_negotiation_decision(callback.message, state)
@@ -986,7 +656,7 @@ async def confirm_payout_and_advance(callback: CallbackQuery, state: FSMContext)
 
 
 # ==============================================================================
-# STEP 7: NEGOTIATION OPTIONS
+# STEP 6: NEGOTIATION OPTIONS
 # ==============================================================================
 
 async def _show_negotiation_decision(message: Message, state: FSMContext | None = None):
@@ -996,7 +666,7 @@ async def _show_negotiation_decision(message: Message, state: FSMContext | None 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🤝 إتاحة التفاوض", callback_data="neg_choice_yes"),
-            InlineKeyboardButton(text="🔒 شروط ثابتة فقط", callback_data="neg_choice_no")
+            InlineKeyboardButton(text="🔒 بدون تفاوض", callback_data="neg_choice_no")
         ],
         [
             InlineKeyboardButton(text="🔙 رجوع", callback_data="wiz_back_negotiation"),
@@ -1015,19 +685,33 @@ async def _show_negotiation_decision(message: Message, state: FSMContext | None 
 
 
 @offers_router.callback_query(F.data == "wiz_back_negotiation")
-async def back_to_payout_confirmation(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Negotiation to Payout confirmation."""
-    await _show_payout_confirmation(callback.message, state)
+async def back_to_payment_methods(callback: CallbackQuery, state: FSMContext):
+    """Navigate back from Negotiation to Summary (if jump-editing) or Payment Methods."""
+    data = await state.get_data()
+    if data.get("return_to_summary"):
+        await _show_wizard_summary(callback.message, state)
+        await callback.answer()
+        return
+
+    selected = data.get("payment_methods", [])
+    header = format_wizard_draft_header(data, "methods")
+    await callback.message.edit_text(
+        f"{header}"
+        "💳 **وسائل الدفع المقبولة**\n"
+        "اختر وسائل الدفع المعتمدة لديك (يمكنك تحديد أكثر من وسيلة)، ثم اضغط على **متابعة**:",
+        reply_markup=get_payment_methods_kb(selected),
+        parse_mode="Markdown"
+    )
+    await state.set_state(OfferCreateFSM.waiting_for_methods)
     await callback.answer()
 
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_negotiable_decision, F.data.startswith("neg_choice_"))
 async def process_negotiable_decision(callback: CallbackQuery, state: FSMContext):
-    """Handle choice between open negotiation and fixed terms."""
+    """Handle choice between open negotiation and fixed rate/amount."""
     choice = callback.data.split("_")[-1]
     data = await state.get_data()
     if choice == "yes":
-        await state.update_data(negotiable=True)
         header = format_wizard_draft_header(data, "negotiation")
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📦 على الكمية فقط", callback_data="neg_type_amount")],
@@ -1058,7 +742,6 @@ async def process_negotiable_decision(callback: CallbackQuery, state: FSMContext
             step_history=history
         )
         if data.get("return_to_summary"):
-            await state.update_data(return_to_summary=False)
             await _show_wizard_summary(callback.message, state)
         else:
             await _show_note_step(callback.message, state)
@@ -1090,7 +773,6 @@ async def process_negotiable_type(callback: CallbackQuery, state: FSMContext):
         step_history=history
     )
     if data.get("return_to_summary"):
-        await state.update_data(return_to_summary=False)
         await _show_wizard_summary(callback.message, state)
     else:
         await _show_note_step(callback.message, state)
@@ -1099,7 +781,7 @@ async def process_negotiable_type(callback: CallbackQuery, state: FSMContext):
 
 
 # ==============================================================================
-# STEP 7.5: OFFER NOTES (SHAM CASH SUGGESTIONS OR CUSTOM NOTE)
+# STEP 7: OFFER NOTES / CONDITIONS (SHAM CASH SUGGESTIONS OR CUSTOM NOTE)
 # ==============================================================================
 
 def get_offer_note_kb(payment_methods: list[str] | None) -> InlineKeyboardMarkup:
@@ -1126,7 +808,8 @@ async def _show_note_step(message: Message, state: FSMContext | None = None):
     kb = get_offer_note_kb(methods)
     text = (
         f"{header}"
-        "📝 **أدخل ملاحظاتك (اختياري، حتى 40 حرف) أو اضغط تخطي للمتابعة بدون ملاحظات.**"
+        "📝 **ملاحظات وشروط العرض (اختياري، حتى 40 حرفاً)**\n\n"
+        "أدخل ملاحظاتك أو شروطك الخاصة بالعرض، أو اضغط **تخطي** للمتابعة بدون ملاحظات:"
     )
     if hasattr(message, "edit_text"):
         try:
@@ -1139,7 +822,13 @@ async def _show_note_step(message: Message, state: FSMContext | None = None):
 
 @offers_router.callback_query(F.data == "wiz_back_note")
 async def back_from_note_step(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Note step to Negotiation decision."""
+    """Navigate back from Note step to Summary (if jump-editing) or Negotiation decision."""
+    data = await state.get_data()
+    if data.get("return_to_summary"):
+        await _show_wizard_summary(callback.message, state)
+        await callback.answer()
+        return
+
     await _show_negotiation_decision(callback.message, state)
     await state.set_state(OfferCreateFSM.waiting_for_negotiable_decision)
     await callback.answer()
@@ -1171,7 +860,6 @@ async def process_note_suggestion(callback: CallbackQuery, state: FSMContext):
     )
 
     if data.get("return_to_summary"):
-        await state.update_data(return_to_summary=False)
         await _show_wizard_summary(callback.message, state)
     else:
         await _show_duration_choice(callback.message, state)
@@ -1195,7 +883,6 @@ async def process_note_skip(callback: CallbackQuery, state: FSMContext):
     )
 
     if data.get("return_to_summary"):
-        await state.update_data(return_to_summary=False)
         await _show_wizard_summary(callback.message, state)
     else:
         await _show_duration_choice(callback.message, state)
@@ -1242,7 +929,6 @@ async def process_custom_note_text(message: Message, state: FSMContext):
     )
 
     if data.get("return_to_summary"):
-        await state.update_data(return_to_summary=False)
         await _show_wizard_summary(message, state)
     else:
         await _show_duration_choice(message, state)
@@ -1280,7 +966,13 @@ async def _show_duration_choice(message: Message, state: FSMContext | None = Non
 
 @offers_router.callback_query(F.data == "wiz_back_duration")
 async def back_to_note_step(callback: CallbackQuery, state: FSMContext):
-    """Navigate back from Duration to Offer Notes step."""
+    """Navigate back from Duration to Summary (if jump-editing) or Offer Notes step."""
+    data = await state.get_data()
+    if data.get("return_to_summary"):
+        await _show_wizard_summary(callback.message, state)
+        await callback.answer()
+        return
+
     await _show_note_step(callback.message, state)
     await state.set_state(OfferCreateFSM.waiting_for_note)
     await callback.answer()
@@ -1461,13 +1153,24 @@ async def confirm_custom_duration_and_advance(callback: CallbackQuery, state: FS
 # ==============================================================================
 
 async def _show_wizard_summary(message: Message, state: FSMContext):
-    """Render full wizard summary with jump-edit options."""
+    """Render full wizard summary with jump-edit options and clean temporary edit flags."""
+    await state.update_data(
+        return_to_summary=False,
+        editing_methods_from_summary=False,
+        prev_min_limit=None,
+        prev_max_limit=None,
+        prev_payment_methods=None,
+        prev_payout_details=None,
+    )
     data = await state.get_data()
     summary_text = format_wizard_summary(data, bot_name=BOT_NAME)
     kb = get_wizard_summary_kb()
 
     if hasattr(message, "edit_text"):
-        await message.edit_text(summary_text, reply_markup=kb, parse_mode="Markdown")
+        try:
+            await message.edit_text(summary_text, reply_markup=kb, parse_mode="Markdown")
+        except Exception:
+            await message.answer(summary_text, reply_markup=kb, parse_mode="Markdown")
     else:
         await message.answer(summary_text, reply_markup=kb, parse_mode="Markdown")
     await state.set_state(OfferCreateFSM.waiting_for_confirm_publish)
@@ -1490,17 +1193,25 @@ async def jump_edit_rate(callback: CallbackQuery, state: FSMContext):
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_confirm_publish, F.data == "wiz_jump_limits")
 async def jump_edit_limits(callback: CallbackQuery, state: FSMContext):
-    """Jump from summary to edit min/max limits."""
-    await state.update_data(return_to_summary=True)
+    """Jump from summary to edit min/max limits with backup of current limits."""
+    data = await state.get_data()
+    await state.update_data(
+        return_to_summary=True,
+        prev_min_limit=data.get("min_limit"),
+        prev_max_limit=data.get("max_limit"),
+    )
     await edit_min_limit_input(callback, state)
 
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_confirm_publish, F.data == "wiz_jump_methods")
 async def jump_edit_methods(callback: CallbackQuery, state: FSMContext):
-    """Jump from summary to edit payment methods."""
-    await state.update_data(return_to_summary=True)
+    """Jump from summary to edit payment methods with backup of current methods."""
     data = await state.get_data()
-    selected = data.get("payment_methods", [])
+    selected = list(data.get("payment_methods", []))
+    await state.update_data(
+        return_to_summary=True,
+        prev_payment_methods=list(selected),
+    )
     header = format_wizard_draft_header(data, "methods")
     await callback.message.edit_text(
         f"{header}"
@@ -1511,13 +1222,6 @@ async def jump_edit_methods(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(OfferCreateFSM.waiting_for_methods)
     await callback.answer()
-
-
-@offers_router.callback_query(OfferCreateFSM.waiting_for_confirm_publish, F.data == "wiz_jump_payout")
-async def jump_edit_payout(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession):
-    """Jump from summary to edit payout details."""
-    await state.update_data(return_to_summary=True)
-    await edit_payout_details(callback, state, db_session)
 
 
 @offers_router.callback_query(OfferCreateFSM.waiting_for_confirm_publish, F.data == "wiz_jump_neg")
@@ -1753,6 +1457,12 @@ async def list_offers(message: Message, db_session: AsyncSession):
         )
         return
         
+    maker_ids = list({off.user_id for off in offers if off.user_id})
+    traders_map = {}
+    if maker_ids:
+        t_res = await db_session.execute(select(User).where(User.telegram_id.in_(maker_ids)))
+        traders_map = {u.telegram_id: u for u in t_res.scalars().all()}
+
     for offer in offers:
         buttons = build_offer_action_buttons(
             offer_id=offer.id,
@@ -1769,6 +1479,7 @@ async def list_offers(message: Message, db_session: AsyncSession):
         offer_type_ar = '🔴 بيع "USDT"' if offer.offer_type == 'sell' else '🟢 شراء "USDT"'
         methods_str = format_payment_methods(offer.payment_methods)
         remaining_str = humanize_time_remaining(offer.expires_at, "4 ساعات")
+        trader_trust_str = format_trader_trust_markdown(traders_map.get(offer.user_id))
         
         neg_type_labels = {
             "none": "غير متاح 🔒",
@@ -1782,6 +1493,7 @@ async def list_offers(message: Message, db_session: AsyncSession):
         text = (
             f"📦 **فرصة رقم : {offer.id}** (عرض #{offer.id})\n"
             f"⚖️ **النوع :** {offer_type_ar}\n"
+            f"👤 **التاجر :** {trader_trust_str}\n"
             f"〰️〰️〰️〰️〰️〰️〰️\n"
             f"💰 **الكمية :** من `{min_str}` إلى `{max_str} USDT`\n"
             f"📊 **سعر الصرف :** `{rate_str}` ل.س\n"

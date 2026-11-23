@@ -17,8 +17,6 @@ from bot.services.audit_service import record_audit
 from bot.services.channel import update_channel_offer_message
 from config.settings import settings
 from bot.utils.deal_card import push_deal_card
-from bot.utils.payment_prompts import build_seller_pm_creation_prompt, extract_clean_account
-from bot.utils.validators import validate_payment_method_info
 from bot.utils.fees import calculate_deal_fee
 from bot.utils.branding import BOT_NAME
 from bot.utils.formatters import (
@@ -186,7 +184,10 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
         for idx, m in enumerate(methods):
             icon = PAYMENT_METHOD_ICONS.get(m, "💳")
             buttons.append([InlineKeyboardButton(text=f"{icon} {m}", callback_data=f"deal_select_pm_{idx}")])
-        buttons.append([InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")])
+        buttons.append([
+            InlineKeyboardButton(text="🔙 رجوع", callback_data="deal_back_to_amount"),
+            InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")
+        ])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
         await state.set_state(DealCreateFSM.waiting_for_payment_method)
@@ -202,38 +203,62 @@ async def process_deal_amount(message: Message, state: FSMContext, db_session: A
     selected_pm = methods[0] if methods else "شام كاش ليرة"
     creator_id = data.get('creator_id')
     taker_id = message.from_user.id
-    payout_details = data.get('payout_details') or {}
 
     if offer_type == 'buy':
-        # Maker is BUYER, Taker is SELLER -> Taker MUST provide account info for this single method!
-        await state.update_data(selected_payment_method=selected_pm)
-        await state.set_state(DealCreateFSM.waiting_for_seller_payment_info)
-        cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-        ])
-        prompt_text = build_seller_pm_creation_prompt(selected_pm, offer_id)
-        await message.answer(prompt_text, reply_markup=cancel_kb, parse_mode="Markdown")
-        return
+        seller_id = taker_id
+        buyer_id = creator_id
     else:
-        # Maker is SELLER, Taker is BUYER
         seller_id = creator_id
         buyer_id = taker_id
-        buyer_payout_address = "PENDING"
-        raw_account = payout_details.get(selected_pm) or data.get('payout_info') or "PENDING"
-        seller_account = extract_clean_account(raw_account, selected_pm) or "PENDING"
-        seller_payment_info = {"method": selected_pm, "info": seller_account}
 
-        await _finalize_deal_creation(
-            message=message,
-            state=state,
-            db_session=db_session,
-            data=data,
-            seller_id=seller_id,
-            buyer_id=buyer_id,
-            buyer_payout_address=buyer_payout_address,
-            seller_payment_info=seller_payment_info,
-            actor_id=taker_id,
-        )
+    await _finalize_deal_creation(
+        message=message,
+        state=state,
+        db_session=db_session,
+        data=data,
+        seller_id=seller_id,
+        buyer_id=buyer_id,
+        buyer_payout_address="PENDING",
+        seller_payment_info={"method": selected_pm, "info": "PENDING"},
+        actor_id=taker_id,
+    )
+
+
+@creation_router.callback_query(
+    DealCreateFSM(),
+    F.data == "deal_back_to_amount"
+)
+async def back_to_deal_amount(callback: CallbackQuery, state: FSMContext):
+    """Return user back to deal amount input screen."""
+    data = await state.get_data()
+    offer_id = data.get("offer_id", "")
+    offer_type = data.get("offer_type", "sell")
+    offer_type_ar = "🔴 بيع" if offer_type == "sell" else "🟢 شراء"
+    taker_role_ar = "🟢 مشتري" if offer_type == "sell" else "🔴 بائع"
+    rate_str = format_syp(Decimal(str(data.get("rate", "0"))))
+    min_str = format_usdt(Decimal(str(data.get("min_limit", "0"))))
+    max_str = format_usdt(Decimal(str(data.get("max_limit", "0"))))
+    methods_str = format_payment_methods(data.get("payment_methods", []))
+
+    cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+    ])
+    text = (
+        f"📝 **طلب تنفيذ عرض**\n"
+        f"🔢 **رقم العرض :** {offer_id}\n"
+        f"⚖️ **النوع :** {offer_type_ar}\n"
+        f"👤 **دورك :** {taker_role_ar}\n"
+        f"💵 **السعر :** `{rate_str}` ل.س\n"
+        f"💰 **الكمية المتاحة :** من `{min_str}` إلى `{max_str} USDT`\n"
+        f"💳 **طريقة الدفع :** {methods_str}\n\n"
+        f"⌨️ **أرسل الكمية المطلوبة (بـ `USDT`) فقط:**"
+    )
+    await state.set_state(DealCreateFSM.waiting_for_amount)
+    try:
+        await callback.message.edit_text(text, reply_markup=cancel_kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(text, reply_markup=cancel_kb, parse_mode="Markdown")
+    await callback.answer()
 
 
 @creation_router.callback_query(DealCreateFSM.waiting_for_payment_method, F.data.startswith("deal_select_pm_"))
@@ -252,86 +277,27 @@ async def process_deal_payment_method_choice(callback: CallbackQuery, state: FSM
     data['selected_payment_method'] = selected_pm
 
     offer_type = data.get('offer_type', 'sell')
-    offer_id = data.get('offer_id')
     creator_id = data.get('creator_id')
     taker_id = callback.from_user.id
-    payout_details = data.get('payout_details') or {}
 
     if offer_type == 'buy':
-        # Maker is BUYER, Taker is SELLER -> Taker MUST provide account info for the chosen method!
-        await state.set_state(DealCreateFSM.waiting_for_seller_payment_info)
-        cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-        ])
-        prompt_text = build_seller_pm_creation_prompt(selected_pm, offer_id)
-        await callback.message.edit_text(prompt_text, reply_markup=cancel_kb, parse_mode="Markdown")
-        await callback.answer()
-        return
+        seller_id = taker_id
+        buyer_id = creator_id
     else:
-        # Maker is SELLER, Taker is BUYER
         seller_id = creator_id
         buyer_id = taker_id
-        buyer_payout_address = "PENDING"
-        raw_account = payout_details.get(selected_pm) or data.get('payout_info') or "PENDING"
-        seller_account = extract_clean_account(raw_account, selected_pm) or "PENDING"
-        seller_payment_info = {"method": selected_pm, "info": seller_account}
 
-        await callback.answer()
-        await _finalize_deal_creation(
-            message=callback.message,
-            state=state,
-            db_session=db_session,
-            data=data,
-            seller_id=seller_id,
-            buyer_id=buyer_id,
-            buyer_payout_address=buyer_payout_address,
-            seller_payment_info=seller_payment_info,
-            bot=callback.bot,
-            actor_id=taker_id,
-        )
-
-
-@creation_router.message(DealCreateFSM.waiting_for_seller_payment_info)
-async def process_deal_seller_payment_info(message: Message, state: FSMContext, db_session: AsyncSession):
-    info_text = message.text.strip() if message.text else ""
-    if not info_text:
-        await message.answer("يرجى إدخال بيانات صحيحة وغير فارغة:")
-        return
-
-    data = await state.get_data()
-    selected_pm = data.get('selected_payment_method') or "شام كاش ليرة"
-
-    is_valid, formatted_info, err_msg = validate_payment_method_info(selected_pm, info_text)
-    if not is_valid:
-        cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-        ])
-        await message.answer(
-            f"{err_msg}\n\nيرجى إعادة إدخال البيانات بالشكل المطلوب أو الضغط على إلغاء:",
-            reply_markup=cancel_kb,
-            parse_mode="Markdown"
-        )
-        return
-
-    raw_account = formatted_info.split(": ", 1)[-1] if ": " in formatted_info else formatted_info
-
-    seller_payment_info = {"method": selected_pm, "info": raw_account}
-    creator_id = data.get('creator_id')
-    taker_id = message.from_user.id
-    seller_id = taker_id
-    buyer_id = creator_id
-    payout_details = data.get('payout_details') or {}
-    buyer_payout_address = payout_details.get('usdt_bep20_address') or data.get('payout_info') or "PENDING"
-
+    await callback.answer()
     await _finalize_deal_creation(
-        message=message,
+        message=callback.message,
         state=state,
         db_session=db_session,
         data=data,
         seller_id=seller_id,
         buyer_id=buyer_id,
-        buyer_payout_address=buyer_payout_address,
-        seller_payment_info=seller_payment_info,
+        buyer_payout_address="PENDING",
+        seller_payment_info={"method": selected_pm, "info": "PENDING"},
+        bot=callback.bot,
         actor_id=taker_id,
     )
 
