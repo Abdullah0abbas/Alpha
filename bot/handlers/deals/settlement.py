@@ -361,10 +361,11 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
     existing_proof_res = await db_session.execute(
         select(PaymentProof).where(PaymentProof.transaction_reference == ref)
     )
-    if existing_proof_res.scalar_one_or_none():
+    existing_proof = existing_proof_res.scalar_one_or_none()
+    if existing_proof and existing_proof.deal_id != deal.id:
         await db_session.commit()
         await message.answer(
-            "⚠️ **هذه الصورة استُخدمت سابقاً!**\n\n"
+            "⚠️ **هذه الصورة استُخدمت سابقاً في عملية أخرى!**\n\n"
             "يرجى إرسال لقطة شاشة جديدة لإشعار التحويل الخاص بهذه العملية.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
@@ -373,40 +374,41 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
         )
         return
 
-    try:
-        async with db_session.begin_nested():
-            proof = PaymentProof(
-                deal_id=deal.id,
-                transaction_reference=ref,
-                amount=deal.amount_syp,
-                submitted_by=message.from_user.id
+    if not existing_proof:
+        try:
+            async with db_session.begin_nested():
+                proof = PaymentProof(
+                    deal_id=deal.id,
+                    transaction_reference=ref,
+                    amount=deal.amount_syp,
+                    submitted_by=message.from_user.id
+                )
+                db_session.add(proof)
+                await db_session.flush()
+        except IntegrityError:
+            await db_session.commit()
+            await message.answer(
+                "⚠️ **هذه الصورة استُخدمت سابقاً!**\n\n"
+                "يرجى إرسال لقطة شاشة جديدة لإشعار التحويل الخاص بهذه العملية.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+                ]),
+                parse_mode="Markdown"
             )
-            db_session.add(proof)
-            await db_session.flush()
-    except IntegrityError:
-        await db_session.commit()
-        await message.answer(
-            "⚠️ **هذه الصورة استُخدمت سابقاً!**\n\n"
-            "يرجى إرسال لقطة شاشة جديدة لإشعار التحويل الخاص بهذه العملية.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-            ]),
-            parse_mode="Markdown"
-        )
-        return
-    except Exception as e:
-        await db_session.rollback()
-        logger.warning(f"PaymentProof creation log: {e}")
-        await report_handled_exception(
-            message.bot, e, context_label=f"PaymentProof creation (deal #{deal_id})", user_id=message.from_user.id
-        )
-        await message.answer(
-            "⚠️ حدث خطأ مؤقت أثناء حفظ صورة الإشعار. يرجى إعادة إرسال الصورة بعد لحظات.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
-            ]),
-        )
-        return
+            return
+        except Exception as e:
+            await db_session.rollback()
+            logger.warning(f"PaymentProof creation log: {e}")
+            await report_handled_exception(
+                message.bot, e, context_label=f"PaymentProof creation (deal #{deal_id})", user_id=message.from_user.id
+            )
+            await message.answer(
+                "⚠️ حدث خطأ مؤقت أثناء حفظ صورة الإشعار. يرجى إعادة إرسال الصورة بعد لحظات.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
+                ]),
+            )
+            return
 
     existing_buyer_addr = (deal.buyer_payout_address or "").strip()
     is_existing_valid, normalized_existing, _ = validate_bep20_address(existing_buyer_addr) if (existing_buyer_addr and existing_buyer_addr not in ["PENDING", "غير محدد", "N/A"]) else (False, "", "")
@@ -423,24 +425,20 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
             photo_file_id=photo_file_id
         )
     else:
-        deal.status = "SYP_PAYMENT_SENT"
-        deal.expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
-        await db_session.commit()
-
-        # Push deal card ONLY to buyer:
-        await push_deal_card(deal.id, message.bot, specific_user_id=deal.buyer_id)
-        await forward_proof_photo_to_seller(deal, photo_file_id, message.bot, db_session)
-
+        # Commit the PaymentProof row while keeping deal in AWAITING_SYP_PAYMENT
+        # until the buyer confirms or enters their BEP-20 payout wallet.
         user_res = await db_session.execute(select(User).where(User.telegram_id == deal.buyer_id))
         buyer_user = user_res.scalar_one_or_none()
         saved_wallet = buyer_user.saved_usdt_address.strip() if (buyer_user and buyer_user.saved_usdt_address) else None
         is_saved_valid, normalized_saved, _ = validate_bep20_address(saved_wallet) if saved_wallet else (False, "", "")
+        await db_session.commit()
 
         if is_saved_valid:
             gate_text = (
-                f"✅ تم حفظ إشعار التحويل\n\n"
-                f"📝 **تأكيد معلومات USDT (BEP-20) — صفقة #{deal.id}:**\n"
-                f"`{escape_markdown(normalized_saved)}`"
+                f"✅ **تم حفظ صورة إشعار التحويل**\n\n"
+                f"📝 **تأكيد عنوان محفظة الاستلام `USDT (BEP-20)` — صفقة #{deal.id}:**\n"
+                f"`{escape_markdown(normalized_saved)}`\n\n"
+                f"اضغط **اعتماد** لإتمام إرسال الإشعار للبائع، أو **تعديل** لإدخال عنوان آخر:"
             )
             gate_kb = InlineKeyboardMarkup(inline_keyboard=[
                 [
@@ -452,10 +450,10 @@ async def process_syp_proof_photo(message: Message, state: FSMContext, db_sessio
             await message.answer(gate_text, reply_markup=gate_kb, parse_mode="Markdown")
         else:
             await state.set_state(DealPaymentFSM.waiting_for_buyer_wallet)
-            await state.update_data(deal_id=deal.id)
+            await state.update_data(deal_id=deal.id, photo_file_id=photo_file_id)
             await message.answer(
-                f"✅ تم حفظ إشعار التحويل\n\n"
-                f"💵 أرسل عنوان USDT (BEP-20) فقط، من دون أي نص أو كلمات إضافية.",
+                f"✅ **تم حفظ صورة إشعار التحويل**\n\n"
+                f"💵 أرسل الآن عنوان `USDT (BEP-20)` الخاص بك فقط، من دون أي نص إضافي، لإتمام إرسال الإشعار للبائع:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="❌ إلغاء", callback_data="fsm_cancel_back")]
                 ]),

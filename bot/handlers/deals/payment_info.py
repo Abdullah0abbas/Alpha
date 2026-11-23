@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update
 
-from db.models import Deal, Offer, User
+from db.models import Deal, Offer, User, PaymentProof
 from bot.states.flow_states import DealPaymentFSM
 from bot.utils.deal_card import push_deal_card
 from bot.utils.deal_guard import acquire_deal_lock
@@ -141,26 +141,61 @@ async def apply_buyer_payout_wallet(
     deal.buyer_payout_address = normalized_address
 
     if deal.status == "AWAITING_SYP_PAYMENT":
-        deal.status = "SYP_PAYMENT_SENT"
-        deal.expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
-        await db_session.commit()
-
-        if isinstance(event, CallbackQuery):
-            try:
-                await event.answer("✅ تم إرسال الإشعار بنجاح.")
-            except Exception:
-                pass
-        elif isinstance(event, Message):
-            try:
-                await event.answer("✅ تم إرسال البيانات بانتظار التحقق.")
-            except Exception:
-                pass
-
-        # Push deal card ONLY to buyer to avoid sending duplicate text card to seller:
-        await push_deal_card(deal.id, bot, specific_user_id=deal.buyer_id)
+        if not photo_file_id:
+            proof_res = await db_session.execute(
+                select(PaymentProof)
+                .where(PaymentProof.deal_id == deal.id)
+                .order_by(PaymentProof.id.desc())
+                .limit(1)
+            )
+            latest_proof = proof_res.scalar_one_or_none()
+            if latest_proof and latest_proof.transaction_reference and latest_proof.transaction_reference.startswith("PHOTO_"):
+                photo_file_id = latest_proof.transaction_reference[len("PHOTO_"):]
 
         if photo_file_id:
+            deal.status = "SYP_PAYMENT_SENT"
+            deal.expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+            await db_session.commit()
+
+            escaped_wallet = escape_markdown(normalized_address)
+            buyer_confirm_text = (
+                f"✅ **تم تسجيل عنوان المحفظة وإرسال إشعار التحويل للبائع**\n\n"
+                f"💵 **عنوان الاستلام `USDT (BEP-20)`:**\n"
+                f"`{escaped_wallet}`\n\n"
+                f"⏳ بانتظار تحقق البائع وتأكيد استلام الدفعة."
+            )
+
+            if isinstance(event, CallbackQuery):
+                try:
+                    await event.message.edit_text(buyer_confirm_text, parse_mode="Markdown")
+                except Exception:
+                    pass
+                try:
+                    await event.answer("✅ تم اعتماد المحفظة وإرسال الإشعار للبائع.")
+                except Exception:
+                    pass
+            elif isinstance(event, Message):
+                try:
+                    await event.answer(buyer_confirm_text, parse_mode="Markdown")
+                except Exception:
+                    pass
+
+            # Push deal card ONLY to buyer to avoid sending duplicate text card to seller:
+            await push_deal_card(deal.id, bot, specific_user_id=deal.buyer_id)
             await forward_proof_photo_to_seller(deal, photo_file_id, bot, db_session)
+        else:
+            await db_session.commit()
+            if isinstance(event, CallbackQuery):
+                try:
+                    await event.answer("✅ تم حفظ عنوان المحفظة.")
+                except Exception:
+                    pass
+            elif isinstance(event, Message):
+                try:
+                    await event.answer("✅ تم حفظ عنوان المحفظة.")
+                except Exception:
+                    pass
+            await push_deal_card(deal.id, bot, notify_handoff=False, specific_user_id=deal.buyer_id)
 
     elif deal.status == "SYP_PAYMENT_SENT":
         await db_session.commit()
