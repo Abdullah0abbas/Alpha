@@ -28,6 +28,7 @@ from db.models import (
     Deal,
     DealRating,
     Dispute,
+    KycRequest,
     Negotiation,
     Offer,
     PaymentProof,
@@ -36,7 +37,7 @@ from db.models import (
 )
 from db.session import engine, ensure_schema_updated
 
-# Core tables required in every backup version; newer tables default to [] if absent in older 3.x backups
+# Core tables required in every backup version; newer tables default to [] if absent in older 2.x/3.x/4.x backups
 CORE_REQUIRED_TABLES = {"users", "offers", "deals"}
 
 # Strict FK-safe restoration order
@@ -51,6 +52,7 @@ ORDERED_TABLES = [
     ("blockchain_transactions", BlockchainTransaction),
     ("system_settings", SystemSetting),
     ("audit_logs", AuditLog),
+    ("kyc_requests", KycRequest),
 ]
 
 # Tables that use an integer SERIAL/sequence primary key `id`
@@ -63,6 +65,7 @@ SERIAL_ID_TABLES = [
     "deal_ratings",
     "blockchain_transactions",
     "audit_logs",
+    "kyc_requests",
 ]
 
 DECIMAL_FIELDS = {
@@ -85,6 +88,7 @@ DATETIME_FIELDS = {
     "blockchain_transactions": {"confirmed_at"},
     "system_settings": {"updated_at"},
     "audit_logs": {"created_at"},
+    "kyc_requests": {"reviewed_at", "created_at"},
 }
 
 
@@ -139,9 +143,11 @@ def load_and_validate_backup(filepath: str) -> dict[str, Any]:
 
     meta = payload["metadata"]
     version = str(meta.get("version", "")).strip()
-    if not version or not (version.startswith("2.") or version.startswith("3.")):
+    if not version or not (
+        version.startswith("2.") or version.startswith("3.") or version.startswith("4.")
+    ):
         raise ValueError(
-            f"Unsupported backup format version '{version}'. Expected 2.x or 3.x backup format."
+            f"Unsupported backup format version '{version}'. Expected 2.x, 3.x, or 4.x backup format."
         )
 
     for tbl_name, _ in ORDERED_TABLES:
