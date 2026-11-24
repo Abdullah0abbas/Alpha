@@ -44,5 +44,9 @@ class Settings:
         except ValueError:
             return 3
 
+    @property
+    def BACKUP_ENCRYPTION_KEY(self) -> str:
+        return os.getenv("BACKUP_ENCRYPTION_KEY", "").strip()
+
 
 settings = Settings()

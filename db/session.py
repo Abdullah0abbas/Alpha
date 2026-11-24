@@ -131,6 +131,15 @@ async def ensure_schema_updated():
         ("deals.buyer_fee_usdt", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS buyer_fee_usdt NUMERIC DEFAULT 0.0;"),
         ("deals.deposit_tx_hash", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS deposit_tx_hash VARCHAR(128);"),
         ("deals.payout_tx_hash", "ALTER TABLE deals ADD COLUMN IF NOT EXISTS payout_tx_hash VARCHAR(128);"),
+        ("blockchain_transactions.log_index", "ALTER TABLE blockchain_transactions ADD COLUMN IF NOT EXISTS log_index INTEGER NOT NULL DEFAULT 0;"),
+        ("blockchain_transactions.block_number", "ALTER TABLE blockchain_transactions ADD COLUMN IF NOT EXISTS block_number BIGINT;"),
+        ("blockchain_transactions.from_address", "ALTER TABLE blockchain_transactions ADD COLUMN IF NOT EXISTS from_address VARCHAR(64);"),
+        ("blockchain_transactions.to_address", "ALTER TABLE blockchain_transactions ADD COLUMN IF NOT EXISTS to_address VARCHAR(64);"),
+        ("blockchain_transactions.amount_raw", "ALTER TABLE blockchain_transactions ADD COLUMN IF NOT EXISTS amount_raw NUMERIC(38, 0);"),
+        ("blockchain_transactions.token_address", "ALTER TABLE blockchain_transactions ADD COLUMN IF NOT EXISTS token_address VARCHAR(64);"),
+        ("blockchain_transactions.status", "ALTER TABLE blockchain_transactions ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'confirmed';"),
+        ("blockchain_transactions.nonce", "ALTER TABLE blockchain_transactions ADD COLUMN IF NOT EXISTS nonce BIGINT;"),
+        ("blockchain_transactions.created_at", "ALTER TABLE blockchain_transactions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();"),
     ]
 
     index_and_constraint_ddls = [
@@ -189,6 +198,96 @@ async def ensure_schema_updated():
         ("deal_ratings.ix_target_id", "CREATE INDEX IF NOT EXISTS ix_deal_ratings_target_id ON deal_ratings (target_id);", None, None),
         ("deals.uq_deals_deposit_tx_hash", "CREATE UNIQUE INDEX IF NOT EXISTS uq_deals_deposit_tx_hash ON deals (deposit_tx_hash) WHERE deposit_tx_hash IS NOT NULL;", None, None),
         ("deals.uq_deals_payout_tx_hash", "CREATE UNIQUE INDEX IF NOT EXISTS uq_deals_payout_tx_hash ON deals (payout_tx_hash) WHERE payout_tx_hash IS NOT NULL;", None, None),
+        (
+            "blockchain_transactions.drop_single_tx_hash_unique",
+            """
+            DO $$
+            DECLARE
+                r RECORD;
+            BEGIN
+                FOR r IN
+                    SELECT c.conname
+                    FROM pg_constraint c
+                    JOIN pg_attribute a
+                      ON a.attrelid = c.conrelid
+                     AND a.attnum = c.conkey[1]
+                    WHERE c.conrelid = 'blockchain_transactions'::regclass
+                      AND c.contype = 'u'
+                      AND array_length(c.conkey, 1) = 1
+                      AND a.attname = 'tx_hash'
+                LOOP
+                    EXECUTE format('ALTER TABLE blockchain_transactions DROP CONSTRAINT IF EXISTS %I', r.conname);
+                END LOOP;
+            END $$;
+            """,
+            None,
+            None,
+        ),
+        (
+            "blockchain_transactions.uq_blockchain_tx_hash_log_index",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conrelid = 'blockchain_transactions'::regclass
+                      AND conname = 'uq_blockchain_tx_hash_log_index'
+                ) THEN
+                    ALTER TABLE blockchain_transactions
+                        ADD CONSTRAINT uq_blockchain_tx_hash_log_index
+                        UNIQUE (tx_hash, log_index);
+                END IF;
+            END $$;
+            """,
+            "uq_blockchain_tx_hash_log_index",
+            "SELECT tx_hash, log_index, COUNT(*) FROM blockchain_transactions GROUP BY tx_hash, log_index HAVING COUNT(*) > 1;",
+        ),
+        (
+            "blockchain_transactions.chk_direction",
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conrelid = 'blockchain_transactions'::regclass
+                      AND conname = 'chk_direction'
+                      AND pg_get_constraintdef(oid) NOT LIKE '%sweep%'
+                ) THEN
+                    ALTER TABLE blockchain_transactions DROP CONSTRAINT chk_direction;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conrelid = 'blockchain_transactions'::regclass
+                      AND conname = 'chk_direction'
+                ) THEN
+                    ALTER TABLE blockchain_transactions
+                        ADD CONSTRAINT chk_direction
+                        CHECK (direction IN ('deposit', 'sweep', 'release', 'refund', 'gas_topup', 'fee_sweep'));
+                END IF;
+            END $$;
+            """,
+            "chk_direction",
+            "SELECT id, direction FROM blockchain_transactions WHERE direction IS NOT NULL AND direction NOT IN ('deposit', 'sweep', 'release', 'refund', 'gas_topup', 'fee_sweep');",
+        ),
+        (
+            "blockchain_transactions.chk_blockchain_tx_status",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conrelid = 'blockchain_transactions'::regclass
+                      AND conname = 'chk_blockchain_tx_status'
+                ) THEN
+                    ALTER TABLE blockchain_transactions
+                        ADD CONSTRAINT chk_blockchain_tx_status
+                        CHECK (status IN ('pending', 'confirmed', 'failed', 'anomaly'));
+                END IF;
+            END $$;
+            """,
+            "chk_blockchain_tx_status",
+            "SELECT id, status FROM blockchain_transactions WHERE status NOT IN ('pending', 'confirmed', 'failed', 'anomaly');",
+        ),
     ]
 
     try:

@@ -1,10 +1,15 @@
+import logging
 import time
 from typing import Any, Awaitable, Callable, Dict
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery, Update
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import SystemSetting
+from db.session import AsyncSessionLocal
 from config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 # In-memory cache for maintenance mode with TTL (3 seconds) to avoid querying DB on every single update
 _maintenance_cache: Dict[str, Any] = {
@@ -18,6 +23,51 @@ def get_cached_maintenance() -> bool:
 def set_cached_maintenance(val: bool):
     _maintenance_cache["is_enabled"] = val
     _maintenance_cache["last_checked"] = time.time()
+
+
+def _parse_maintenance_setting(setting: SystemSetting | None) -> bool:
+    if setting and isinstance(setting.value, dict):
+        return bool(setting.value.get("enabled", False))
+    if setting and isinstance(setting.value, bool):
+        return setting.value
+    return False
+
+
+async def is_maintenance_active(
+    session: AsyncSession | None = None,
+    *,
+    bypass_cache: bool = False,
+) -> bool:
+    """
+    Central async helper for background workers (and financial tasks in A1/B1/B2)
+    to check whether system maintenance mode is currently active.
+    Uses the 3-second TTL cache unless bypass_cache=True, and queries SystemSetting('maintenance_mode')
+    via the provided session or a short-lived AsyncSessionLocal session.
+    """
+    now = time.time()
+    if not bypass_cache and (now - _maintenance_cache["last_checked"] <= 3.0):
+        return bool(_maintenance_cache["is_enabled"])
+
+    try:
+        if session is not None:
+            result = await session.execute(
+                select(SystemSetting).where(SystemSetting.key == "maintenance_mode")
+            )
+            setting = result.scalar_one_or_none()
+        else:
+            async with AsyncSessionLocal() as db_sess:
+                result = await db_sess.execute(
+                    select(SystemSetting).where(SystemSetting.key == "maintenance_mode")
+                )
+                setting = result.scalar_one_or_none()
+
+        is_enabled = _parse_maintenance_setting(setting)
+        set_cached_maintenance(is_enabled)
+        return is_enabled
+    except Exception as exc:
+        logger.warning(f"is_maintenance_active DB check failed, falling back to cache: {exc}")
+        return bool(_maintenance_cache["is_enabled"])
+
 
 class MaintenanceMiddleware(BaseMiddleware):
     async def __call__(

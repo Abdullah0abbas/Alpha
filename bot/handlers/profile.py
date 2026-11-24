@@ -757,76 +757,78 @@ async def cq_kyc_submit_final(callback: CallbackQuery, state: FSMContext, db_ses
         return
     await state.update_data(is_submitting_kyc=True)
 
-    full_name = data.get("kyc_full_name")
-    nid = data.get("kyc_national_id")
-    phone = data.get("kyc_phone")
-    front_fid = data.get("kyc_id_front_file_id")
-    back_fid = data.get("kyc_id_back_file_id")
-    selfie_fid = data.get("kyc_selfie_file_id")
+    try:
+        full_name = data.get("kyc_full_name")
+        nid = data.get("kyc_national_id")
+        phone = data.get("kyc_phone")
+        front_fid = data.get("kyc_id_front_file_id")
+        back_fid = data.get("kyc_id_back_file_id")
+        selfie_fid = data.get("kyc_selfie_file_id")
 
-    if not all([full_name, nid, phone, front_fid, back_fid, selfie_fid]):
-        await state.clear()
-        await callback.answer("⚠️ بيانات الطلب غير مكتملة، يرجى المحاولة من جديد.", show_alert=True)
-        return
+        if not all([full_name, nid, phone, front_fid, back_fid, selfie_fid]):
+            await state.clear()
+            await callback.answer("⚠️ بيانات الطلب غير مكتملة، يرجى المحاولة من جديد.", show_alert=True)
+            return
 
-    user_id = callback.from_user.id
-    user_res = await db_session.execute(
-        select(User).where(User.telegram_id == user_id).with_for_update()
-    )
-    user = user_res.scalar_one_or_none()
-    if not user:
-        user = User(
-            telegram_id=user_id,
-            username=callback.from_user.username,
-            reputation_score=Decimal("100"),
-            completed_deals_count=0
+        user_id = callback.from_user.id
+        user_res = await db_session.execute(
+            select(User).where(User.telegram_id == user_id).with_for_update()
         )
-        db_session.add(user)
+        user = user_res.scalar_one_or_none()
+        if not user:
+            user = User(
+                telegram_id=user_id,
+                username=callback.from_user.username,
+                reputation_score=Decimal("100"),
+                completed_deals_count=0
+            )
+            db_session.add(user)
+            await db_session.flush()
+
+        if user.kyc_status == "verified":
+            await db_session.commit()
+            await state.clear()
+            await callback.answer("حسابك موثق بالفعل ✅", show_alert=True)
+            return
+
+        if user.kyc_status == "pending":
+            await db_session.commit()
+            await state.clear()
+            await callback.answer("لديك طلب توثيق قيد المراجعة حالياً ⏳", show_alert=True)
+            return
+
+        kyc_req = KycRequest(
+            user_id=user_id,
+            full_name=full_name,
+            national_id=nid,
+            phone_number=phone,
+            id_front_file_id=front_fid,
+            id_back_file_id=back_fid,
+            selfie_file_id=selfie_fid,
+            status="pending"
+        )
+        db_session.add(kyc_req)
+        user.kyc_status = "pending"
         await db_session.flush()
 
-    if user.kyc_status == "verified":
+        add_audit(
+            session=db_session,
+            action="USER_SUBMIT_KYC",
+            target_type="user",
+            target_id=str(user_id),
+            actor_id=user_id,
+            actor_type="USER",
+            details={
+                "kyc_request_id": kyc_req.id,
+                "user_id": user_id,
+            }
+        )
         await db_session.commit()
+        await db_session.refresh(kyc_req)
         await state.clear()
-        await callback.answer("حسابك موثق بالفعل ✅", show_alert=True)
-        return
-
-    if user.kyc_status == "pending":
-        await db_session.commit()
-        await state.clear()
-        await callback.answer("لديك طلب توثيق قيد المراجعة حالياً ⏳", show_alert=True)
-        return
-
-    kyc_req = KycRequest(
-        user_id=user_id,
-        full_name=full_name,
-        national_id=nid,
-        phone_number=phone,
-        id_front_file_id=front_fid,
-        id_back_file_id=back_fid,
-        selfie_file_id=selfie_fid,
-        status="pending"
-    )
-    db_session.add(kyc_req)
-    user.kyc_status = "pending"
-    await db_session.flush()
-
-    add_audit(
-        session=db_session,
-        action="USER_SUBMIT_KYC",
-        target_type="user",
-        target_id=str(user_id),
-        actor_id=user_id,
-        actor_type="USER",
-        details={
-            "kyc_request_id": kyc_req.id,
-            "full_name": full_name,
-            "national_id": nid,
-            "phone_number": phone
-        }
-    )
-    await db_session.commit()
-    await db_session.refresh(kyc_req)
-    await state.clear()
+    finally:
+        if await state.get_state() is not None:
+            await state.update_data(is_submitting_kyc=False)
 
     user_tag = safe_username(user.username or callback.from_user.username, user_id)
     user_nick = escape_markdown(user.nickname) if user.nickname else "—"

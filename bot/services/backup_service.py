@@ -1,10 +1,12 @@
 import os
 import json
 import gzip
+import time
 import asyncio
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
+from cryptography.fernet import Fernet
 from aiogram import Bot
 from aiogram.types import FSInputFile
 from sqlalchemy import text
@@ -19,8 +21,47 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-BACKUP_FORMAT_VERSION = "4.0"
+BACKUP_FORMAT_VERSION = "4.1"
 BACKUP_DIR = os.path.join(os.getcwd(), "backups")
+
+_LAST_MISSING_KEY_ALERT_TS: float | None = None
+_MISSING_KEY_ALERT_COOLDOWN_SECONDS = 86400  # 24 hours (once per period)
+
+
+class BackupEncryptionError(RuntimeError):
+    """Raised when BACKUP_ENCRYPTION_KEY is missing or invalid."""
+
+
+def _get_fernet_cipher(raw_key: str | None = None) -> Fernet:
+    key_str = (
+        raw_key
+        if raw_key is not None
+        else (os.getenv("BACKUP_ENCRYPTION_KEY") or settings.BACKUP_ENCRYPTION_KEY or "")
+    ).strip()
+    if not key_str:
+        raise BackupEncryptionError(
+            "متغير البيئة BACKUP_ENCRYPTION_KEY غير مضبوط. "
+            "يُمنع حفظ أو إرسال أي نسخة احتياطية غير مشفرة."
+        )
+    try:
+        return Fernet(key_str.encode("utf-8"))
+    except Exception as exc:
+        raise BackupEncryptionError(
+            "قيمة BACKUP_ENCRYPTION_KEY غير صالحة (يجب أن تكون مفتاح Fernet بصيغة Base64 بطول 32 بايت). "
+            "يُمنع حفظ أو إرسال أي نسخة احتياطية غير مشفرة."
+        ) from exc
+
+
+def encrypt_backup_payload(backup_payload: dict, raw_key: str | None = None) -> bytes:
+    """
+    Serializes, gzip-compresses, and Fernet-encrypts the backup dictionary strictly in memory.
+    Never writes plaintext or unencrypted gzip bytes to disk.
+    """
+    fernet = _get_fernet_cipher(raw_key)
+    json_bytes = json.dumps(backup_payload, ensure_ascii=False, indent=2).encode("utf-8")
+    compressed_bytes = gzip.compress(json_bytes)
+    return fernet.encrypt(compressed_bytes)
+
 
 def serialize_val(val):
     if isinstance(val, datetime):
@@ -32,20 +73,29 @@ def serialize_val(val):
     return val
 
 
-def _write_backup_gzip_and_cleanup(filepath: str, backup_payload: dict) -> None:
+def _write_encrypted_backup_and_cleanup(filepath: str, backup_payload: dict) -> None:
     """
-    Runs in a worker thread via asyncio.to_thread so JSON serialization, gzip compression,
-    and disk retention cleanup never block the main asyncio event loop.
+    Runs in a worker thread via asyncio.to_thread so JSON serialization, in-memory gzip compression,
+    in-memory Fernet encryption, disk write of ciphertext (.json.gz.enc), and retention cleanup
+    never block the main asyncio event loop.
     """
+    encrypted_bytes = encrypt_backup_payload(backup_payload)
     os.makedirs(BACKUP_DIR, exist_ok=True)
-    json_bytes = json.dumps(backup_payload, ensure_ascii=False, indent=2).encode("utf-8")
-    with gzip.open(filepath, "wb") as f:
-        f.write(json_bytes)
+    with open(filepath, "wb") as f:
+        f.write(encrypted_bytes)
+    try:
+        os.chmod(filepath, 0o600)
+    except OSError:
+        pass
 
-    # Retention: keep last 30 backups on disk, delete older ones
+    # Retention: keep last 30 encrypted backups (.json.gz.enc) on disk; never touch legacy .json.gz files
     try:
         existing_files = sorted(
-            [os.path.join(BACKUP_DIR, f) for f in os.listdir(BACKUP_DIR) if f.startswith("escrow_backup_")],
+            [
+                os.path.join(BACKUP_DIR, f)
+                for f in os.listdir(BACKUP_DIR)
+                if f.startswith("escrow_backup_") and f.endswith(".json.gz.enc")
+            ],
             key=os.path.getmtime
         )
         if len(existing_files) > 30:
@@ -60,12 +110,15 @@ def _write_backup_gzip_and_cleanup(filepath: str, backup_payload: dict) -> None:
 
 async def create_database_backup() -> tuple[str, str, dict]:
     """
-    Exports all database tables into a clean, gzip-compressed JSON file,
-    saves it to /backups/, cleans old backups, and returns:
+    Exports all database tables into an in-memory gzip-compressed, Fernet-encrypted file (.json.gz.enc),
+    saves ciphertext to /backups/, cleans old .json.gz.enc backups (keeping last 30), and returns:
     (file_path, filename, stats_dict)
     """
+    # Fail fast before opening DB session or touching disk if key is missing/invalid
+    _get_fernet_cipher()
+
     timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"escrow_backup_{timestamp_str}.json.gz"
+    filename = f"escrow_backup_{timestamp_str}.json.gz.enc"
     filepath = os.path.join(BACKUP_DIR, filename)
 
     stats = {}
@@ -233,9 +286,18 @@ async def create_database_backup() -> tuple[str, str, dict]:
                 "id": t.id,
                 "deal_id": t.deal_id,
                 "tx_hash": t.tx_hash,
+                "log_index": getattr(t, "log_index", 0),
                 "direction": t.direction,
                 "amount": serialize_val(t.amount),
-                "confirmed_at": serialize_val(t.confirmed_at)
+                "amount_raw": serialize_val(getattr(t, "amount_raw", None)),
+                "token_address": getattr(t, "token_address", None),
+                "from_address": getattr(t, "from_address", None),
+                "to_address": getattr(t, "to_address", None),
+                "block_number": getattr(t, "block_number", None),
+                "status": getattr(t, "status", "confirmed"),
+                "nonce": getattr(t, "nonce", None),
+                "confirmed_at": serialize_val(t.confirmed_at),
+                "created_at": serialize_val(getattr(t, "created_at", None)),
             }
             for t in txs
         ]
@@ -330,17 +392,49 @@ async def create_database_backup() -> tuple[str, str, dict]:
         "kyc_requests": kyc_data
     }
 
-    # Offload JSON dump + gzip compression + file retention to a background thread
-    await asyncio.to_thread(_write_backup_gzip_and_cleanup, filepath, backup_payload)
+    # Offload JSON dump + in-memory gzip + in-memory Fernet encryption + file retention to a background thread
+    await asyncio.to_thread(_write_encrypted_backup_and_cleanup, filepath, backup_payload)
 
     return filepath, filename, stats
 
 
 async def perform_and_send_backup(bot: Bot, recipient_id: int | None = None, is_scheduled: bool = False):
     """
-    Creates backup file on server and dispatches it to the admin(s) via Telegram.
+    Creates encrypted backup file (.json.gz.enc) on server and dispatches it to the admin(s) via Telegram.
+    Never writes or sends an unencrypted backup.
     """
-    filepath, filename, stats = await create_database_backup()
+    global _LAST_MISSING_KEY_ALERT_TS
+    from bot.services.admin_notifier import dispatch_admin_notification
+
+    try:
+        filepath, filename, stats = await create_database_backup()
+    except BackupEncryptionError as key_err:
+        logger.error(f"Backup aborted due to missing/invalid BACKUP_ENCRYPTION_KEY: {key_err}")
+        if is_scheduled:
+            now_mono = time.monotonic()
+            if (
+                _LAST_MISSING_KEY_ALERT_TS is None
+                or (now_mono - _LAST_MISSING_KEY_ALERT_TS) >= _MISSING_KEY_ALERT_COOLDOWN_SECONDS
+            ):
+                _LAST_MISSING_KEY_ALERT_TS = now_mono
+                alert_text = (
+                    "⚠️ **تنبيه أمني — تعذّر إنشاء النسخة الاحتياطية المجدولة**\n\n"
+                    f"▫️ **السبب:** {key_err}\n"
+                    "▫️ **الإجراء المتخذ:** تم إيقاف حفظ وإرسال النسخة الاحتياطية لحماية البيانات ومنع إرسال أي ملف غير مشفر.\n\n"
+                    "💡 يرجى ضبط متغير البيئة `BACKUP_ENCRYPTION_KEY` في ملف `.env`."
+                )
+                try:
+                    await dispatch_admin_notification(
+                        bot=bot,
+                        category="backups",
+                        text=alert_text,
+                        parse_mode="Markdown",
+                    )
+                except Exception as notify_err:
+                    logger.error(f"Failed to send missing backup key alert: {notify_err}")
+            return
+        raise
+
     file_size_kb = round(os.path.getsize(filepath) / 1024, 2)
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -351,7 +445,7 @@ async def perform_and_send_backup(bot: Bot, recipient_id: int | None = None, is_
         f"▫️ **اسم الملف:** `{filename}`\n"
         f"▫️ **حجم الملف:** `{file_size_kb}` كيلوبايت\n"
         f"▫️ **توقيت النسخ:** `{now_str}`\n"
-        f"▫️ **الحالة:** محفوظة على الخادم بنجاح ✅\n\n"
+        f"▫️ **الحالة:** محفوظة ومشفرة (Fernet) بنجاح 🔒✅\n\n"
         f"📊 **البيانات المضمنة:**\n"
         f"▫️ **المستخدمون:** `{stats.get('users', 0)}`\n"
         f"▫️ **الصفقات:** `{stats.get('deals', 0)}`\n"
@@ -359,10 +453,8 @@ async def perform_and_send_backup(bot: Bot, recipient_id: int | None = None, is_
         f"▫️ **المفاوضات:** `{stats.get('negotiations', 0)}`\n"
         f"▫️ **التقييمات:** `{stats.get('deal_ratings', 0)}`\n"
         f"▫️ **النزاعات:** `{stats.get('disputes', 0)}`\n\n"
-        f"تم حفظ النسخة محلياً في مسار `/backups/`."
+        f"تم حفظ النسخة المشفرة محلياً في مسار `/backups/`."
     )
-
-    from bot.services.admin_notifier import dispatch_admin_notification
 
     if recipient_id:
         # Manual backup triggered by an admin: send to that admin AND archive in ADMIN_BACKUPS_CHANNEL_ID if configured

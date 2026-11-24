@@ -1,9 +1,11 @@
 import asyncio
 import logging
+import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeChat
+from sqlalchemy import text
 
 from bot.handlers.base import base_router
 from bot.handlers.offers import offers_router
@@ -16,10 +18,118 @@ from bot.middlewares.command_cancel import AutoCancelStateOnCommandMiddleware
 from bot.middlewares.rate_limit import RateLimitMiddleware
 from bot.middlewares.error_alert import handle_critical_error, report_handled_exception
 from bot.tasks import start_expiry_watcher, start_daily_backup_scheduler
-from db.session import AsyncSessionLocal, ensure_schema_updated
+from db.session import AsyncSessionLocal, engine, ensure_schema_updated
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# Dedicated session-level advisory lock ID (distinct from 74839201 used by ensure_schema_updated)
+BOT_INSTANCE_ADVISORY_LOCK_ID = 74839202
+
+
+class BotInstanceLock:
+    """
+    Holds a PostgreSQL session-level advisory lock (pg_try_advisory_lock) on a dedicated
+    AUTOCOMMIT connection for the entire lifetime of the bot process.
+    Prevents two bot instances from running concurrently against the same database,
+    and automatically re-acquires the lock if the database connection drops transiently.
+    """
+
+    def __init__(self, lock_id: int = BOT_INSTANCE_ADVISORY_LOCK_ID) -> None:
+        self.lock_id = lock_id
+        self._conn = None
+
+    async def _close_conn_quietly(self) -> None:
+        if self._conn is not None:
+            try:
+                await self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    async def acquire(self) -> bool:
+        """
+        Opens a dedicated AUTOCOMMIT connection and attempts to acquire the session advisory lock.
+        Returns True if acquired, False if another process already holds the lock.
+        """
+        await self._close_conn_quietly()
+        conn = await engine.connect()
+        try:
+            autocommit_conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            res = await autocommit_conn.execute(
+                text("SELECT pg_try_advisory_lock(:lock_id)"),
+                {"lock_id": self.lock_id},
+            )
+            acquired = bool(res.scalar())
+            if not acquired:
+                await autocommit_conn.close()
+                return False
+            self._conn = autocommit_conn
+            return True
+        except Exception:
+            try:
+                await conn.close()
+            except Exception:
+                pass
+            raise
+
+    async def verify_or_reacquire(self) -> None:
+        """
+        Verifies that the dedicated connection is still alive and still holds the session advisory lock.
+        If the connection dropped transiently, reconnects and re-acquires the lock.
+        Raises SystemExit(1) if another instance has taken the lock.
+        """
+        if self._conn is not None:
+            try:
+                res = await self._conn.execute(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM pg_locks
+                            WHERE locktype = 'advisory'
+                              AND objid = :lock_id
+                              AND pid = pg_backend_pid()
+                              AND granted = true
+                        )
+                        """
+                    ),
+                    {"lock_id": self.lock_id},
+                )
+                if bool(res.scalar()):
+                    return
+                logger.warning(
+                    f"Advisory lock ({self.lock_id}) no longer present on active session; attempting re-acquisition..."
+                )
+            except Exception as conn_err:
+                logger.warning(
+                    f"Dedicated advisory lock connection lost ({conn_err}); reconnecting and re-acquiring lock..."
+                )
+
+        # Connection dropped or lock lost: attempt to re-acquire on a fresh connection
+        acquired = await self.acquire()
+        if acquired:
+            logger.info(
+                f"Successfully re-acquired PostgreSQL bot instance advisory lock ({self.lock_id})."
+            )
+        else:
+            logger.critical(
+                f"FATAL: Lost PostgreSQL bot instance advisory lock ({self.lock_id}) to another running instance. "
+                "Terminating immediately to prevent duplicate bot execution."
+            )
+            raise SystemExit(1)
+
+    async def release(self) -> None:
+        """Releases the session advisory lock and closes the dedicated connection on shutdown."""
+        if self._conn is not None:
+            try:
+                await self._conn.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": self.lock_id},
+                )
+            except Exception:
+                pass
+            await self._close_conn_quietly()
 
 
 # Middleware to inject DB session into handlers with automatic rollback on unhandled error
@@ -77,16 +187,25 @@ async def setup_bot_commands(bot: Bot):
             pass
 
 
-async def supervise_background_workers(bot: Bot):
+async def supervise_background_workers(bot: Bot, instance_lock: BotInstanceLock | None = None):
     """
     Watchdog supervisor that guarantees both background tasks (expiry watcher & daily backup)
-    remain alive continuously and automatically respawns either task if it ever exits unexpectedly.
+    remain alive continuously, verifies/re-acquires the PostgreSQL single-instance advisory lock,
+    and automatically respawns either task if it ever exits unexpectedly.
     """
     expiry_task: asyncio.Task | None = None
     backup_task: asyncio.Task | None = None
 
     try:
         while True:
+            if instance_lock is not None:
+                try:
+                    await instance_lock.verify_or_reacquire()
+                except SystemExit:
+                    raise
+                except Exception as lock_err:
+                    logger.error(f"Watchdog: transient error verifying advisory lock: {lock_err}")
+
             if expiry_task is None or expiry_task.done():
                 if expiry_task is not None and not expiry_task.cancelled():
                     exc = expiry_task.exception()
@@ -145,67 +264,93 @@ async def main():
         logger.critical("BOT_TOKEN is not set.")
         return
 
+    instance_lock = BotInstanceLock(BOT_INSTANCE_ADVISORY_LOCK_ID)
+    try:
+        acquired = await asyncio.wait_for(instance_lock.acquire(), timeout=15)
+    except Exception as lock_exc:
+        logger.critical(f"Failed to connect to PostgreSQL to acquire bot instance lock: {lock_exc}")
+        sys.exit(1)
+
+    if not acquired:
+        logger.critical(
+            f"ABORT STARTUP: Another Alpha Bot instance is already running and holds PostgreSQL "
+            f"session advisory lock ({BOT_INSTANCE_ADVISORY_LOCK_ID}). Refusing to start duplicate instance."
+        )
+        sys.exit(1)
+
+    logger.info(
+        f"Acquired PostgreSQL single-instance session advisory lock ({BOT_INSTANCE_ADVISORY_LOCK_ID})."
+    )
+
     dp = build_dispatcher()
     backoff_seconds = 5
 
-    # Self-healing outer supervisor loop: guarantees the bot never dies or stays frozen
-    while True:
-        session = AiohttpSession(timeout=30)
-        bot = Bot(token=bot_token, session=session)
-        watchdog_task: asyncio.Task | None = None
+    try:
+        # Self-healing outer supervisor loop: guarantees the bot never dies or stays frozen
+        while True:
+            session = AiohttpSession(timeout=30)
+            bot = Bot(token=bot_token, session=session)
+            watchdog_task: asyncio.Task | None = None
 
-        try:
-            logger.info("Starting Bot in resilient Polling mode...")
-
-            # 1. Auto-patch schema with timeout guard
             try:
-                await asyncio.wait_for(ensure_schema_updated(), timeout=45)
-            except Exception as schema_err:
-                logger.error(f"Startup schema check warning: {schema_err}", exc_info=True)
+                await instance_lock.verify_or_reacquire()
+                logger.info("Starting Bot in resilient Polling mode...")
 
-            # 2. Setup bot menu commands with timeout guard so Telegram lag never blocks startup
-            try:
-                await asyncio.wait_for(setup_bot_commands(bot), timeout=20)
-            except Exception as cmd_err:
-                logger.warning(f"Startup setup_bot_commands timed out or failed: {cmd_err}")
-
-            # 3. Start supervised background workers (expiry watcher + daily backup)
-            watchdog_task = asyncio.create_task(supervise_background_workers(bot))
-
-            # Reset backoff once startup succeeds
-            backoff_seconds = 5
-
-            # 4. Run polling with bounded polling_timeout
-            await dp.start_polling(
-                bot,
-                polling_timeout=20,
-                handle_signals=False,
-            )
-            logger.warning("dp.start_polling exited normally; restarting polling loop in 5s...")
-
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-            logger.info("Bot shutdown signal received; stopping cleanly.")
-            break
-        except Exception as crash_err:
-            logger.critical(
-                f"Self-Healing Supervisor: Bot polling loop crashed ({crash_err}). "
-                f"Restarting automatically in {backoff_seconds}s...",
-                exc_info=True
-            )
-        finally:
-            if watchdog_task and not watchdog_task.done():
-                watchdog_task.cancel()
+                # 1. Auto-patch schema with timeout guard
                 try:
-                    await watchdog_task
+                    await asyncio.wait_for(ensure_schema_updated(), timeout=45)
+                except Exception as schema_err:
+                    logger.error(f"Startup schema check warning: {schema_err}", exc_info=True)
+
+                # 2. Setup bot menu commands with timeout guard so Telegram lag never blocks startup
+                try:
+                    await asyncio.wait_for(setup_bot_commands(bot), timeout=20)
+                except Exception as cmd_err:
+                    logger.warning(f"Startup setup_bot_commands timed out or failed: {cmd_err}")
+
+                # 3. Start supervised background workers (expiry watcher + daily backup + lock monitor)
+                watchdog_task = asyncio.create_task(supervise_background_workers(bot, instance_lock=instance_lock))
+
+                # Reset backoff once startup succeeds
+                backoff_seconds = 5
+
+                # 4. Run polling with bounded polling_timeout
+                await dp.start_polling(
+                    bot,
+                    polling_timeout=20,
+                    handle_signals=False,
+                )
+                logger.warning("dp.start_polling exited normally; restarting polling loop in 5s...")
+
+            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+                logger.info("Bot shutdown signal received; stopping cleanly.")
+                break
+            except Exception as crash_err:
+                logger.critical(
+                    f"Self-Healing Supervisor: Bot polling loop crashed ({crash_err}). "
+                    f"Restarting automatically in {backoff_seconds}s...",
+                    exc_info=True
+                )
+            finally:
+                if watchdog_task and not watchdog_task.done():
+                    watchdog_task.cancel()
+                    try:
+                        await watchdog_task
+                    except (Exception, SystemExit):
+                        pass
+                try:
+                    await bot.session.close()
                 except Exception:
                     pass
-            try:
-                await bot.session.close()
-            except Exception:
-                pass
 
-        await asyncio.sleep(backoff_seconds)
-        backoff_seconds = min(backoff_seconds * 2, 60)
+            await asyncio.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, 60)
+    finally:
+        await instance_lock.release()
+        try:
+            await engine.dispose()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

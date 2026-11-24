@@ -2735,6 +2735,12 @@ async def cq_admin_approve_kyc(callback: CallbackQuery, db_session: AsyncSession
         await callback.answer("⚠️ المستخدم غير موجود في قاعدة البيانات.", show_alert=True)
         return
 
+    prev_user_kyc_status = getattr(user, "kyc_status", "unverified") or "unverified"
+    if prev_user_kyc_status == "verified":
+        await db_session.commit()
+        await callback.answer("ℹ️ حساب هذا المستخدم موثق بالفعل.", show_alert=True)
+        return
+
     now_utc = datetime.now(timezone.utc)
     kyc_req.status = "approved"
     kyc_req.reviewed_by = callback.from_user.id
@@ -2749,10 +2755,9 @@ async def cq_admin_approve_kyc(callback: CallbackQuery, db_session: AsyncSession
         actor_id=callback.from_user.id,
         actor_type="ADMIN",
         details={
+            "kyc_request_id": kyc_req.id,
             "user_id": kyc_req.user_id,
-            "full_name": kyc_req.full_name,
-            "national_id": kyc_req.national_id,
-            "phone_number": kyc_req.phone_number,
+            "previous_status": prev_user_kyc_status,
         },
     )
     await db_session.commit()
@@ -2986,6 +2991,15 @@ async def cq_admin_revoke_kyc(callback: CallbackQuery, db_session: AsyncSession,
         await callback.answer("⚠️ المستخدم غير موجود.", show_alert=True)
         return
 
+    prev_status = getattr(user, "kyc_status", "unverified") or "unverified"
+    if prev_status != "verified":
+        await db_session.commit()
+        await callback.answer(
+            f"ℹ️ لا يمكن إلغاء التوثيق: حالة المستخدم الحالية هي ({prev_status}) وليست موثقة.",
+            show_alert=True,
+        )
+        return
+
     user.kyc_status = "unverified"
     add_audit(
         session=db_session,
@@ -2994,7 +3008,7 @@ async def cq_admin_revoke_kyc(callback: CallbackQuery, db_session: AsyncSession,
         target_id=str(uid),
         actor_id=callback.from_user.id,
         actor_type="ADMIN",
-        details={"previous_status": "verified", "new_status": "unverified"},
+        details={"previous_status": prev_status, "new_status": "unverified"},
     )
     await db_session.commit()
 

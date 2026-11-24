@@ -153,13 +153,30 @@ class BlockchainTransaction(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     deal_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("deals.id"))
-    tx_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    tx_hash: Mapped[str] = mapped_column(String, nullable=False)
+    log_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     direction: Mapped[str | None] = mapped_column(String)
     amount: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    amount_raw: Mapped[Decimal | None] = mapped_column(Numeric(38, 0), nullable=True)
+    token_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    from_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    to_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    block_number: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="confirmed", server_default="confirmed")
+    nonce: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (
-        CheckConstraint("direction IN ('deposit', 'release')", name="chk_direction"),
+        CheckConstraint(
+            "direction IN ('deposit', 'sweep', 'release', 'refund', 'gas_topup', 'fee_sweep')",
+            name="chk_direction",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'confirmed', 'failed', 'anomaly')",
+            name="chk_blockchain_tx_status",
+        ),
+        UniqueConstraint("tx_hash", "log_index", name="uq_blockchain_tx_hash_log_index"),
     )
 
 class Negotiation(Base):

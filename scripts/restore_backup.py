@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone CLI utility to restore an Alpha Bot database backup (.json.gz).
+Standalone CLI utility to restore an Alpha Bot database backup (.json.gz.enc or legacy .json.gz).
 Never imported or invoked automatically by the Telegram bot runtime.
 """
 import argparse
@@ -9,9 +9,11 @@ import gzip
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
+
+from cryptography.fernet import Fernet, InvalidToken
 
 # Ensure project root is on sys.path when invoked as `python scripts/restore_backup.py`
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -22,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from bot.utils.sanitize import sanitize_exception_message
+from config.settings import settings
 from db.models import (
     AuditLog,
     BlockchainTransaction,
@@ -74,7 +77,7 @@ DECIMAL_FIELDS = {
     "deals": {"amount_usdt", "amount_syp", "fee_usdt", "seller_fee_usdt", "buyer_fee_usdt"},
     "negotiations": {"proposed_rate", "proposed_amount"},
     "payment_proofs": {"amount"},
-    "blockchain_transactions": {"amount"},
+    "blockchain_transactions": {"amount", "amount_raw"},
 }
 
 DATETIME_FIELDS = {
@@ -85,7 +88,7 @@ DATETIME_FIELDS = {
     "disputes": {"resolved_at"},
     "deal_ratings": {"created_at"},
     "payment_proofs": {"submitted_at"},
-    "blockchain_transactions": {"confirmed_at"},
+    "blockchain_transactions": {"confirmed_at", "created_at"},
     "system_settings": {"updated_at"},
     "audit_logs": {"created_at"},
     "kyc_requests": {"reviewed_at", "created_at"},
@@ -128,15 +131,63 @@ def _parse_row(table_name: str, model_cls: Any, raw_row: dict[str, Any]) -> dict
         if cleaned.get("buyer_fee_usdt") is None:
             cleaned["buyer_fee_usdt"] = Decimal("0.0")
 
+    # Backfill NOT NULL columns if restoring blockchain_transactions from an older 2.x/3.x/4.0 backup
+    if table_name == "blockchain_transactions":
+        if cleaned.get("log_index") is None:
+            cleaned["log_index"] = 0
+        if not cleaned.get("status"):
+            cleaned["status"] = "confirmed"
+        if cleaned.get("created_at") is None:
+            cleaned["created_at"] = cleaned.get("confirmed_at") or datetime.now(timezone.utc)
+
     return cleaned
 
 
-def load_and_validate_backup(filepath: str) -> dict[str, Any]:
+def decrypt_and_decompress_backup_bytes(
+    cipher_bytes: bytes, raw_key: str | None = None
+) -> dict[str, Any]:
+    """
+    Decrypts Fernet ciphertext and decompresses gzip JSON payload strictly in memory.
+    Raises ValueError if BACKUP_ENCRYPTION_KEY is missing/invalid or ciphertext is corrupted.
+    """
+    key_str = (
+        raw_key
+        if raw_key is not None
+        else (os.getenv("BACKUP_ENCRYPTION_KEY") or settings.BACKUP_ENCRYPTION_KEY or "")
+    ).strip()
+    if not key_str:
+        raise ValueError(
+            "Encrypted backup (.enc) requires BACKUP_ENCRYPTION_KEY in environment or .env."
+        )
+    try:
+        fernet = Fernet(key_str.encode("utf-8"))
+    except Exception as exc:
+        raise ValueError(
+            "Invalid BACKUP_ENCRYPTION_KEY format (expected 32-byte URL-safe Base64 Fernet key)."
+        ) from exc
+
+    try:
+        compressed_bytes = fernet.decrypt(cipher_bytes)
+    except InvalidToken as exc:
+        raise ValueError(
+            "Failed to decrypt backup file: invalid BACKUP_ENCRYPTION_KEY or corrupted ciphertext."
+        ) from exc
+
+    raw_json_bytes = gzip.decompress(compressed_bytes)
+    return json.loads(raw_json_bytes.decode("utf-8"))
+
+
+def load_and_validate_backup(filepath: str, encryption_key: str | None = None) -> dict[str, Any]:
     if not os.path.isfile(filepath):
         raise FileNotFoundError(f"Backup file not found: {filepath}")
 
-    with gzip.open(filepath, "rb") as f:
-        payload = json.loads(f.read().decode("utf-8"))
+    if filepath.endswith(".enc"):
+        with open(filepath, "rb") as f:
+            cipher_bytes = f.read()
+        payload = decrypt_and_decompress_backup_bytes(cipher_bytes, raw_key=encryption_key)
+    else:
+        with gzip.open(filepath, "rb") as f:
+            payload = json.loads(f.read().decode("utf-8"))
 
     if not isinstance(payload, dict) or "metadata" not in payload:
         raise ValueError("Invalid backup structure: missing 'metadata' key.")
@@ -296,9 +347,9 @@ async def run_restore(filepath: str, dry_run: bool = False, force: bool = False)
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Restore Alpha Bot PostgreSQL database from a .json.gz backup file."
+        description="Restore Alpha Bot PostgreSQL database from a .json.gz.enc (or legacy .json.gz) backup file."
     )
-    parser.add_argument("backup_file", help="Path to the .json.gz backup file")
+    parser.add_argument("backup_file", help="Path to the .json.gz.enc or .json.gz backup file")
     parser.add_argument(
         "--dry-run",
         action="store_true",
