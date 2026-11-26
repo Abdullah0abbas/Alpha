@@ -1,6 +1,6 @@
 """upgrade blockchain_transactions table for on-chain deposit, sweep, and payout tracking
 
-Revision ID: 020_upgrade_blockchain_transactions
+Revision ID: 020_upgrade_bc_tx
 Revises: 019_add_kyc_requests
 Create Date: 2026-11-24 04:05:00.000000
 
@@ -9,7 +9,7 @@ from alembic import op
 
 
 # revision identifiers, used by Alembic.
-revision = "020_upgrade_blockchain_transactions"
+revision = "020_upgrade_bc_tx"
 down_revision = "019_add_kyc_requests"
 branch_labels = None
 depends_on = None
@@ -124,7 +124,7 @@ def downgrade() -> None:
 
             IF bad_dir_count > 0 THEN
                 RAISE EXCEPTION
-                    'Cannot downgrade 020_upgrade_blockchain_transactions: found % row(s) with direction outside (deposit, release).',
+                    'Cannot downgrade 020_upgrade_bc_tx: found % row(s) with direction outside (deposit, release).',
                     bad_dir_count;
             END IF;
 
@@ -138,7 +138,7 @@ def downgrade() -> None:
 
             IF dup_hash_count > 0 THEN
                 RAISE EXCEPTION
-                    'Cannot downgrade 020_upgrade_blockchain_transactions: found % duplicate tx_hash value(s) across multiple log_index rows that violate single-column UNIQUE(tx_hash).',
+                    'Cannot downgrade 020_upgrade_bc_tx: found % duplicate tx_hash value(s) across multiple log_index rows that violate single-column UNIQUE(tx_hash).',
                     dup_hash_count;
             END IF;
         END $$;

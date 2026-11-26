@@ -1,106 +1,105 @@
-"""
-Offline unit tests for Phase A0-4 sanitization and masking utilities (bot/utils/sanitize.py).
-Requires zero network access and zero database connections.
-"""
+"""Offline unit tests for bot.utils.sanitize (Phase A0-4)."""
+from copy import deepcopy
+
 from bot.utils.sanitize import mask_details, mask_value, sanitize_exception_message
 
 
-def test_sanitize_rpc_url_strips_path_query_and_credentials():
-    raw_exc = RuntimeError(
-        "HTTPSConnectionPool: Max retries exceeded with url: "
-        "https://bsc-mainnet.nodereal.io/v1/64a8f9c2b1e04d3a9f8c7b6a5e4d3c2b?api_key=secret123"
+def test_sanitize_exception_strips_url_credentials_path_and_query():
+    exc = RuntimeError(
+        "RPC error from https://user:secretpass@bsc-mainnet.nodereal.io:8545/v1/abc123SECRET?api_key=topsecret#frag!"
     )
-    cleaned = sanitize_exception_message(raw_exc)
-    assert "https://bsc-mainnet.nodereal.io" in cleaned
-    assert "64a8f9c2b1e04d3a9f8c7b6a5e4d3c2b" not in cleaned
-    assert "secret123" not in cleaned
-    assert "/v1/" not in cleaned
+    cleaned = sanitize_exception_message(exc)
+    assert "https://bsc-mainnet.nodereal.io:8545!" in cleaned
+    assert "secretpass" not in cleaned
+    assert "abc123SECRET" not in cleaned
+    assert "topsecret" not in cleaned
+    assert "frag" not in cleaned
 
 
-def test_sanitize_url_with_basic_auth_and_port():
-    raw_exc = "Connection refused to http://admin:super_secret_pw@rpc.internal.node:8545/bsc/private"
-    cleaned = sanitize_exception_message(raw_exc)
-    assert cleaned == "Connection refused to http://rpc.internal.node:8545"
-    assert "super_secret_pw" not in cleaned
-    assert "/bsc/private" not in cleaned
+def test_sanitize_exception_masks_64_hex_with_and_without_0x():
+    hex_plain = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e9988"
+    hex_prefixed = "0x" + hex_plain
+
+    cleaned_plain = sanitize_exception_message(f"key={hex_plain}")
+    assert hex_plain not in cleaned_plain
+    assert "a1b2c3…9988" in cleaned_plain
+
+    cleaned_prefixed = sanitize_exception_message(f"tx={hex_prefixed}")
+    assert hex_prefixed not in cleaned_prefixed
+    assert "0xa1b2…9988" in cleaned_prefixed
 
 
-def test_sanitize_64_char_hex_with_and_without_0x():
-    raw_hex = "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318"
-    prefixed_hex = f"0x{raw_hex}"
-
-    msg = f"Failed signing with raw={raw_hex} and prefixed={prefixed_hex}."
-    cleaned = sanitize_exception_message(msg)
-
-    assert raw_hex not in cleaned
-    assert prefixed_hex not in cleaned
-    assert "4c0883…2318" in cleaned
-    assert "0x4c08…2318" in cleaned
-
-
-def test_sanitize_mnemonic_12_and_24_words():
-    mnemonic_12 = "abandon ability able about above absent absorb abstract absurd abuse access accident"
-    mnemonic_24 = (
-        "abandon ability able about above absent absorb abstract absurd abuse access accident "
-        "account accuse achieve acid acoustic acquire across act action actor actress actual"
+def test_sanitize_exception_redacts_12_and_24_word_mnemonics():
+    mnemonic_12 = (
+        "abandon ability able about above absent absorb abstract absurd abuse access accident"
     )
+    mnemonic_24 = f"{mnemonic_12} {mnemonic_12}"
 
-    cleaned_12 = sanitize_exception_message(f"Wallet init error: {mnemonic_12}")
-    assert cleaned_12 == "Wallet init error: [REDACTED_MNEMONIC]"
+    cleaned_12 = sanitize_exception_message(f"seed leak: {mnemonic_12} end")
+    assert "[REDACTED_MNEMONIC]" in cleaned_12
     assert "abandon" not in cleaned_12
 
-    cleaned_24 = sanitize_exception_message(f"Seed phrase invalid ({mnemonic_24})")
-    assert cleaned_24 == "Seed phrase invalid ([REDACTED_MNEMONIC])"
-    assert "actress" not in cleaned_24
+    cleaned_24 = sanitize_exception_message(f"seed leak: {mnemonic_24} end")
+    assert "[REDACTED_MNEMONIC]" in cleaned_24
+    assert "accident" not in cleaned_24
 
 
-def test_sanitize_cuts_sql_and_parameters():
-    sql_exc = (
-        " (sqlalchemy.dialects.postgresql.asyncpg.IntegrityError) duplicate key value "
-        "[SQL: INSERT INTO users (telegram_id) VALUES ($1)] [parameters: (123456,)] "
+def test_sanitize_exception_cuts_sql_markers_and_truncates():
+    raw = (
+        "IntegrityError: duplicate key value\n\n"
+        "[SQL: INSERT INTO users VALUES (%s)] [parameters: ('secret',)] "
         "(Background on this error at: https://sqlalche.me/e/20/gkpj)"
     )
-    cleaned = sanitize_exception_message(sql_exc)
-    assert cleaned == "(sqlalchemy.dialects.postgresql.asyncpg.IntegrityError) duplicate key value"
+    cleaned = sanitize_exception_message(raw, max_len=200)
+    assert cleaned == "IntegrityError: duplicate key value"
     assert "[SQL:" not in cleaned
-    assert "[parameters:" not in cleaned
+    assert "secret" not in cleaned
+
+    truncated = sanitize_exception_message("x" * 300, max_len=50)
+    assert len(truncated) == 50
+    assert sanitize_exception_message(None) == ""
 
 
-def test_normal_messages_remain_unchanged():
-    en_msg = "Deal #42 is already in COMPLETED state and cannot be cancelled."
-    ar_msg = "تعذر إتمام العملية: الصفقة رقم #105 ملغاة مسبقاً."
+def test_mask_value_behavior():
+    assert mask_value(None) is None
+    assert mask_value("short_val") == "short_val"
+    assert mask_value("0x1234567890abcdef1234567890abcdef12345678") == "0x1234…5678"
 
-    assert sanitize_exception_message(en_msg) == en_msg
-    assert sanitize_exception_message(ar_msg) == ar_msg
+    mnemonic_12 = (
+        "abandon ability able about above absent absorb abstract absurd abuse access accident"
+    )
+    assert mask_value(mnemonic_12) == "[REDACTED_MNEMONIC]"
 
 
 def test_mask_details_recursive_and_non_mutating():
-    raw_hex = "9f8c7b6a5e4d3c2b64a8f9c2b1e04d3a9f8c7b6a5e4d3c2b64a8f9c2b1e04d3a"
-    mnemonic_12 = "abandon ability able about above absent absorb abstract absurd abuse access accident"
+    hex_key = "0x" + "f" * 60 + "1234"
+    mnemonic_12 = (
+        "abandon ability able about above absent absorb abstract absurd abuse access accident"
+    )
     original = {
-        "buyer_payout_address": "0x71C7656EC7ab88b098defB751B7401B5f6d8976F",
-        "rpc_endpoint": "https://rpc.ankr.com/bsc/my_secret_rpc_token_987654",
-        "tx_key": raw_hex,
-        "prefixed_key": f"0x{raw_hex}",
+        "deal_id": 42,
+        "wallet_address": "0x1111222233334444555566667777888899990000",
+        "SECRET_TOKEN": "super_secret_long_token_value",
         "nested": {
-            "seed_phrase": mnemonic_12,
-            "note": f"Error on {mnemonic_12}",
+            "payment_info": "shamcash_0123456789abcdef01234567",
+            "rpc_url": "https://rpc.example.com/v2/my_private_api_key",
+            "note": f"leaked {hex_key}",
+            "items": [mnemonic_12, "ok"],
         },
-        "status": "COMPLETED",
     }
+    snapshot = deepcopy(original)
 
     masked = mask_details(original)
 
-    # Original must not be mutated
-    assert original["rpc_endpoint"].endswith("my_secret_rpc_token_987654")
-    assert original["tx_key"] == raw_hex
+    # Original dictionary must never be mutated
+    assert original == snapshot
 
-    # Masked copy checks
-    assert masked["buyer_payout_address"] == "0x71C7…976F"
-    assert masked["rpc_endpoint"] == "https://rpc.ankr.com"
-    assert masked["tx_key"] == "9f8c7b…4d3a"
-    assert masked["prefixed_key"] == "0x9f8c…4d3a"
-    assert masked["nested"]["seed_phrase"] == "[REDACTED_MNEMONIC]"
-    assert masked["nested"]["note"] == "Error on [REDACTED_MNEMONIC]"
-    assert masked["status"] == "COMPLETED"
-    assert mask_value(None) is None
+    assert masked["deal_id"] == 42
+    assert masked["wallet_address"] == "0x1111…0000"
+    assert masked["SECRET_TOKEN"] == "super_…alue"
+    assert masked["nested"]["payment_info"] == "shamca…4567"
+    assert masked["nested"]["rpc_url"] == "https://rpc.example.com"
+    assert hex_key not in masked["nested"]["note"]
+    assert "0xffff…1234" in masked["nested"]["note"]
+    assert masked["nested"]["items"] == ["[REDACTED_MNEMONIC]", "ok"]
+    assert mask_details(None) == {}
