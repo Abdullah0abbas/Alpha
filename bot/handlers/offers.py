@@ -27,6 +27,7 @@ from bot.utils.formatters import (
     MIN_DEAL_AMOUNT_USDT,
     escape_markdown,
     safe_username,
+    styled_button,
 )
 from bot.utils.offer_wizard import (
     push_wizard_step,
@@ -39,6 +40,12 @@ from bot.utils.offer_wizard import (
     MAX_OFFER_NOTE_LENGTH,
 )
 from bot.utils.branding import BOT_NAME
+from bot.utils.deal_guard import (
+    MAX_ACTIVE_DEALS,
+    count_user_active_deals,
+    build_max_active_deals_kb,
+    build_max_active_deals_notice_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +158,8 @@ def build_offer_type_screen(back_to_main: bool = True) -> tuple[str, InlineKeybo
         else InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔴 عرض بيع USDT", callback_data="offer_type_sell")],
-        [InlineKeyboardButton(text="🟢 عرض شراء USDT", callback_data="offer_type_buy")],
+        [styled_button(text="🔴 عرض بيع USDT", callback_data="offer_type_sell", style="danger")],
+        [styled_button(text="🟢 عرض شراء USDT", callback_data="offer_type_buy", style="success")],
         [footer_btn]
     ])
     return text, kb
@@ -282,6 +289,16 @@ async def start_offer_creation(message: Message, state: FSMContext, db_session: 
             f"عذراً، حسابك مقيد حالياً من إنشاء عروض جديدة على {BOT_NAME}.\n"
             "يرجى التواصل مع الدعم الفني لمزيد من التفاصيل.",
             parse_mode="Markdown"
+        )
+        return
+
+    active_deals_count = await count_user_active_deals(db_session, message.from_user.id)
+    if active_deals_count >= MAX_ACTIVE_DEALS:
+        await state.clear()
+        await message.answer(
+            build_max_active_deals_notice_text(),
+            reply_markup=build_max_active_deals_kb(),
+            parse_mode="Markdown",
         )
         return
 
@@ -1274,6 +1291,21 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
         await callback.answer(f"⚠️ {err_msg}", show_alert=True)
         return
 
+    # 1b. Active deals cap check (max 5 active deals)
+    active_deals_count = await count_user_active_deals(db_session, user_id)
+    if active_deals_count >= MAX_ACTIVE_DEALS:
+        await state.update_data(is_publishing=False)
+        await callback.answer(
+            "لديك 5 صفقات غير مكتملة يرجى متابعتهم (إلغاء أو استكمال) لتتمكن من إجراء معاملات جديدة.",
+            show_alert=True,
+        )
+        await callback.message.answer(
+            build_max_active_deals_notice_text(),
+            reply_markup=build_max_active_deals_kb(),
+            parse_mode="Markdown",
+        )
+        return
+
     # 2. Section 6.1.1: Active offers cap check (max 5 active/pending offers for non-admins)
     if user_id not in settings.ADMIN_IDS:
         count_res = await db_session.execute(
@@ -1470,7 +1502,8 @@ async def list_offers(message: Message, db_session: AsyncSession):
             viewer_id=message.from_user.id,
             negotiable=offer.negotiable,
             negotiable_type=offer.negotiable_type,
-            context="offers"
+            context="offers",
+            offer_type=offer.offer_type,
         )
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         rate_str = format_syp(offer.rate)

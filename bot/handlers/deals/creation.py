@@ -8,15 +8,21 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_, func, text
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from db.models import Deal, Offer, User
 from bot.states.flow_states import DealCreateFSM
 from bot.services.audit_service import record_audit
 from bot.services.channel import update_channel_offer_message
-from config.settings import settings
 from bot.utils.deal_card import push_deal_card
+from bot.utils.deal_guard import (
+    MAX_ACTIVE_DEALS,
+    count_user_active_deals,
+    build_max_active_deals_kb,
+    build_max_active_deals_notice_text,
+    notify_offer_owner_max_deals,
+)
 from bot.utils.fees import calculate_deal_fee
 from bot.utils.branding import BOT_NAME
 from bot.utils.formatters import (
@@ -45,22 +51,20 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
         await callback.answer(f"🚫 حسابك محظور من بدء أي صفقات جديدة على {BOT_NAME}.", show_alert=True)
         return
 
-    # Section 6.1.1: Active deals cap check (max 5 active deals)
+    # Section 6.1.1: Active deals cap check for applicant (max 5 active deals)
     user_id = callback.from_user.id
-    if user_id not in settings.ADMIN_IDS:
-        deals_count_res = await db_session.execute(
-            select(func.count(Deal.id)).where(
-                or_(Deal.seller_id == user_id, Deal.buyer_id == user_id),
-                Deal.status.not_in(['COMPLETED', 'CANCELLED', 'EXPIRED', 'DISPUTED'])
-            )
+    active_deals_count = await count_user_active_deals(db_session, user_id)
+    if active_deals_count >= MAX_ACTIVE_DEALS:
+        await callback.answer(
+            "لديك 5 صفقات غير مكتملة يرجى متابعتهم (إلغاء أو استكمال) لتتمكن من إجراء معاملات جديدة.",
+            show_alert=True
         )
-        active_deals_count = deals_count_res.scalar() or 0
-        if active_deals_count >= 5:
-            await callback.answer(
-                "⚠️ لديك 5 صفقات نشطة بالفعل. يرجى إكمال أو إلغاء إحدى صفقاتك السابقة قبل بدء صفقة جديدة.",
-                show_alert=True
-            )
-            return
+        await callback.message.answer(
+            build_max_active_deals_notice_text(),
+            reply_markup=build_max_active_deals_kb(),
+            parse_mode="Markdown",
+        )
+        return
 
     offer_id = int(callback.data.split("_")[-1])
     result = await db_session.execute(
@@ -80,6 +84,17 @@ async def init_deal(callback: CallbackQuery, state: FSMContext, db_session: Asyn
     if offer.status != "active":
         await callback.answer("عذراً، هذا العرض لم يعد متاحاً للتداول حالياً.", show_alert=True)
         return
+
+    # Section 6.1.1: Active deals cap check for offer owner (max 5 active deals)
+    if offer.user_id:
+        owner_active_deals = await count_user_active_deals(db_session, offer.user_id)
+        if owner_active_deals >= MAX_ACTIVE_DEALS:
+            await notify_offer_owner_max_deals(callback.bot, offer.user_id, offer.id)
+            await callback.answer(
+                "⚠️ عذراً، لا يمكن التقديم على هذا العرض حالياً لأن صاحب العرض لديه 5 صفقات غير مكتملة.",
+                show_alert=True,
+            )
+            return
 
     await state.update_data(
         offer_id=offer.id,
@@ -356,6 +371,31 @@ async def _finalize_deal_creation(
         await state.clear()
         await message.answer(f"⚠️ {err_msg}")
         return
+
+    taker_active_deals = await count_user_active_deals(db_session, taker_user_id)
+    if taker_active_deals >= MAX_ACTIVE_DEALS:
+        await db_session.commit()
+        await state.clear()
+        await message.answer(
+            build_max_active_deals_notice_text(),
+            reply_markup=build_max_active_deals_kb(),
+            parse_mode="Markdown",
+        )
+        return
+
+    if offer.user_id:
+        owner_active_deals = await count_user_active_deals(db_session, offer.user_id)
+        if owner_active_deals >= MAX_ACTIVE_DEALS:
+            await db_session.commit()
+            await state.clear()
+            await notify_offer_owner_max_deals(bot, offer.user_id, offer.id)
+            await message.answer(
+                "⚠️ **عذراً، لا يمكن التقديم على هذا العرض حالياً**\n\n"
+                f"صاحب هذا العرض لديه حالياً `{MAX_ACTIVE_DEALS}` صفقات غير مكتملة (الحد الأقصى المسموح به).\n"
+                "تم إرسال إشعار لصاحب العرض لمتابعة صفقاته، ويمكنك المحاولة لاحقاً أو تصفح العروض الأخرى في السوق.",
+                parse_mode="Markdown",
+            )
+            return
 
     min_limit_db = Decimal(str(offer.min_limit))
     max_limit_db = Decimal(str(offer.max_limit))

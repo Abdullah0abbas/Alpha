@@ -1,12 +1,81 @@
-from typing import Tuple, Optional, Union, List, Set
+from typing import Tuple, Optional, Union, List, Set, Dict
 import logging
+import time
+from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_, func
 
 from db.models import Deal
 from config.settings import settings
 
 logger = logging.getLogger("deal_guard")
+
+MAX_ACTIVE_DEALS = 5
+TERMINAL_DEAL_STATUSES = ("COMPLETED", "CANCELLED", "EXPIRED", "DISPUTED")
+
+# Cooldown map: (owner_id, offer_id) -> monotonic timestamp of last notification
+_OWNER_MAX_DEALS_ALERT_COOLDOWN_SEC = 300.0
+_owner_max_deals_last_alert: Dict[Tuple[int, int], float] = {}
+
+
+async def count_user_active_deals(db_session: AsyncSession, user_id: int) -> int:
+    """Returns the count of currently active (incomplete) deals where user_id is seller or buyer."""
+    res = await db_session.execute(
+        select(func.count(Deal.id)).where(
+            or_(Deal.seller_id == user_id, Deal.buyer_id == user_id),
+            Deal.status.not_in(TERMINAL_DEAL_STATUSES),
+        )
+    )
+    return int(res.scalar() or 0)
+
+
+def build_max_active_deals_kb() -> InlineKeyboardMarkup:
+    """Returns an inline keyboard leading directly to the user's active deals list."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💼 صفقاتي", callback_data="main_my_deals")],
+            [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")],
+        ]
+    )
+
+
+def build_max_active_deals_notice_text(for_offer_id: Optional[int] = None) -> str:
+    """Builds the Arabic notification message when a user has reached 5 incomplete deals."""
+    if for_offer_id is not None:
+        return (
+            f"⚠️ **إشعار بخصوص عرضك رقم #{for_offer_id}**\n\n"
+            f"حاول أحد المتداولين التقديم على عرضك، ولكن لديك **{MAX_ACTIVE_DEALS} صفقات غير مكتملة** حالياً.\n"
+            "يرجى متابعتهم (إلغاء أو استكمال) لتتمكن من استقبال وإجراء معاملات جديدة."
+        )
+    return (
+        f"⚠️ **لديك {MAX_ACTIVE_DEALS} صفقات غير مكتملة حالياً**\n\n"
+        "يرجى متابعتهم (إلغاء أو استكمال) لتتمكن من إجراء معاملات جديدة."
+    )
+
+
+async def notify_offer_owner_max_deals(bot: Optional[Bot], owner_id: int, offer_id: int) -> None:
+    """
+    Sends a rate-limited notification to an offer owner when a customer attempts to interact
+    with their offer while the owner already has 5 incomplete deals.
+    """
+    if not bot or not owner_id:
+        return
+    now_mono = time.monotonic()
+    key = (owner_id, offer_id)
+    last_ts = _owner_max_deals_last_alert.get(key)
+    if last_ts is not None and (now_mono - last_ts) < _OWNER_MAX_DEALS_ALERT_COOLDOWN_SEC:
+        return
+    _owner_max_deals_last_alert[key] = now_mono
+    try:
+        await bot.send_message(
+            chat_id=owner_id,
+            text=build_max_active_deals_notice_text(for_offer_id=offer_id),
+            reply_markup=build_max_active_deals_kb(),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send 5-active-deals alert to offer owner {owner_id} for offer #{offer_id}: {e}")
 
 STATUS_ARABIC = {
     "PENDING_OWNER_APPROVAL": "بانتظار موافقة الطرف الآخر",

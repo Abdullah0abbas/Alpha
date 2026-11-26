@@ -23,6 +23,13 @@ from bot.services.channel import update_channel_offer_message
 from config.settings import settings
 from bot.utils.branding import BOT_NAME
 from bot.utils.deal_card import push_deal_card
+from bot.utils.deal_guard import (
+    MAX_ACTIVE_DEALS,
+    count_user_active_deals,
+    build_max_active_deals_kb,
+    build_max_active_deals_notice_text,
+    notify_offer_owner_max_deals,
+)
 from bot.utils.fees import calculate_deal_fee
 from bot.utils.payment_prompts import extract_clean_account
 
@@ -48,21 +55,19 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
     offer_id = int(callback.data.split("_")[-1])
     taker_id = callback.from_user.id
 
-    # Section 6.1.1: Active deals cap check (max 5 active deals)
-    if taker_id not in settings.ADMIN_IDS:
-        deals_count_res = await db_session.execute(
-            select(func.count(Deal.id)).where(
-                or_(Deal.seller_id == taker_id, Deal.buyer_id == taker_id),
-                Deal.status.not_in(['COMPLETED', 'CANCELLED', 'EXPIRED', 'DISPUTED'])
-            )
+    # Section 6.1.1: Active deals cap check for applicant (max 5 active deals)
+    active_deals_count = await count_user_active_deals(db_session, taker_id)
+    if active_deals_count >= MAX_ACTIVE_DEALS:
+        await callback.answer(
+            "لديك 5 صفقات غير مكتملة يرجى متابعتهم (إلغاء أو استكمال) لتتمكن من إجراء معاملات جديدة.",
+            show_alert=True
         )
-        active_deals_count = deals_count_res.scalar() or 0
-        if active_deals_count >= 5:
-            await callback.answer(
-                "⚠️ لديك 5 صفقات نشطة بالفعل. يرجى إكمال أو إلغاء إحدى صفقاتك السابقة قبل بدء تفاوض جديد.",
-                show_alert=True
-            )
-            return
+        await callback.message.answer(
+            build_max_active_deals_notice_text(),
+            reply_markup=build_max_active_deals_kb(),
+            parse_mode="Markdown",
+        )
+        return
 
     result = await db_session.execute(
         select(Offer).where(Offer.id == offer_id)
@@ -85,6 +90,17 @@ async def init_negotiation(callback: CallbackQuery, state: FSMContext, db_sessio
     if offer.status != "active":
         await callback.answer("عذراً، هذا العرض غير متاح حالياً (قيد التفاوض أو التنفيذ مع طرف آخر).", show_alert=True)
         return
+
+    # Section 6.1.1: Active deals cap check for offer owner (max 5 active deals)
+    if offer.user_id:
+        owner_active_deals = await count_user_active_deals(db_session, offer.user_id)
+        if owner_active_deals >= MAX_ACTIVE_DEALS:
+            await notify_offer_owner_max_deals(callback.bot, offer.user_id, offer.id)
+            await callback.answer(
+                "⚠️ عذراً، لا يمكن التفاوض على هذا العرض حالياً لأن صاحب العرض لديه 5 صفقات غير مكتملة.",
+                show_alert=True,
+            )
+            return
 
     # Check if taker already attempted negotiation on this offer and was rejected or completed
     prev_neg_res = await db_session.execute(
@@ -250,6 +266,31 @@ async def _submit_taker_negotiation(message: Message, state: FSMContext, amount_
             await state.clear()
             await message.answer("⚠️ عذراً، هذا العرض لم يعد متاحاً للتفاوض حالياً.")
             return
+
+        taker_active_deals = await count_user_active_deals(db_session, taker_id)
+        if taker_active_deals >= MAX_ACTIVE_DEALS:
+            await db_session.commit()
+            await state.clear()
+            await message.answer(
+                build_max_active_deals_notice_text(),
+                reply_markup=build_max_active_deals_kb(),
+                parse_mode="Markdown",
+            )
+            return
+
+        if offer.user_id:
+            owner_active_deals = await count_user_active_deals(db_session, offer.user_id)
+            if owner_active_deals >= MAX_ACTIVE_DEALS:
+                await db_session.commit()
+                await state.clear()
+                await notify_offer_owner_max_deals(message.bot, offer.user_id, offer.id)
+                await message.answer(
+                    "⚠️ **عذراً، لا يمكن التفاوض على هذا العرض حالياً**\n\n"
+                    f"صاحب هذا العرض لديه حالياً `{MAX_ACTIVE_DEALS}` صفقات غير مكتملة (الحد الأقصى المسموح به).\n"
+                    "تم إرسال إشعار لصاحب العرض لمتابعة صفقاته، ويمكنك المحاولة لاحقاً أو تصفح العروض الأخرى في السوق.",
+                    parse_mode="Markdown",
+                )
+                return
 
         if offer.negotiable_type not in ("amount", "both"):
             min_limit = Decimal(str(offer.min_limit))
@@ -842,6 +883,57 @@ async def _finalize_negotiated_deal(bot: Bot, neg: Negotiation, db_session: Asyn
                 await bot.send_message(chat_id=uid, text=bounds_err_text, parse_mode="Markdown")
             except Exception as e:
                 logger.warning(f"Failed to notify user {uid} of out-of-bounds negotiation #{neg.id}: {e}")
+        return False
+
+    # Check 5-active-deals limit for both parties before finalizing negotiated deal
+    maker_active = await count_user_active_deals(db_session, offer.user_id) if offer.user_id else 0
+    taker_active = await count_user_active_deals(db_session, neg.taker_id) if neg.taker_id else 0
+    if maker_active >= MAX_ACTIVE_DEALS or taker_active >= MAX_ACTIVE_DEALS:
+        await db_session.commit()
+        if maker_active >= MAX_ACTIVE_DEALS and offer.user_id:
+            try:
+                await bot.send_message(
+                    chat_id=offer.user_id,
+                    text=build_max_active_deals_notice_text(),
+                    reply_markup=build_max_active_deals_kb(),
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to notify maker {offer.user_id} of 5-deals cap on negotiation #{neg.id}: {e}")
+            if neg.taker_id:
+                try:
+                    await bot.send_message(
+                        chat_id=neg.taker_id,
+                        text=(
+                            f"⚠️ **تعذر فتح الصفقة — عرض #{offer.id}**\n\n"
+                            "لدى صاحب العرض حالياً 5 صفقات غير مكتملة. تم إشعاره بمتابعة صفقاته لتتمكنا من إتمام العملية."
+                        ),
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
+        if taker_active >= MAX_ACTIVE_DEALS and neg.taker_id:
+            try:
+                await bot.send_message(
+                    chat_id=neg.taker_id,
+                    text=build_max_active_deals_notice_text(),
+                    reply_markup=build_max_active_deals_kb(),
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to notify taker {neg.taker_id} of 5-deals cap on negotiation #{neg.id}: {e}")
+            if offer.user_id:
+                try:
+                    await bot.send_message(
+                        chat_id=offer.user_id,
+                        text=(
+                            f"⚠️ **تعذر فتح الصفقة — عرض #{offer.id}**\n\n"
+                            "لدى الطرف المفاوض حالياً 5 صفقات غير مكتملة. تم إشعاره بمتابعة صفقاته لتتمكنا من إتمام العملية."
+                        ),
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
         return False
 
     # Atomic state transition in a single transaction

@@ -19,7 +19,7 @@ from bot.handlers.offers import (
     humanize_time_remaining,
     build_offer_type_screen
 )
-from bot.utils.formatters import escape_markdown
+from bot.utils.formatters import escape_markdown, styled_button
 from bot.utils.deal_views import build_offer_action_buttons
 from bot.services.channel import format_trader_trust_markdown
 from bot.handlers.deals import my_deals
@@ -32,8 +32,22 @@ from bot.utils.support_texts import (
 )
 from bot.utils.branding import BOT_NAME
 from bot.utils.fees import format_fee_rule_line
+from bot.utils.deal_guard import (
+    MAX_ACTIVE_DEALS,
+    count_user_active_deals,
+    build_max_active_deals_kb,
+    build_max_active_deals_notice_text,
+    notify_offer_owner_max_deals,
+)
 
 base_router = Router()
+
+def get_support_direct_url() -> str:
+    support_user = (settings.SUPPORT_USERNAME or "AlphaSupport").strip().lstrip("@")
+    if not support_user:
+        support_user = "AlphaSupport"
+    return f"https://t.me/{support_user}"
+
 
 def get_main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
     """Returns the primary menu buttons in clean visual hierarchy, including admin panel for admins."""
@@ -48,7 +62,10 @@ def get_main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="📋 عروضي", callback_data="menu_my_offers"),
-            InlineKeyboardButton(text="💬 الدعم", callback_data="menu_support")
+            InlineKeyboardButton(text="💬 الدعم", url=get_support_direct_url())
+        ],
+        [
+            InlineKeyboardButton(text="💡 الأسئلة الشائعة", callback_data="supp_faq")
         ],
         [
             InlineKeyboardButton(text="📜 الشروط والأحكام", callback_data="menu_terms")
@@ -105,6 +122,34 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
             result = await db_session.execute(select(Offer).where(Offer.id == offer_id))
             offer = result.scalar_one_or_none()
             if offer and offer.status == "active":
+                if offer.user_id != user_id:
+                    viewer_active_deals = await count_user_active_deals(db_session, user_id)
+                    if viewer_active_deals >= MAX_ACTIVE_DEALS:
+                        await message.answer(
+                            build_max_active_deals_notice_text(),
+                            reply_markup=build_max_active_deals_kb(),
+                            parse_mode="Markdown",
+                        )
+                        return
+
+                    if offer.user_id:
+                        owner_active_deals = await count_user_active_deals(db_session, offer.user_id)
+                        if owner_active_deals >= MAX_ACTIVE_DEALS:
+                            await notify_offer_owner_max_deals(message.bot, offer.user_id, offer.id)
+                            await message.answer(
+                                "⚠️ **عذراً، لا يمكن التقديم على هذا العرض حالياً**\n\n"
+                                f"صاحب هذا العرض لديه حالياً `{MAX_ACTIVE_DEALS}` صفقات غير مكتملة (الحد الأقصى المسموح به).\n"
+                                "تم إرسال إشعار لصاحب العرض لمتابعة صفقاته، ويمكنك المحاولة لاحقاً أو تصفح العروض الأخرى في السوق.",
+                                reply_markup=InlineKeyboardMarkup(
+                                    inline_keyboard=[
+                                        [InlineKeyboardButton(text="📊 تصفح السوق", callback_data="menu_browse_offers")],
+                                        [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")],
+                                    ]
+                                ),
+                                parse_mode="Markdown",
+                            )
+                            return
+
                 offer_type_label = '🔴 بيع "USDT"' if offer.offer_type == 'sell' else '🟢 شراء "USDT"'
                 rate_str = format_syp(offer.rate)
                 min_str = format_usdt(offer.min_limit)
@@ -132,7 +177,8 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                     viewer_id=user_id,
                     negotiable=offer.negotiable,
                     negotiable_type=offer.negotiable_type,
-                    context="start"
+                    context="start",
+                    offer_type=offer.offer_type,
                 )
                 kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -163,8 +209,8 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
     if command.args == "offers":
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="🟢 شراء USDT", callback_data="browse_type_sell_0"),
-                InlineKeyboardButton(text="🔴 بيع USDT", callback_data="browse_type_buy_0")
+                styled_button(text="🟢 شراء USDT", callback_data="browse_type_sell_0", style="success"),
+                styled_button(text="🔴 بيع USDT", callback_data="browse_type_buy_0", style="danger"),
             ],
             [
                 InlineKeyboardButton(text="🌐 كل العروض", callback_data="browse_type_all_0")
@@ -211,6 +257,26 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
         await callback.answer(f"🚫 حسابك محظور من إنشاء عروض جديدة على {BOT_NAME}.", show_alert=True)
         return
 
+    active_deals_count = await count_user_active_deals(db_session, callback.from_user.id)
+    if active_deals_count >= MAX_ACTIVE_DEALS:
+        await callback.answer(
+            "لديك 5 صفقات غير مكتملة يرجى متابعتهم (إلغاء أو استكمال) لتتمكن من إجراء معاملات جديدة.",
+            show_alert=True,
+        )
+        try:
+            await callback.message.edit_text(
+                build_max_active_deals_notice_text(),
+                reply_markup=build_max_active_deals_kb(),
+                parse_mode="Markdown",
+            )
+        except Exception:
+            await callback.message.answer(
+                build_max_active_deals_notice_text(),
+                reply_markup=build_max_active_deals_kb(),
+                parse_mode="Markdown",
+            )
+        return
+
     await state.clear()
     await state.update_data(
         step_history=[],
@@ -232,8 +298,8 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
 async def cq_menu_browse_offers(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🟢 شراء USDT", callback_data="browse_type_sell_0"),
-            InlineKeyboardButton(text="🔴 بيع USDT", callback_data="browse_type_buy_0")
+            styled_button(text="🟢 شراء USDT", callback_data="browse_type_sell_0", style="success"),
+            styled_button(text="🔴 بيع USDT", callback_data="browse_type_buy_0", style="danger"),
         ],
         [
             InlineKeyboardButton(text="🌐 كل العروض", callback_data="browse_type_all_0")
@@ -346,7 +412,8 @@ async def cq_browse_paged_offers(callback: CallbackQuery, db_session: AsyncSessi
             viewer_id=callback.from_user.id,
             negotiable=off.negotiable,
             negotiable_type=off.negotiable_type,
-            context="browse"
+            context="browse",
+            offer_type=off.offer_type,
         )
         if rows:
             inline_buttons.extend(rows)
@@ -567,16 +634,15 @@ async def cq_supp_faq(callback: CallbackQuery):
     _, items = split_faq_items()
     buttons = []
     for idx_str, q_title, _ in items:
-        buttons.append([InlineKeyboardButton(text=f"❓ {q_title}", callback_data=f"faq_item_{idx_str}")])
-    buttons.append([InlineKeyboardButton(text="📜 عرض الدليل كاملاً", callback_data="faq_full")])
-    buttons.append([InlineKeyboardButton(text="🔙 عودة لقسم الدعم", callback_data="menu_support")])
-    buttons.append([InlineKeyboardButton(text="🏠 اللوحة الرئيسية", callback_data="menu_back_main")]
-    )
+        btn_label = q_title if idx_str == "1" else f"❓ {q_title}"
+        buttons.append([InlineKeyboardButton(text=btn_label, callback_data=f"faq_item_{idx_str}")])
+    buttons.append([InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     text = (
-        f"💡 **الأسئلة الشائعة**\n\n"
-        f"اختر السؤال للاطلاع على إجابته وتفاصيل آلية التداول:"
+        "💡 **الأسئلة الشائعة**\n"
+        "〰️〰️〰️〰️〰️〰️〰️\n"
+        "اختر من القائمة أدناه للاطلاع على التفاصيل:"
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -589,7 +655,7 @@ async def cq_supp_faq(callback: CallbackQuery):
 async def cq_faq_full(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 قائمة الأسئلة", callback_data="supp_faq")],
-        [InlineKeyboardButton(text="🏠 اللوحة الرئيسية", callback_data="menu_back_main")]
+        [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")]
     ])
     try:
         await callback.message.edit_text(SUPPORT_FAQ_TEXT, reply_markup=kb, parse_mode="Markdown")
@@ -614,13 +680,11 @@ async def cq_faq_item(callback: CallbackQuery):
         return
 
     s_idx, q_title, q_text = target_item
-    text = (
-        f"💡 **الأسئلة الشائعة**\n\n"
-        f"{q_text.strip()}"
-    )
+    clean_item_text = q_text.strip().lstrip("•").strip()
+    text = clean_item_text
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 قائمة الأسئلة", callback_data="supp_faq")],
-        [InlineKeyboardButton(text="🏠 اللوحة الرئيسية", callback_data="menu_back_main")]
+        [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")]
     ])
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")

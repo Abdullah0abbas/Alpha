@@ -184,42 +184,33 @@ async def cq_back_cancel_deal(callback: CallbackQuery, db_session: AsyncSession)
     result = await db_session.execute(select(Deal).where(Deal.id == deal_id))
     deal = result.scalar_one_or_none()
     if not deal:
+        await db_session.commit()
         await callback.answer("عذراً، لم يتم العثور على الصفقة.", show_alert=True)
         return
-    await db_session.commit()
 
     user_id = callback.from_user.id
-    role = "🔴 بائع" if deal.seller_id == user_id else "🟢 مشتري"
-    usdt_str = format_usdt(deal.amount_usdt)
-    syp_str = format_syp(deal.amount_syp)
+    offer = None
+    if deal.offer_id:
+        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+        offer = offer_res.scalar_one_or_none()
+    is_offer_owner = bool(offer and offer.user_id == user_id)
 
-    if deal.status == "PENDING_OWNER_APPROVAL":
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ إلغاء الطلب", callback_data=f"ask_cancel_{deal.id}")]
-        ])
-        text = (
-            f"⏳ **طلب صفقة جديدة #{deal.id}**\n\n"
-            f"▫️ **الحالة:** بانتظار موافقة الطرف الآخر\n"
-            f"▫️ **دورك في الصفقة:** {role}\n"
-            f"▫️ **الكمية:** `{usdt_str} USDT`\n"
-            f"▫️ **المبلغ المقابل:** `{syp_str}` ل.س\n"
-            f"▫️ **المهلة المتاحة:** 30 دقيقة\n\n"
-            f"تم إرسال إشعار لصاحب العرض، وسيصلك تنبيه فور اتخاذ قراره."
-        )
-        try:
-            await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-        except Exception:
-            await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    card_text, action_kb = render_deal_card(deal, user_id, is_offer_owner=is_offer_owner)
+    nav_row = [
+        InlineKeyboardButton(text="🔙 صفقاتي", callback_data="main_my_deals"),
+        InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main"),
+    ]
+    if action_kb and action_kb.inline_keyboard:
+        kb = InlineKeyboardMarkup(inline_keyboard=[*action_kb.inline_keyboard, nav_row])
     else:
-        neutral_text = "تم الرجوع. يمكنك متابعة صفقتك من «صفقاتي النشطة»."
-        neutral_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💼 صفقاتي النشطة", callback_data="main_my_deals")],
-            [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")]
-        ])
-        try:
-            await callback.message.edit_text(neutral_text, reply_markup=neutral_kb)
-        except Exception:
-            await callback.message.answer(neutral_text, reply_markup=neutral_kb)
+        kb = InlineKeyboardMarkup(inline_keyboard=[nav_row])
+
+    await db_session.commit()
+
+    try:
+        await callback.message.edit_text(card_text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        await callback.message.answer(card_text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
 
@@ -298,10 +289,17 @@ async def cancel_deal(callback: CallbackQuery, db_session: AsyncSession):
     except Exception as e:
         logger.warning(f"Failed to push deal card for cancelled deal #{deal.id}: {e}")
 
+    done_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💼 صفقاتي", callback_data="main_my_deals"),
+            InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main"),
+        ]
+    ])
     try:
         await callback.message.edit_text(
             f"❌ **صفقة #{deal.id} — تم إلغاء الصفقة**\n\n"
             f"تم إلغاء الصفقة بنجاح وإعادة العرض إلى السوق.",
+            reply_markup=done_kb,
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -327,24 +325,33 @@ async def my_deals(message: Message, db_session: AsyncSession):
         )
         admin_pending_deals = admin_res.scalars().all()
 
-    # 2. Fetch user's own active deals (excluding terminal statuses)
+    # 2. Fetch user's own active deals ordered from oldest to newest
     result = await db_session.execute(
         select(Deal).where(
             or_(Deal.buyer_id == user_id, Deal.seller_id == user_id),
             Deal.status.notin_(["COMPLETED", "CANCELLED", "EXPIRED", "DISPUTED"])
-        ).order_by(Deal.created_at.desc())
+        ).order_by(Deal.id.asc())
     )
     deals = result.scalars().all()
+
+    target_msg = getattr(message, "original_msg", None)
 
     if not deals and not admin_pending_deals:
         await db_session.commit()
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")]
         ])
-        await message.answer("ℹ️ ليس لديك أي صفقات نشطة حالياً.", reply_markup=kb)
+        empty_text = "ℹ️ ليس لديك أي صفقات نشطة حالياً."
+        if target_msg is not None and hasattr(target_msg, "edit_text"):
+            try:
+                await target_msg.edit_text(empty_text, reply_markup=kb)
+                return
+            except Exception:
+                pass
+        await message.answer(empty_text, reply_markup=kb)
         return
 
-    # Pre-build admin review cards and user deal cards before closing the DB read transaction
+    # Pre-build admin review cards before closing the DB read transaction
     admin_cards_payload = []
     for deal in admin_pending_deals:
         admin_text = await format_admin_deal_review_text(deal, db_session)
@@ -353,21 +360,7 @@ async def my_deals(message: Message, db_session: AsyncSession):
         ])
         admin_cards_payload.append((admin_text, admin_kb))
 
-    offer_ids = list({d.offer_id for d in deals if d.offer_id})
-    offers_by_id = {}
-    if offer_ids:
-        offers_res = await db_session.execute(select(Offer).where(Offer.id.in_(offer_ids)))
-        offers_by_id = {o.id: o for o in offers_res.scalars().all()}
-
-    user_cards_payload = []
-    for deal in deals:
-        is_buyer_card = (deal.buyer_id == user_id)
-        old_msg_id = deal.buyer_card_msg_id if is_buyer_card else deal.seller_card_msg_id
-        is_seller_proof_photo = (deal.seller_id == user_id and deal.status == "SYP_PAYMENT_SENT")
-        offer = offers_by_id.get(deal.offer_id)
-        is_offer_owner = bool(offer and offer.user_id == user_id)
-        card_text, kb = render_deal_card(deal, user_id, is_offer_owner=is_offer_owner)
-        user_cards_payload.append((deal.id, is_buyer_card, old_msg_id, is_seller_proof_photo, card_text, kb))
+    deal_ids = [d.id for d in deals]
 
     # Close read transaction before making Telegram API calls
     await db_session.commit()
@@ -378,28 +371,103 @@ async def my_deals(message: Message, db_session: AsyncSession):
         for admin_text, admin_kb in admin_cards_payload:
             await message.answer(admin_text, reply_markup=admin_kb, parse_mode="Markdown")
 
-    # Show user's personal deals using unified render_deal_card
-    if user_cards_payload:
-        if admin_cards_payload:
-            await message.answer("📋 **صفقاتك النشطة:**", parse_mode="Markdown")
+    # Show user's active deals as a clean list of rectangular buttons with only the deal number
+    if deal_ids:
+        buttons = [
+            [InlineKeyboardButton(text=f"عملية الربط #{d_id}", callback_data=f"open_my_deal_{d_id}")]
+            for d_id in deal_ids
+        ]
+        buttons.append([
+            InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
+        ])
+        list_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        list_text = (
+            "💼 **صفقاتي النشطة**\n"
+            "〰️〰️〰️〰️〰️〰️〰️\n"
+            f"لديك `{len(deal_ids)}` صفقة غير مكتملة حالياً.\n"
+            "اختر رقم عملية الربط التي ترغب بمتابعتها:"
+        )
+        if target_msg is not None and hasattr(target_msg, "edit_text") and not admin_cards_payload:
+            try:
+                await target_msg.edit_text(list_text, reply_markup=list_kb, parse_mode="Markdown")
+                return
+            except Exception:
+                pass
+        await message.answer(list_text, reply_markup=list_kb, parse_mode="Markdown")
 
-        msg_id_updates = []
-        for deal_id, is_buyer_card, old_msg_id, is_seller_proof_photo, card_text, kb in user_cards_payload:
-            if old_msg_id and not is_seller_proof_photo and hasattr(message, "bot") and message.bot:
-                try:
-                    await message.bot.delete_message(chat_id=user_id, message_id=old_msg_id)
-                except Exception:
-                    pass
 
-            sent_msg = await message.answer(card_text, reply_markup=kb, parse_mode="Markdown")
+@lifecycle_router.callback_query(F.data.startswith("open_my_deal_"))
+async def cq_open_my_deal(callback: CallbackQuery, db_session: AsyncSession):
+    try:
+        deal_id = int(callback.data.split("_")[-1])
+    except (ValueError, IndexError):
+        await callback.answer("طلب غير صالح.", show_alert=True)
+        return
 
-            if not is_seller_proof_photo:
-                col = Deal.buyer_card_msg_id if is_buyer_card else Deal.seller_card_msg_id
-                msg_id_updates.append((deal_id, col, sent_msg.message_id))
+    user_id = callback.from_user.id
+    result = await db_session.execute(select(Deal).where(Deal.id == deal_id))
+    deal = result.scalar_one_or_none()
+    if not deal:
+        await db_session.commit()
+        await callback.answer("عذراً، لم يتم العثور على هذه الصفقة.", show_alert=True)
+        return
 
-        if msg_id_updates:
-            for deal_id, col, new_msg_id in msg_id_updates:
-                await db_session.execute(
-                    update(Deal).where(Deal.id == deal_id).values({col: new_msg_id})
-                )
+    if user_id not in (deal.buyer_id, deal.seller_id) and user_id not in settings.ADMIN_IDS:
+        await db_session.commit()
+        await callback.answer("غير مصرح: هذه الصفقة لا تخص حسابك.", show_alert=True)
+        return
+
+    offer = None
+    if deal.offer_id:
+        offer_res = await db_session.execute(select(Offer).where(Offer.id == deal.offer_id))
+        offer = offer_res.scalar_one_or_none()
+
+    is_offer_owner = bool(offer and offer.user_id == user_id)
+    is_buyer_card = (deal.buyer_id == user_id)
+    is_seller_card = (deal.seller_id == user_id)
+    old_msg_id = deal.buyer_card_msg_id if is_buyer_card else (deal.seller_card_msg_id if is_seller_card else None)
+    is_seller_proof_photo = (is_seller_card and deal.status == "SYP_PAYMENT_SENT")
+
+    card_text, action_kb = render_deal_card(deal, user_id, is_offer_owner=is_offer_owner)
+    nav_row = [
+        InlineKeyboardButton(text="🔙 صفقاتي", callback_data="main_my_deals"),
+        InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main"),
+    ]
+    if action_kb and action_kb.inline_keyboard:
+        kb = InlineKeyboardMarkup(inline_keyboard=[*action_kb.inline_keyboard, nav_row])
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[nav_row])
+
+    await db_session.commit()
+
+    active_msg = None
+    try:
+        active_msg = await callback.message.edit_text(
+            card_text,
+            reply_markup=kb,
+            parse_mode="Markdown",
+        )
+    except Exception:
+        active_msg = await callback.message.answer(
+            card_text,
+            reply_markup=kb,
+            parse_mode="Markdown",
+        )
+
+    new_msg_id = getattr(active_msg, "message_id", None) or getattr(callback.message, "message_id", None)
+
+    if (is_buyer_card or is_seller_card) and not is_seller_proof_photo:
+        if old_msg_id and new_msg_id and old_msg_id != new_msg_id and callback.bot:
+            try:
+                await callback.bot.delete_message(chat_id=user_id, message_id=old_msg_id)
+            except Exception:
+                pass
+        if new_msg_id and new_msg_id != old_msg_id:
+            col = Deal.buyer_card_msg_id if is_buyer_card else Deal.seller_card_msg_id
+            await db_session.execute(
+                update(Deal).where(Deal.id == deal_id).values({col: new_msg_id})
+            )
             await db_session.commit()
+
+    await callback.answer()
+

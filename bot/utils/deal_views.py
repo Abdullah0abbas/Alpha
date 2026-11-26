@@ -5,7 +5,14 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.models import Deal, Offer, User, DealRating, PaymentProof, AuditLog, Negotiation
 from bot.services.rating_service import format_stars
-from bot.utils.formatters import format_syp, format_usdt, safe_username, escape_markdown, format_local_datetime
+from bot.utils.formatters import (
+    format_syp,
+    format_usdt,
+    safe_username,
+    escape_markdown,
+    format_local_datetime,
+    styled_button,
+)
 
 
 def build_offer_action_buttons(
@@ -14,7 +21,8 @@ def build_offer_action_buttons(
     viewer_id: int,
     negotiable: bool,
     negotiable_type: str = "none",
-    context: str = "offers"
+    context: str = "offers",
+    offer_type: str | None = None,
 ) -> list[list[InlineKeyboardButton]]:
     """
     Pure builder for offer action buttons ('start_deal' / 'start_neg') across /offers, paged browse, and start deeplinks.
@@ -25,22 +33,24 @@ def build_offer_action_buttons(
             return [[InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")]]
         return []
 
+    exec_style = "danger" if offer_type == "sell" else ("success" if offer_type == "buy" else None)
+
     buttons = []
     if context == "browse":
-        row = [InlineKeyboardButton(text=f"⚡ تنفيذ #{offer_id}", callback_data=f"start_deal_{offer_id}")]
+        row = [styled_button(text=f"⚡ تنفيذ #{offer_id}", callback_data=f"start_deal_{offer_id}", style=exec_style)]
         if negotiable and negotiable_type != "none":
             row.append(InlineKeyboardButton(text=f"🤝 تفاوض #{offer_id}", callback_data=f"start_neg_{offer_id}"))
         return [row]
 
     if context == "start":
-        buttons.append([InlineKeyboardButton(text="⚡ تنفيذ العرض", callback_data=f"start_deal_{offer_id}")])
+        buttons.append([styled_button(text="⚡ تنفيذ العرض", callback_data=f"start_deal_{offer_id}", style=exec_style)])
         if negotiable and negotiable_type != "none":
             buttons.append([InlineKeyboardButton(text="🤝 تفاوض", callback_data=f"start_neg_{offer_id}")])
         buttons.append([InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")])
         return buttons
 
     # Default context == "offers"
-    buttons.append([InlineKeyboardButton(text="⚡ تنفيذ العرض", callback_data=f"start_deal_{offer_id}")])
+    buttons.append([styled_button(text="⚡ تنفيذ العرض", callback_data=f"start_deal_{offer_id}", style=exec_style)])
     if negotiable and negotiable_type != "none":
         buttons.append([InlineKeyboardButton(text="🤝 تفاوض", callback_data=f"start_neg_{offer_id}")])
     return buttons

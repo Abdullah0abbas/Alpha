@@ -221,3 +221,35 @@ def safe_username(username: str | None, user_id: int | None = None) -> str:
         return f"`{user_id}`"
     return "مستخدم غير متاح"
 
+
+def _ensure_inline_button_style_support() -> None:
+    """Ensures aiogram 3 InlineKeyboardButton serializes the Telegram Bot API 9.4+ `style` property across all versions."""
+    try:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        if "style" not in InlineKeyboardButton.model_fields:
+            InlineKeyboardButton.model_config["extra"] = "allow"
+            InlineKeyboardButton.model_rebuild(force=True)
+            InlineKeyboardMarkup.model_rebuild(force=True)
+    except Exception:
+        pass
+
+
+_ensure_inline_button_style_support()
+
+
+def styled_button(*, text: str, style: str | None = None, **kwargs):
+    """
+    Creates an InlineKeyboardButton with optional Telegram Bot API 9.4+ `style` ('danger', 'success', 'primary').
+    Falls back gracefully if the underlying environment rejects extra fields.
+    """
+    from aiogram.types import InlineKeyboardButton
+
+    if style:
+        try:
+            return InlineKeyboardButton(text=text, style=style, **kwargs)
+        except Exception:
+            return InlineKeyboardButton(text=text, **kwargs)
+    return InlineKeyboardButton(text=text, **kwargs)
+
+

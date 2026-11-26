@@ -12,6 +12,7 @@ from bot.utils.formatters import (
     format_syp,
     format_usdt,
     humanize_time_remaining,
+    styled_button,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,18 +134,15 @@ def build_channel_offer_message(
 
     if offer.status == "active":
         deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offer_{offer.id}"
+        btn_style = "danger" if is_sell else "success"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="⚡ تنفيذ العرض", url=deep_link),
-                InlineKeyboardButton(text="📊 السوق", url=f"https://t.me/{settings.BOT_USERNAME}?start=offers"),
+                styled_button(text="⚡ تنفيذ العرض", url=deep_link, style=btn_style),
             ]
         ])
         return core_card, kb
 
-    deep_link = f"https://t.me/{settings.BOT_USERNAME}?start=offers"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 العروض المتاحة", url=deep_link)]
-    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
 
     if offer.status == "reserved":
         action_section = "🔒 <b>الحالة:</b> العرض محجوز حالياً — قيد التنفيذ."
