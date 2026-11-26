@@ -30,7 +30,7 @@ def get_profile_keyboard(user: User) -> InlineKeyboardMarkup:
         buttons = [
             [
                 InlineKeyboardButton(text="⭐ التقييم", callback_data="prof_reputation"),
-                InlineKeyboardButton(text="🕒 الصفقات", callback_data="main_my_deals")
+                InlineKeyboardButton(text="⚡ صفقاتي", callback_data="main_my_deals")
             ],
             [
                 InlineKeyboardButton(text="💵 عنوان USDT", callback_data="prof_wallet"),
@@ -41,7 +41,7 @@ def get_profile_keyboard(user: User) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="✏️ اللقب", callback_data="prof_set_nickname")
             ],
             [
-                InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
+                InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")
             ]
         ]
         return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -49,7 +49,7 @@ def get_profile_keyboard(user: User) -> InlineKeyboardMarkup:
     buttons = [
         [
             InlineKeyboardButton(text="⭐ التقييم", callback_data="prof_reputation"),
-            InlineKeyboardButton(text="🕒 الصفقات", callback_data="main_my_deals")
+            InlineKeyboardButton(text="⚡ صفقاتي", callback_data="main_my_deals")
         ],
         [
             InlineKeyboardButton(text="💵 عنوان USDT", callback_data="prof_wallet"),
@@ -64,7 +64,7 @@ def get_profile_keyboard(user: User) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="✏️ اللقب", callback_data="prof_set_nickname")
         ],
         [
-            InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
+            InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -245,7 +245,7 @@ async def process_saved_usdt(message: Message, state: FSMContext, db_session: As
         "✅ **تم حفظ معلومات USDT:**\n"
         f"`{escape_markdown(normalized_addr)}`",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="👤 حسابي", callback_data="menu_user_profile")]
+            [InlineKeyboardButton(text="🪪 الملف الشخصي", callback_data="menu_user_profile")]
         ]),
         parse_mode="Markdown"
     )
@@ -328,7 +328,7 @@ async def process_saved_payment_info(message: Message, state: FSMContext, db_ses
     await message.answer(
         f"✅ **تم حفظ بيانات حساب الدفع بنجاح!**\n\n`{escape_markdown(formatted_info)}`",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="👤 العودة للملف الشخصي", callback_data="menu_user_profile")]
+            [InlineKeyboardButton(text="🪪 العودة للملف الشخصي", callback_data="menu_user_profile")]
         ]),
         parse_mode="Markdown"
     )
@@ -873,7 +873,7 @@ async def cq_kyc_submit_final(callback: CallbackQuery, state: FSMContext, db_ses
     )
 
     done_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 العودة للملف الشخصي", callback_data="menu_user_profile")]
+        [InlineKeyboardButton(text="🪪 العودة للملف الشخصي", callback_data="menu_user_profile")]
     ])
     try:
         await callback.message.edit_text(
@@ -1051,7 +1051,7 @@ async def process_nickname(message: Message, state: FSMContext, db_session: Asyn
     await message.answer(
         f"✅ **تم تحديث لقبك التجاري إلى:** `{escape_markdown(name)}`",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="👤 العودة للملف الشخصي", callback_data="menu_user_profile")]
+            [InlineKeyboardButton(text="🪪 العودة للملف الشخصي", callback_data="menu_user_profile")]
         ]),
         parse_mode="Markdown"
     )

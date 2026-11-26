@@ -53,29 +53,29 @@ def get_main_menu_kb(user_id: int | None = None) -> InlineKeyboardMarkup:
     """Returns the primary menu buttons in clean visual hierarchy, including admin panel for admins."""
     keyboard = [
         [
-            InlineKeyboardButton(text="➕ إنشاء عرض", callback_data="menu_create_offer"),
-            InlineKeyboardButton(text="📊 السوق", callback_data="menu_browse_offers")
+            InlineKeyboardButton(text="🚀 إنشاء عرض", callback_data="menu_create_offer"),
+            InlineKeyboardButton(text="🔥 عروض السوق", callback_data="menu_browse_offers")
         ],
         [
-            InlineKeyboardButton(text="👤 حسابي", callback_data="menu_user_profile"),
-            InlineKeyboardButton(text="💼 صفقاتي", callback_data="main_my_deals")
+            InlineKeyboardButton(text="🪪 الملف الشخصي", callback_data="menu_user_profile"),
+            InlineKeyboardButton(text="⚡ صفقاتي", callback_data="main_my_deals")
         ],
         [
-            InlineKeyboardButton(text="📋 عروضي", callback_data="menu_my_offers"),
-            InlineKeyboardButton(text="💬 الدعم", url=get_support_direct_url())
+            InlineKeyboardButton(text="📢 عروضي", callback_data="menu_my_offers"),
+            InlineKeyboardButton(text="🎧 الدعم", url=get_support_direct_url())
         ],
         [
             InlineKeyboardButton(text="💡 الأسئلة الشائعة", callback_data="supp_faq")
         ],
         [
-            InlineKeyboardButton(text="📜 الشروط والأحكام", callback_data="menu_terms")
+            InlineKeyboardButton(text="🛡️ الشروط والأحكام", callback_data="menu_terms")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_back_to_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")]
+        [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")]
     ])
 
 
@@ -142,7 +142,7 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
                                 "تم إرسال إشعار لصاحب العرض لمتابعة صفقاته، ويمكنك المحاولة لاحقاً أو تصفح العروض الأخرى في السوق.",
                                 reply_markup=InlineKeyboardMarkup(
                                     inline_keyboard=[
-                                        [InlineKeyboardButton(text="📊 تصفح السوق", callback_data="menu_browse_offers")],
+                                        [InlineKeyboardButton(text="🔥 عروض السوق", callback_data="menu_browse_offers")],
                                         [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")],
                                     ]
                                 ),
@@ -209,18 +209,15 @@ async def cmd_start(message: Message, command: CommandObject, db_session: AsyncS
     if command.args == "offers":
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
-                styled_button(text="🟢 شراء USDT", callback_data="browse_type_sell_0", style="success"),
-                styled_button(text="🔴 بيع USDT", callback_data="browse_type_buy_0", style="danger"),
+                styled_button(text="🛒 شراء USDT", callback_data="browse_type_sell_0", style="success"),
+                styled_button(text="💵 بيع USDT", callback_data="browse_type_buy_0", style="danger"),
             ],
             [
-                InlineKeyboardButton(text="🌐 كل العروض", callback_data="browse_type_all_0")
-            ],
-            [
-                InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
+                InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")
             ]
         ])
         await message.answer(
-            "📊 **سوق العروض**\n"
+            "🔥 **عروض السوق**\n"
             "〰️〰️〰️〰️〰️〰️〰️\n"
             "اختر نوع العملية المطلوبة:",
             reply_markup=kb,
@@ -298,18 +295,15 @@ async def cq_menu_create_offer(callback: CallbackQuery, state: FSMContext, db_se
 async def cq_menu_browse_offers(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            styled_button(text="🟢 شراء USDT", callback_data="browse_type_sell_0", style="success"),
-            styled_button(text="🔴 بيع USDT", callback_data="browse_type_buy_0", style="danger"),
+            styled_button(text="🛒 شراء USDT", callback_data="browse_type_sell_0", style="success"),
+            styled_button(text="💵 بيع USDT", callback_data="browse_type_buy_0", style="danger"),
         ],
         [
-            InlineKeyboardButton(text="🌐 كل العروض", callback_data="browse_type_all_0")
-        ],
-        [
-            InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
+            InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")
         ]
     ])
     text = (
-        "📊 **سوق العروض**\n"
+        "🔥 **عروض السوق**\n"
         "〰️〰️〰️〰️〰️〰️〰️\n"
         "اختر نوع العملية المطلوبة:"
     )
@@ -456,8 +450,8 @@ async def cq_menu_my_offers(callback: CallbackQuery, db_session: AsyncSession):
 
     if not my_offers_list:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ إنشاء عرض الآن", callback_data="menu_create_offer")],
-            [InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")]
+            [InlineKeyboardButton(text="🚀 إنشاء عرض الآن", callback_data="menu_create_offer")],
+            [InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")]
         ])
         await callback.message.edit_text(
             "📋 **إدارة عروضي**\n\n"
@@ -511,8 +505,8 @@ async def cq_menu_my_offers(callback: CallbackQuery, db_session: AsyncSession):
             buttons.append(row)
 
     buttons.append([
-        InlineKeyboardButton(text="➕ إنشاء عرض جديد", callback_data="menu_create_offer"),
-        InlineKeyboardButton(text="🔙 الرئيسية", callback_data="menu_back_main")
+        InlineKeyboardButton(text="🚀 إنشاء عرض جديد", callback_data="menu_create_offer"),
+        InlineKeyboardButton(text="🏠 الرئيسية", callback_data="menu_back_main")
     ])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)

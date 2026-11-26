@@ -153,13 +153,13 @@ def build_offer_type_screen(back_to_main: bool = True) -> tuple[str, InlineKeybo
         "👇 **اختر نوع العرض للمتابعة:**"
     )
     footer_btn = (
-        InlineKeyboardButton(text="🔙 العودة للقائمة الرئيسية", callback_data="menu_back_main")
+        InlineKeyboardButton(text="🏠 العودة للقائمة الرئيسية", callback_data="menu_back_main")
         if back_to_main
         else InlineKeyboardButton(text="❌ إلغاء", callback_data="wiz_cancel")
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [styled_button(text="🔴 عرض بيع USDT", callback_data="offer_type_sell", style="danger")],
-        [styled_button(text="🟢 عرض شراء USDT", callback_data="offer_type_buy", style="success")],
+        [styled_button(text="💵 عرض بيع USDT", callback_data="offer_type_sell", style="danger")],
+        [styled_button(text="🛒 عرض شراء USDT", callback_data="offer_type_buy", style="success")],
         [footer_btn]
     ])
     return text, kb
