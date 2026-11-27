@@ -549,35 +549,25 @@ async def cq_menu_support(callback: CallbackQuery):
 
 @base_router.callback_query(F.data == "menu_terms")
 async def cq_menu_terms(callback: CallbackQuery):
-    _, sections = split_terms_sections()
-    buttons = []
-    for idx_str, title, _ in sections:
-        buttons.append([InlineKeyboardButton(text=f"📄 {title}", callback_data=f"terms_sec_{idx_str}")])
-    buttons.append([InlineKeyboardButton(text="📜 عرض النص الكامل", callback_data="terms_full")])
-    buttons.append([InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")])
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-    text = (
-        f"📜 **شروط الاستخدام والأحكام العامة**\n\n"
-        f"يرجى الاطلاع على بنود اتفاقية الاستخدام المنظمة لتداولات منصة {BOT_NAME}:"
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")]
+    ])
     try:
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        await callback.message.edit_text(TERMS_AND_CONDITIONS_TEXT, reply_markup=kb, parse_mode=None)
     except Exception:
-        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        await callback.message.answer(TERMS_AND_CONDITIONS_TEXT, reply_markup=kb, parse_mode=None)
     await callback.answer()
 
 
 @base_router.callback_query(F.data == "terms_full")
 async def cq_terms_full(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📑 فهرس البنود", callback_data="menu_terms")],
         [InlineKeyboardButton(text="🔙 العودة للرئيسية", callback_data="menu_back_main")]
     ])
     try:
-        await callback.message.edit_text(TERMS_AND_CONDITIONS_TEXT, reply_markup=kb, parse_mode="Markdown")
+        await callback.message.edit_text(TERMS_AND_CONDITIONS_TEXT, reply_markup=kb, parse_mode=None)
     except Exception:
-        await callback.message.answer(TERMS_AND_CONDITIONS_TEXT, reply_markup=kb, parse_mode="Markdown")
+        await callback.message.answer(TERMS_AND_CONDITIONS_TEXT, reply_markup=kb, parse_mode=None)
     await callback.answer()
 
 
@@ -605,7 +595,7 @@ async def cq_terms_section(callback: CallbackQuery):
     if target_idx > 1:
         prev_idx = sections[target_idx - 2][0]
         nav_row.append(InlineKeyboardButton(text="◀️ السابق", callback_data=f"terms_sec_{prev_idx}"))
-    nav_row.append(InlineKeyboardButton(text="📑 الفهرس", callback_data="menu_terms"))
+    nav_row.append(InlineKeyboardButton(text="📜 النص الكامل", callback_data="menu_terms"))
     if target_idx < total:
         next_idx = sections[target_idx][0]
         nav_row.append(InlineKeyboardButton(text="التالي ▶️", callback_data=f"terms_sec_{next_idx}"))
@@ -617,9 +607,9 @@ async def cq_terms_section(callback: CallbackQuery):
 
     text = s_text.strip()
     try:
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=None)
     except Exception:
-        await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        await callback.message.answer(text, reply_markup=kb, parse_mode=None)
     await callback.answer()
 
 

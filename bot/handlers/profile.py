@@ -108,6 +108,8 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
         points = user.reward_points or 0
         rewards_section = f"🌟 **رصيد النقاط :** `{points}`\n"
 
+    yellow_cards = getattr(user, "yellow_cards", 0) or 0
+
     text = (
         "اختر ما تريد معرفته عن حسابك\n"
         f"ID : `{user.telegram_id}` ({user_display})\n"
@@ -117,6 +119,7 @@ async def build_profile_text(user: User, db_session: AsyncSession) -> str:
         f"🏅 **المستوى :** {tier_badge}\n"
         f"📈 **الصفقات المكتملة :** `{deals_count}` صفقة\n"
         f"🧐 **السمعة :** ⭐️ `{rep_score}`\n"
+        f"🟨 **البطاقات الصفراء :** `{yellow_cards}/10`\n"
         f"💰 **حجم التداول :** `{format_usdt(total_volume)} USDT`\n"
         f"{rewards_section}"
         "〰️〰️〰️〰️〰️〰️〰️\n"

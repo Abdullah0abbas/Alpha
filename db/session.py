@@ -114,6 +114,7 @@ async def ensure_schema_updated():
         ("users.saved_payment_info", "ALTER TABLE users ADD COLUMN IF NOT EXISTS saved_payment_info VARCHAR(200);"),
         ("users.kyc_status", "ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_status VARCHAR(20) DEFAULT 'unverified';"),
         ("users.reward_points", "ALTER TABLE users ADD COLUMN IF NOT EXISTS reward_points INTEGER DEFAULT 0;"),
+        ("users.yellow_cards", "ALTER TABLE users ADD COLUMN IF NOT EXISTS yellow_cards INTEGER NOT NULL DEFAULT 0;"),
         ("users.reputation_score_default", "ALTER TABLE users ALTER COLUMN reputation_score SET DEFAULT 100;"),
         ("offers.channel_message_id", "ALTER TABLE offers ADD COLUMN IF NOT EXISTS channel_message_id INTEGER;"),
         ("offers.payout_info", "ALTER TABLE offers ADD COLUMN IF NOT EXISTS payout_info VARCHAR;"),

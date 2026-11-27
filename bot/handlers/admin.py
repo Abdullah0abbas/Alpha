@@ -531,12 +531,16 @@ async def send_user_card(event_or_msg, user: User, db_session: AsyncSession, is_
             f"▫️ **رقم الموبايل:** `{safe_ph}`\n\n"
         )
 
+    yellow_cards_cnt = getattr(user, "yellow_cards", 0) or 0
+    yc_alert_tag = " 🚨 **(تجاوز الحد التحذيري!)**" if yellow_cards_cnt >= 10 else ""
+
     card_text = (
         f"👤 **السجل الكامل للمستخدم —** `{uid}`\n\n"
         f"▫️ **المعرف والاسم:** {uname} (`{uid}`)\n"
         f"▫️ **اللقب المسجل:** {nick_str}\n"
         f"▫️ **حالة الحساب:** {ban_badge}\n"
         f"▫️ **توثيق الهوية:** {kyc_badge}\n"
+        f"▫️ **البطاقات الصفراء:** 🟨 `{yellow_cards_cnt}/10`{yc_alert_tag}\n"
         f"▫️ **تاريخ الانضمام:** `{reg_date}`\n\n"
         f"{kyc_details_block}"
         f"💳 **الحسابات المالية المحفوظة:**\n"
@@ -564,6 +568,14 @@ async def send_user_card(event_or_msg, user: User, db_session: AsyncSession, is_
             InlineKeyboardButton(text="✉️ إرسال رسالة مباشرة", callback_data=f"adm_msg_user_{uid}")
         ],
     ]
+    yc_row = [
+        InlineKeyboardButton(text="🟨 +1 بطاقة صفراء", callback_data=f"adm_yc_add_{uid}")
+    ]
+    if yellow_cards_cnt > 0:
+        yc_row.append(InlineKeyboardButton(text="➖ سحب بطاقة", callback_data=f"adm_yc_sub_{uid}"))
+        yc_row.append(InlineKeyboardButton(text="🔄 تصفير (0)", callback_data=f"adm_yc_reset_{uid}"))
+    kb_rows.append(yc_row)
+
     if latest_kyc:
         kb_rows.append([
             InlineKeyboardButton(
@@ -591,6 +603,73 @@ async def send_user_card(event_or_msg, user: User, db_session: AsyncSession, is_
         await event_or_msg.message.answer(card_text, reply_markup=kb, parse_mode="Markdown")
     else:
         await event_or_msg.answer(card_text, reply_markup=kb, parse_mode="Markdown")
+
+
+@admin_router.callback_query(F.data.startswith("adm_yc_"))
+async def cq_admin_yellow_cards(callback: CallbackQuery, db_session: AsyncSession):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("غير مصرح لك بالوصول.", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    yc_op = parts[2]  # 'add', 'sub', or 'reset'
+    target_id = int(parts[3])
+
+    result = await db_session.execute(
+        select(User).where(User.telegram_id == target_id).with_for_update()
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        await callback.answer("المستخدم غير موجود.", show_alert=True)
+        return
+
+    prev_cards = getattr(user, "yellow_cards", 0) or 0
+    if yc_op == "add":
+        user.yellow_cards = prev_cards + 1
+        audit_action = "ADMIN_ADD_YELLOW_CARD"
+        toast_msg = f"🟨 تم توجيه بطاقة صفراء للمستخدم {target_id} (الإجمالي: {user.yellow_cards}/10)."
+    elif yc_op == "sub":
+        user.yellow_cards = max(0, prev_cards - 1)
+        audit_action = "ADMIN_REMOVE_YELLOW_CARD"
+        toast_msg = f"✅ تم سحب بطاقة صفراء من المستخدم {target_id} (الإجمالي: {user.yellow_cards}/10)."
+    else:
+        user.yellow_cards = 0
+        audit_action = "ADMIN_RESET_YELLOW_CARDS"
+        toast_msg = f"🔄 تم تصفير البطاقات الصفراء للمستخدم {target_id}."
+
+    new_cards = user.yellow_cards
+    add_audit(
+        session=db_session,
+        action=audit_action,
+        target_type="user",
+        target_id=str(target_id),
+        actor_id=callback.from_user.id,
+        actor_type="ADMIN",
+        details={
+            "previous_yellow_cards": prev_cards,
+            "new_yellow_cards": new_cards,
+            "operation": yc_op,
+        },
+    )
+    await db_session.commit()
+
+    if yc_op == "add":
+        try:
+            await callback.bot.send_message(
+                chat_id=target_id,
+                text=(
+                    f"🟨 **إنذار إداري — بطاقة صفراء**\n\n"
+                    f"تم توجيه **بطاقة صفراء 🟨** إلى حسابك من قِبل إدارة {BOT_NAME}.\n"
+                    f"▫️ **إجمالي البطاقات الصفراء الحالي:** `{new_cards}/10`\n\n"
+                    f"يرجى الالتزام التام بشروط وأحكام المنصة والمدد الزمنية المحددة لتجنب حظر الحساب."
+                ),
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+
+    await callback.answer(toast_msg, show_alert=True)
+    await send_user_card(callback, user, db_session, is_edit=True)
 
 
 @admin_router.callback_query(F.data.startswith("admin_toggle_ban_"))

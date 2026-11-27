@@ -5,7 +5,7 @@ from sqlalchemy.future import select
 from sqlalchemy import func
 
 from db.session import AsyncSessionLocal
-from db.models import Deal, Offer, Negotiation
+from db.models import Deal, Offer, Negotiation, User
 from bot.services.channel import update_channel_offer_message
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -149,6 +149,39 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
 
                 resolved_maker_id, resolved_taker_id = resolve_deal_parties(maker_id_val, seller_id_val, buyer_id_val)
 
+                penalized_user_id = None
+                penalized_yellow_cards = 0
+                penalty_reason = None
+                if prev_status == "PENDING_OWNER_APPROVAL" and resolved_maker_id:
+                    penalized_user_id = resolved_maker_id
+                    penalty_reason = "OFFER_APPROVAL_30M_TIMEOUT"
+                elif prev_status in ("AWAITING_USDT_DEPOSIT", "CREATED") and seller_id_val:
+                    penalized_user_id = seller_id_val
+                    penalty_reason = "USDT_DEPOSIT_15M_TIMEOUT"
+
+                if penalized_user_id:
+                    u_res = await item_session.execute(
+                        select(User).where(User.telegram_id == penalized_user_id).with_for_update()
+                    )
+                    u_obj = u_res.scalar_one_or_none()
+                    if u_obj:
+                        u_obj.yellow_cards = (getattr(u_obj, "yellow_cards", 0) or 0) + 1
+                        penalized_yellow_cards = u_obj.yellow_cards
+                        add_audit(
+                            session=item_session,
+                            action="ISSUE_YELLOW_CARD",
+                            target_type="user",
+                            target_id=str(penalized_user_id),
+                            actor_id=None,
+                            actor_type="SYSTEM",
+                            details={
+                                "deal_id": deal_id_val,
+                                "offer_id": offer_id_val,
+                                "reason": penalty_reason,
+                                "yellow_cards": penalized_yellow_cards,
+                            },
+                        )
+
                 add_audit(
                     session=item_session,
                     action="EXPIRE_DEAL",
@@ -195,26 +228,32 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                                 resolved_maker_id,
                                 f"🗑️ **تم حذف عرضك رقم #{offer_id_val} وإلغاء الطلب**\n\n"
                                 f"انقضت مهلة 30 دقيقة دون اتخاذ قرار (موافقة أو رفض) على طلب الصفقة #{deal_id_val}.\n"
-                                f"تم إلغاء الطلب وحذف عرضك من القناة والسوق لعدم الاستجابة.",
+                                f"تم إلغاء الطلب وحذف عرضك من القناة والسوق لعدم الاستجابة.\n"
+                                f"🟨 **تنبيه:** تم توجيه **بطاقة صفراء 🟨** لحسابك (إجمالي البطاقات: `{penalized_yellow_cards}/10`).",
                                 parse_mode="Markdown"
                             )
                         except Exception as e:
                             logger.warning(f"Failed to notify maker {resolved_maker_id} of approval timeout: {e}")
                 else:
                     # Rule 2: 15-min USDT Deposit timeout notifications
-                    deposit_text = (
+                    buyer_deposit_text = (
                         f"⌛ **انتهت مهلة الإيداع — صفقة #{deal_id_val}**\n\n"
-                        f"تم إلغاء الصفقة تلقائياً لعدم إيداع رصيد الضمان في المحفظة خلال مهلة 15 دقيقة.\n"
+                        f"تم إلغاء الصفقة تلقائياً لعدم إيداع البائع لرصيد الضمان في المحفظة خلال مهلة 15 دقيقة.\n"
                         f"تمت إعادة العرض إلى قائمة العروض النشطة في السوق."
+                    )
+                    seller_deposit_text = (
+                        f"⌛ **انتهت مهلة الإيداع — صفقة #{deal_id_val}**\n\n"
+                        f"تم إلغاء الصفقة تلقائياً لعدم إيداع رصيد الضمان في المحفظة خلال مهلة 15 دقيقة، وإعادة العرض إلى السوق.\n"
+                        f"🟨 **تنبيه:** تم توجيه **بطاقة صفراء 🟨** لحسابك (إجمالي البطاقات: `{penalized_yellow_cards}/10`)."
                     )
                     if buyer_id_val:
                         try:
-                            await bot.send_message(buyer_id_val, deposit_text, parse_mode="Markdown")
+                            await bot.send_message(buyer_id_val, buyer_deposit_text, parse_mode="Markdown")
                         except Exception as e:
                             logger.warning(f"Failed to notify buyer {buyer_id_val} of deposit timeout: {e}")
                     if seller_id_val and seller_id_val != buyer_id_val:
                         try:
-                            await bot.send_message(seller_id_val, deposit_text, parse_mode="Markdown")
+                            await bot.send_message(seller_id_val, seller_deposit_text, parse_mode="Markdown")
                         except Exception as e:
                             logger.warning(f"Failed to notify seller {seller_id_val} of deposit timeout: {e}")
 
@@ -222,11 +261,11 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     admin_alert_text = (
                         f"🚨 **إلغاء صفقة — انقضاء مهلة الإيداع**\n\n"
                         f"▫️ **رقم الصفقة:** #{deal_id_val}\n"
-                        f"▫️ **البائع:** `{seller_id_val}`\n"
+                        f"▫️ **البائع:** `{seller_id_val}` (البطاقات الصفراء: 🟨 `{penalized_yellow_cards}/10`)\n"
                         f"▫️ **المشتري:** `{buyer_id_val}`\n"
                         f"▫️ **الكمية:** `{format_usdt(amount_usdt_val)} USDT`\n"
                         f"▫️ **المقابل:** `{format_syp(amount_syp_val)}` ل.س\n\n"
-                        f"تم إلغاء الصفقة لعدم إيداع الضمان خلال 15 دقيقة، وإعادة العرض متاحاً في القناة."
+                        f"تم إلغاء الصفقة لعدم إيداع الضمان خلال 15 دقيقة، وتوجيه بطاقة صفراء للبائع، وإعادة العرض متاحاً في القناة."
                     )
                     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text=f"🔍 فحص الصفقة #{deal_id_val}", callback_data=f"adm_inspect_deal_{deal_id_val}")],
@@ -240,6 +279,25 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                         category="disputes",
                         text=admin_alert_text,
                         reply_markup=admin_kb,
+                        parse_mode="Markdown"
+                    )
+
+                if penalized_user_id and penalized_yellow_cards >= 10:
+                    threshold_kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="👤 عرض ملف المستخدم واتخاذ القرار", callback_data=f"adm_view_user_{penalized_user_id}")],
+                        [InlineKeyboardButton(text="🚫 حظر المستخدم فوراً", callback_data=f"admin_toggle_ban_ban_{penalized_user_id}")]
+                    ])
+                    await dispatch_admin_notification(
+                        bot=bot,
+                        category="disputes",
+                        text=(
+                            f"🚨 **تنبيه إداري — وصول مستخدم إلى `{penalized_yellow_cards}` بطاقات صفراء 🟨**\n\n"
+                            f"▫️ **المعرف الرقمي:** `{penalized_user_id}`\n"
+                            f"▫️ **إجمالي البطاقات الصفراء:** 🟨 `{penalized_yellow_cards}/10`\n"
+                            f"▫️ **سبب البطاقة الأخيرة:** `{penalty_reason}` (صفقة #{deal_id_val})\n\n"
+                            f"لم يقم البوت بحظر المستخدم تلقائياً؛ القرار متروك للإدارة لمراجعة ملفه واتخاذ الإجراء المناسب."
+                        ),
+                        reply_markup=threshold_kb,
                         parse_mode="Markdown"
                     )
         except Exception as item_err:
@@ -527,6 +585,29 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                 amount_usdt_val = deal.amount_usdt
                 amount_syp_val = deal.amount_syp
 
+                buyer_yellow_cards = 0
+                if buyer_id_val:
+                    u_res = await item_session.execute(
+                        select(User).where(User.telegram_id == buyer_id_val).with_for_update()
+                    )
+                    u_obj = u_res.scalar_one_or_none()
+                    if u_obj:
+                        u_obj.yellow_cards = (getattr(u_obj, "yellow_cards", 0) or 0) + 1
+                        buyer_yellow_cards = u_obj.yellow_cards
+                        add_audit(
+                            session=item_session,
+                            action="ISSUE_YELLOW_CARD",
+                            target_type="user",
+                            target_id=str(buyer_id_val),
+                            actor_id=None,
+                            actor_type="SYSTEM",
+                            details={
+                                "deal_id": deal_id_val,
+                                "reason": "SYP_PAYMENT_30M_TIMEOUT",
+                                "yellow_cards": buyer_yellow_cards,
+                            },
+                        )
+
                 await item_session.commit()
                 syp_reminders_count += 1
                 logger.info(f"Sent 30-min SYP payment reminder to buyer for deal #{deal_id_val}")
@@ -539,8 +620,9 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                         f"⏰ **تذكير مهلة التحويل — صفقة #{deal_id_val}**\n\n"
                         f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n"
                         f"▫️ **المبلغ المطلوب بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n\n"
-                        f"مرت 30 دقيقة على مرحلة بانتظار تحويل الليرة السورية، ولا تزال الصفقة قائمة والضمان محجوزاً بأمان.\n"
-                        f"⚠️ **يرجى التواصل مع فريق الدعم الفني:** @{escaped_support}\n"
+                        f"مرت 30 دقيقة على مرحلة بانتظار تحويل الليرة السورية دون إرفاق الإشعار.\n"
+                        f"🟨 **تنبيه:** تم توجيه **بطاقة صفراء 🟨** لحسابك (إجمالي البطاقات: `{buyer_yellow_cards}/10`).\n\n"
+                        f"لا تزال الصفقة قائمة والضمان محجوزاً بأمان؛ ⚠️ **يرجى التواصل مع فريق الدعم الفني:** @{escaped_support}\n"
                         f"قبل تنفيذ التحويل، أو إرفاق إشعار التحويل أدناه إذا قمت بالتحويل بالفعل."
                     )
                     try:
@@ -557,8 +639,8 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     seller_wait_text = (
                         f"ℹ️ **تحديث صفقة #{deal_id_val}**\n\n"
                         f"مرت 30 دقيقة على انتظار تحويل الليرة السورية من المشتري.\n"
-                        f"تم إرسال تذكير للمشتري وإشعار الإدارة لمتابعة الصفقة، ورصيد الضمان محجوز بأمان.\n"
-                        f"للاستفسار يمكنك التواصل مع الدعم الفني: @{escaped_support}"
+                        f"تم توجيه بطاقة صفراء للمشتري وإشعار الإدارة لمتابعة الصفقة، ورصيد الضمان محجوز بأمان.\n"
+                        f"للاستفسار أو طلب إلغاء الصفقة واسترجاع العملات يمكنك التواصل مع الدعم الفني: @{escaped_support}"
                     )
                     try:
                         await bot.send_message(chat_id=seller_id_val, text=seller_wait_text, parse_mode="Markdown")
@@ -568,10 +650,10 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                 admin_syp_alert = (
                     f"⏰ **تنبيه تأخر تحويل الليرة (30 دقيقة) — صفقة #{deal_id_val}**\n\n"
                     f"▫️ **البائع:** `{seller_id_val}`\n"
-                    f"▫️ **المشتري:** `{buyer_id_val}`\n"
+                    f"▫️ **المشتري:** `{buyer_id_val}` (البطاقات الصفراء: 🟨 `{buyer_yellow_cards}/10`)\n"
                     f"▫️ **الكمية:** `{format_usdt(amount_usdt_val)} USDT`\n"
                     f"▫️ **المبلغ بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n\n"
-                    f"مرت 30 دقيقة في مرحلة `AWAITING_SYP_PAYMENT` دون إرفاق إشعار التحويل من المشتري."
+                    f"مرت 30 دقيقة في مرحلة `AWAITING_SYP_PAYMENT` دون إرفاق إشعار التحويل من المشتري، وتم توجيه بطاقة صفراء له."
                 )
                 admin_syp_kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🔍 فحص تفصيلي للصفقة", callback_data=f"adm_inspect_deal_{deal_id_val}")],
@@ -587,6 +669,25 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     reply_markup=admin_syp_kb,
                     parse_mode="Markdown"
                 )
+
+                if buyer_id_val and buyer_yellow_cards >= 10:
+                    threshold_kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="👤 عرض ملف المستخدم واتخاذ القرار", callback_data=f"adm_view_user_{buyer_id_val}")],
+                        [InlineKeyboardButton(text="🚫 حظر المستخدم فوراً", callback_data=f"admin_toggle_ban_ban_{buyer_id_val}")]
+                    ])
+                    await dispatch_admin_notification(
+                        bot=bot,
+                        category="disputes",
+                        text=(
+                            f"🚨 **تنبيه إداري — وصول مستخدم إلى `{buyer_yellow_cards}` بطاقات صفراء 🟨**\n\n"
+                            f"▫️ **المعرف الرقمي:** `{buyer_id_val}`\n"
+                            f"▫️ **إجمالي البطاقات الصفراء:** 🟨 `{buyer_yellow_cards}/10`\n"
+                            f"▫️ **سبب البطاقة الأخيرة:** `SYP_PAYMENT_30M_TIMEOUT` (صفقة #{deal_id_val})\n\n"
+                            f"لم يقم البوت بحظر المستخدم تلقائياً؛ القرار متروك للإدارة لمراجعة ملفه واتخاذ الإجراء المناسب."
+                        ),
+                        reply_markup=threshold_kb,
+                        parse_mode="Markdown"
+                    )
         except Exception as item_err:
             logger.error(f"Error sending SYP payment reminder for deal #{deal_id}: {item_err}", exc_info=True)
             await report_handled_exception(bot, item_err, context_label=f"تذكير تحويل الليرة لصفقة #{deal_id}")
@@ -626,6 +727,29 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                 amount_usdt_val = deal.amount_usdt
                 amount_syp_val = deal.amount_syp
 
+                seller_yellow_cards = 0
+                if seller_id_val:
+                    u_res = await item_session.execute(
+                        select(User).where(User.telegram_id == seller_id_val).with_for_update()
+                    )
+                    u_obj = u_res.scalar_one_or_none()
+                    if u_obj:
+                        u_obj.yellow_cards = (getattr(u_obj, "yellow_cards", 0) or 0) + 1
+                        seller_yellow_cards = u_obj.yellow_cards
+                        add_audit(
+                            session=item_session,
+                            action="ISSUE_YELLOW_CARD",
+                            target_type="user",
+                            target_id=str(seller_id_val),
+                            actor_id=None,
+                            actor_type="SYSTEM",
+                            details={
+                                "deal_id": deal_id_val,
+                                "reason": "SYP_CONFIRMATION_30M_TIMEOUT",
+                                "yellow_cards": seller_yellow_cards,
+                            },
+                        )
+
                 await item_session.commit()
                 syp_reminders_count += 1
                 logger.info(f"Sent 30-min SYP confirmation reminder and admin alert for deal #{deal_id_val}")
@@ -642,7 +766,8 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                         f"▫️ **المبلغ المحول بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n"
                         f"▫️ **رصيد الضمان المحجوز:** `{format_usdt(amount_usdt_val)} USDT`\n\n"
                         f"مرت 30 دقيقة على إرفاق المشتري لإشعار التحويل دون تأكيد الاستلام من طرفك.\n"
-                        f"يرجى مراجعة حسابك وتأكيد الاستلام، أو الضغط على **لم أستلم** في حال وجود مشكلة."
+                        f"🟨 **تنبيه:** تم توجيه **بطاقة صفراء 🟨** لحسابك (إجمالي البطاقات: `{seller_yellow_cards}/10`).\n"
+                        f"يرجى مراجعة حسابك وتأكيد الاستلام فوراً، أو الضغط على **لم أستلم** في حال وجود مشكلة."
                     )
                     try:
                         await bot.send_message(
@@ -658,7 +783,7 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     buyer_text = (
                         f"ℹ️ **تحديث صفقة #{deal_id_val}**\n\n"
                         f"مرت 30 دقيقة على إرسالك لإشعار التحويل دون تأكيد البائع بعد.\n"
-                        f"تم إرسال تذكير للبائع وإشعار الإدارة لمتابعة الصفقة، ورصيد الضمان (`{format_usdt(amount_usdt_val)} USDT`) محجوز بالكامل لصالحك بأمان.\n"
+                        f"تم توجيه بطاقة صفراء للبائع وإشعار الإدارة لمتابعة الصفقة، ورصيد الضمان (`{format_usdt(amount_usdt_val)} USDT`) محجوز بالكامل لصالحك بأمان.\n"
                         f"للاستفسار يمكنك التواصل مع الدعم الفني: @{escaped_support}"
                     )
                     try:
@@ -672,11 +797,11 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
 
                 admin_alert_text = (
                     f"⏰ **تنبيه تأخر تأكيد استلام الليرة (30 دقيقة) — صفقة #{deal_id_val}**\n\n"
-                    f"▫️ **البائع:** `{seller_id_val}`\n"
+                    f"▫️ **البائع:** `{seller_id_val}` (البطاقات الصفراء: 🟨 `{seller_yellow_cards}/10`)\n"
                     f"▫️ **المشتري:** `{buyer_id_val}`\n"
                     f"▫️ **الكمية:** `{format_usdt(amount_usdt_val)} USDT`\n"
                     f"▫️ **المبلغ بالليرة:** `{format_syp(amount_syp_val)}` ل.س\n\n"
-                    f"أرسل المشتري إشعار الدفع منذ أكثر من 30 دقيقة ولم يقم البائع بتأكيد الاستلام حتى الآن."
+                    f"أرسل المشتري إشعار الدفع منذ أكثر من 30 دقيقة ولم يقم البائع بتأكيد الاستلام حتى الآن، وتم توجيه بطاقة صفراء للبائع."
                 )
                 admin_kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ تأكيد استلام الليرة إدارياً", callback_data=f"adm_ask_force_conf_{deal_id_val}")],
@@ -693,6 +818,25 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
                     reply_markup=admin_kb,
                     parse_mode="Markdown"
                 )
+
+                if seller_id_val and seller_yellow_cards >= 10:
+                    threshold_kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="👤 عرض ملف المستخدم واتخاذ القرار", callback_data=f"adm_view_user_{seller_id_val}")],
+                        [InlineKeyboardButton(text="🚫 حظر المستخدم فوراً", callback_data=f"admin_toggle_ban_ban_{seller_id_val}")]
+                    ])
+                    await dispatch_admin_notification(
+                        bot=bot,
+                        category="disputes",
+                        text=(
+                            f"🚨 **تنبيه إداري — وصول مستخدم إلى `{seller_yellow_cards}` بطاقات صفراء 🟨**\n\n"
+                            f"▫️ **المعرف الرقمي:** `{seller_id_val}`\n"
+                            f"▫️ **إجمالي البطاقات الصفراء:** 🟨 `{seller_yellow_cards}/10`\n"
+                            f"▫️ **سبب البطاقة الأخيرة:** `SYP_CONFIRMATION_30M_TIMEOUT` (صفقة #{deal_id_val})\n\n"
+                            f"لم يقم البوت بحظر المستخدم تلقائياً؛ القرار متروك للإدارة لمراجعة ملفه واتخاذ الإجراء المناسب."
+                        ),
+                        reply_markup=threshold_kb,
+                        parse_mode="Markdown"
+                    )
         except Exception as item_err:
             logger.error(f"Error sending SYP confirmation reminder for deal #{deal_id}: {item_err}", exc_info=True)
             await report_handled_exception(bot, item_err, context_label=f"تذكير تأكيد استلام الليرة لصفقة #{deal_id}")

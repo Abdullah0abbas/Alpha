@@ -122,6 +122,10 @@ def _parse_row(table_name: str, model_cls: Any, raw_row: dict[str, Any]) -> dict
         else:
             cleaned[k] = v
 
+    if table_name == "users":
+        if cleaned.get("yellow_cards") is None:
+            cleaned["yellow_cards"] = 0
+
     # Backfill NOT NULL fee columns if restoring from an older 2.x/3.x backup where they were absent or null
     if table_name == "deals":
         if cleaned.get("fee_usdt") is None:

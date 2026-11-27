@@ -20,6 +20,7 @@ class User(Base):
     reward_points: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     reputation_score: Mapped[Decimal] = mapped_column(Numeric, server_default="100", default=Decimal("100"))
     completed_deals_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    yellow_cards: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     is_banned: Mapped[bool] = mapped_column(Boolean, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

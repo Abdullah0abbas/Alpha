@@ -142,6 +142,7 @@ async def create_database_backup() -> tuple[str, str, dict]:
                 "reward_points": u.reward_points,
                 "reputation_score": serialize_val(u.reputation_score),
                 "completed_deals_count": u.completed_deals_count,
+                "yellow_cards": getattr(u, "yellow_cards", 0) or 0,
                 "is_banned": u.is_banned,
                 "created_at": serialize_val(u.created_at)
             }
