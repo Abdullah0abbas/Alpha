@@ -5,7 +5,7 @@ from sqlalchemy.future import select
 from sqlalchemy import func
 
 from db.session import AsyncSessionLocal
-from db.models import Deal, Offer, Negotiation, User
+from db.models import BlockchainTransaction, Deal, Offer, Negotiation, User
 from bot.services.channel import update_channel_offer_message
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -114,6 +114,26 @@ async def process_expiries(bot: Bot) -> tuple[int, int, int, int, int]:
 
                 if not can_expire_deal(deal.status, deal.expires_at, now):
                     continue
+
+                # Phase A1 safeguard: never cancel or issue a yellow card on 15m deposit timeout
+                # if an on-chain deposit transaction is already pending confirmation or confirmed
+                if deal.status in ("AWAITING_USDT_DEPOSIT", "CREATED"):
+                    if getattr(deal, "deposit_tx_hash", None):
+                        continue
+                    pending_dep_res = await item_session.execute(
+                        select(BlockchainTransaction.id)
+                        .where(
+                            BlockchainTransaction.deal_id == deal.id,
+                            BlockchainTransaction.direction == "deposit",
+                            BlockchainTransaction.status.in_(["pending", "confirmed"]),
+                        )
+                        .limit(1)
+                    )
+                    if pending_dep_res.scalar_one_or_none() is not None:
+                        logger.info(
+                            f"Skipping 15m deposit expiry for deal #{deal.id}: on-chain deposit is pending/confirmed."
+                        )
+                        continue
 
                 deal_id_val = deal.id
                 offer_id_val = deal.offer_id

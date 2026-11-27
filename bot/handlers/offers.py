@@ -976,9 +976,12 @@ async def _show_duration_choice(message: Message, state: FSMContext | None = Non
         "• أو اختر **تحديد مدة مخصصة** لاختيار الساعات (0–3) ثم الدقائق (5–45)."
     )
     if hasattr(message, "edit_text"):
-        await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    else:
-        await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        try:
+            await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+            return
+        except Exception:
+            pass
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 
 @offers_router.callback_query(F.data == "wiz_back_duration")
@@ -1320,6 +1323,35 @@ async def publish_offer_final(callback: CallbackQuery, state: FSMContext, db_ses
             await callback.answer(
                 "⚠️ تجاوزت الحد الأقصى المسموح به (5 عروض نشطة أو قيد المراجعة). يرجى إلغاء أو إكمال أحد عروضك الحالية أولاً.",
                 show_alert=True
+            )
+            return
+
+        # 2b. Rule 10: 15-minute cooldown between publishing two similar offers (same offer_type)
+        similar_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+        recent_similar_res = await db_session.execute(
+            select(Offer.created_at)
+            .where(
+                Offer.user_id == user_id,
+                Offer.offer_type == data["offer_type"],
+                Offer.status.not_in(["cancelled", "deleted", "expired"]),
+                Offer.created_at >= similar_cutoff,
+            )
+            .order_by(Offer.created_at.desc())
+            .limit(1)
+        )
+        recent_created_at = recent_similar_res.scalar_one_or_none()
+        if recent_created_at is not None:
+            if recent_created_at.tzinfo is None:
+                recent_created_at = recent_created_at.replace(tzinfo=timezone.utc)
+            rem_seconds = max(
+                1,
+                int(((recent_created_at + timedelta(minutes=15)) - datetime.now(timezone.utc)).total_seconds()),
+            )
+            rem_minutes = max(1, (rem_seconds + 59) // 60)
+            await state.update_data(is_publishing=False)
+            await callback.answer(
+                f"⏳ يمكنك نشر عرض مماثل جديد بعد مرور {rem_minutes} دقيقة من عرضك السابق.",
+                show_alert=True,
             )
             return
 
