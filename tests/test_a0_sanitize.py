@@ -103,3 +103,17 @@ def test_mask_details_recursive_and_non_mutating():
     assert "0xffff…1234" in masked["nested"]["note"]
     assert masked["nested"]["items"] == ["[REDACTED_MNEMONIC]", "ok"]
     assert mask_details(None) == {}
+
+
+def test_normal_arabic_and_english_messages_unchanged():
+    arabic_msg = "تعذّر الاتصال بقاعدة البيانات مؤقتاً، يرجى المحاولة بعد قليل."
+    english_msg = "Timeout while waiting for deal #42 confirmation from counterparty."
+    mixed_msg = "حدث خطأ أثناء تحديث العرض رقم 15 في السوق (status: active)."
+
+    assert sanitize_exception_message(arabic_msg) == arabic_msg
+    assert sanitize_exception_message(english_msg) == english_msg
+    assert sanitize_exception_message(mixed_msg) == mixed_msg
+
+    details = {"reason": arabic_msg, "summary": english_msg, "note": mixed_msg}
+    assert mask_details(details) == details
+
